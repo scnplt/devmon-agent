@@ -1,0 +1,12 @@
+/bin/
+
+# Runtime state — never commit. These are produced on the operator's host under
+# $DEVMON_STATE_DIR and contain device records and private key material.
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.crt
+
+coverage.out
+.env

@@ -204,7 +204,7 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | Secure foundation & persistence | Agent runs as a container, serves TLS, talks to the Docker socket, exposes a health/version check, and persists state and its own logs across restarts | in-progress | - | - | [secure-foundation-and-persistence.plan.md](../plans/secure-foundation-and-persistence.plan.md) |
+| 1 | Secure foundation & persistence | Agent runs as a container, serves TLS, talks to the Docker socket, exposes a health/version check, and persists state and its own logs across restarts | complete | - | - | [secure-foundation-and-persistence.plan.md](../plans/completed/secure-foundation-and-persistence.plan.md) · [report](../reports/secure-foundation-and-persistence-report.md) |
 | 2 | Identity, pairing & revocation | Agent CA, pairing codes, per-device credentials, device registry, renewal, self-unpair, host-side device commands, missing-state handling | pending | - | 1 | - |
 | 3 | Read operations | Container/image/network/volume list and inspect | pending | with 4 | 2 | - |
 | 4 | Logs & live streaming | Historical logs plus a resilient live stream channel | pending | with 3 | 2 | - |
