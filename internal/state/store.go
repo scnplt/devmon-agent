@@ -30,6 +30,15 @@ var (
 	ErrStateCorrupt = errors.New("state store is unreadable or corrupt")
 	// ErrSchemaTooNew means the store was written by a newer agent version.
 	ErrSchemaTooNew = errors.New("state store was written by a newer agent version")
+	// ErrDeviceNotFound means no device matches the given id or certificate
+	// serial. Callers branch on this to distinguish "unknown" from other
+	// failures; it never reveals whether the caller has ever seen that id.
+	ErrDeviceNotFound = errors.New("device not found")
+	// ErrPairingCodeInvalid covers every reason a pairing code cannot be
+	// redeemed — unknown, expired, or already used. It is deliberately one
+	// error: distinguishing those cases to a caller would let it enumerate
+	// code state.
+	ErrPairingCodeInvalid = errors.New("pairing code is invalid or expired")
 )
 
 // dbFileMode keeps the database owner-only. SQLite creates it 0644 by default,
@@ -144,34 +153,81 @@ func (s *Store) verifyAndMigrate(ctx context.Context, path string) error {
 		return fmt.Errorf("%w: %s: integrity_check=%q", ErrStateCorrupt, path, result)
 	}
 
-	if _, err := s.db.ExecContext(ctx, schemaV1); err != nil {
-		return fmt.Errorf("apply schema to %s: %w", path, err)
-	}
-	return s.reconcileVersion(ctx, path)
+	return s.migrate(ctx, path)
 }
 
-// reconcileVersion stamps the version on a fresh store and refuses to open one
-// written by a newer build.
-func (s *Store) reconcileVersion(ctx context.Context, path string) error {
-	version, err := s.SchemaVersion(ctx)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		_, err := s.db.ExecContext(ctx,
-			`INSERT INTO schema_meta (key, value) VALUES (?, ?)`,
-			schemaVersionKey, strconv.Itoa(currentSchemaVersion),
-		)
-		if err != nil {
-			return fmt.Errorf("stamp schema version on %s: %w", path, err)
-		}
-		return nil
-	case err != nil:
+// migrate walks the migration ladder, applying every step whose version
+// exceeds the store's current one, in order.
+//
+// schema_meta is created unconditionally first so its version can be read
+// even on a brand-new file where no migration has run yet; every table each
+// migration owns is created inside that migration's own step.
+func (s *Store) migrate(ctx context.Context, path string) error {
+	if _, err := s.db.ExecContext(ctx, schemaMetaTableSQL); err != nil {
+		return fmt.Errorf("create schema_meta table in %s: %w", path, err)
+	}
+
+	version, err := s.currentVersionOrZero(ctx)
+	if err != nil {
 		return err
-	case version > currentSchemaVersion:
+	}
+	if version > currentSchemaVersion {
 		return fmt.Errorf("%w: %s: found v%d, this build understands v%d",
 			ErrSchemaTooNew, path, version, currentSchemaVersion)
-	default:
-		return nil
 	}
+
+	for _, step := range migrations {
+		if step.version <= version {
+			continue
+		}
+		if err := s.applyMigration(ctx, path, step); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// currentVersionOrZero reads the stamped schema version, treating an absent
+// schema_meta row (a genuinely fresh store) as version 0 rather than an error.
+func (s *Store) currentVersionOrZero(ctx context.Context) (int, error) {
+	version, err := s.SchemaVersion(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+// applyMigration runs one migration step's schema statements and stamps its
+// version in the same transaction, mirroring the PruneAudit pattern: a
+// deferred rollback before commit, so a failed statement or a failed stamp
+// leaves the store at its prior, consistent version.
+func (s *Store) applyMigration(ctx context.Context, path string, step migrationStep) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration to v%d on %s: %w", step.version, path, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, step.sql); err != nil {
+		return fmt.Errorf("apply schema v%d to %s: %w", step.version, path, err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO schema_meta (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		schemaVersionKey, strconv.Itoa(step.version),
+	)
+	if err != nil {
+		return fmt.Errorf("stamp schema version v%d on %s: %w", step.version, path, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration to v%d on %s: %w", step.version, path, err)
+	}
+	return nil
 }
 
 // SchemaVersion returns the schema version recorded in the store.

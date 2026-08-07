@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -53,7 +54,7 @@ func TestOpenFirstRunCreatesSchema(t *testing.T) {
 	if version != currentSchemaVersion {
 		t.Errorf("SchemaVersion() = %d, want %d", version, currentSchemaVersion)
 	}
-	for _, table := range []string{"schema_meta", "devices", "audit"} {
+	for _, table := range []string{"schema_meta", "devices", "device_certs", "pairing_codes", "audit"} {
 		var name string
 		err := s.db.QueryRow(
 			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table,
@@ -122,6 +123,93 @@ func TestOpenSchemaTooNew(t *testing.T) {
 		t.Fatalf("seed Open() unexpected error: %v", err)
 	}
 	_, err = seed.db.Exec(`UPDATE schema_meta SET value = '99' WHERE key = ?`, schemaVersionKey)
+	if err != nil {
+		t.Fatalf("bump version: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("Close() unexpected error: %v", err)
+	}
+
+	// Act
+	_, err = Open(context.Background(), path, testLogger())
+
+	// Assert
+	if !errors.Is(err, ErrSchemaTooNew) {
+		t.Fatalf("Open() error = %v, want ErrSchemaTooNew", err)
+	}
+}
+
+func TestOpenMigratesV1StoreToV2(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — build a v1 store by hand, exec'ing schemaV1 directly and
+	// stamping version 1, bypassing Open's own migration ladder entirely.
+	path := tempDBPath(t)
+	raw, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatalf("sql.Open(%s) unexpected error: %v", path, err)
+	}
+	if _, err := raw.Exec(schemaMetaTableSQL); err != nil {
+		t.Fatalf("create schema_meta: %v", err)
+	}
+	if _, err := raw.Exec(schemaV1); err != nil {
+		t.Fatalf("apply schemaV1: %v", err)
+	}
+	if _, err := raw.Exec(
+		`INSERT INTO schema_meta (key, value) VALUES (?, ?)`, schemaVersionKey, "1",
+	); err != nil {
+		t.Fatalf("stamp version 1: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close seed connection: %v", err)
+	}
+
+	// Act
+	s := openStore(t, path)
+	version, err := s.SchemaVersion(context.Background())
+
+	// Assert
+	if err != nil {
+		t.Fatalf("SchemaVersion() unexpected error: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Errorf("SchemaVersion() = %d, want %d after migrating a v1 store", version, currentSchemaVersion)
+	}
+	for _, table := range []string{"schema_meta", "devices", "device_certs", "pairing_codes", "audit"} {
+		var name string
+		err := s.db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("table %q missing after migration: %v", table, err)
+		}
+	}
+
+	// The schema_meta row itself must survive the migration, not just be
+	// re-created — a fresh INSERT with an unchanged value would hide a
+	// migration that failed to actually stamp anything.
+	var stamped string
+	if err := s.db.QueryRow(
+		`SELECT value FROM schema_meta WHERE key = ?`, schemaVersionKey,
+	).Scan(&stamped); err != nil {
+		t.Fatalf("read stamped version: %v", err)
+	}
+	if stamped != strconv.Itoa(currentSchemaVersion) {
+		t.Errorf("stamped schema_meta value = %q, want %q", stamped, strconv.Itoa(currentSchemaVersion))
+	}
+}
+
+func TestOpenSchemaVersionThreeIsTooNew(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a store one version ahead of what this build understands,
+	// distinct from the far-future TestOpenSchemaTooNew case above.
+	path := tempDBPath(t)
+	seed, err := Open(context.Background(), path, testLogger())
+	if err != nil {
+		t.Fatalf("seed Open() unexpected error: %v", err)
+	}
+	_, err = seed.db.Exec(`UPDATE schema_meta SET value = '3' WHERE key = ?`, schemaVersionKey)
 	if err != nil {
 		t.Fatalf("bump version: %v", err)
 	}
