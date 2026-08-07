@@ -7,6 +7,24 @@ client can inspect and restart containers without SSH and without exposing the D
 - Go: 1.26
 - License: AGPL-3.0-only
 
+## Language (MANDATORY)
+
+**All written artifacts in this repository are English-only**, regardless of the language
+used in chat. This is non-negotiable and applies to:
+
+- every `.md` file (README, PRDs, plans, rules, ADRs, docs)
+- code comments and doc comments
+- identifiers, log messages, and error strings
+- commit messages, branch names, PR titles and bodies, issue text
+
+If the user writes in another language, still produce these artifacts in English.
+
+## Branching
+
+`main` = production/release, `dev` = integration, every feature on its own
+`<type>/<slug>` branch cut from `dev`. Never commit directly to `main` or `dev`.
+Full model: `.claude/rules/ecc/common/git-workflow.md`.
+
 ## Commands
 
 Nothing is implemented yet — `go.mod` is created by Task 1 of the current plan, so these
