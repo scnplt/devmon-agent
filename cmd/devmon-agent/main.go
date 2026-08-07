@@ -66,6 +66,15 @@ func run() error {
 		return err
 	}
 
+	// The `device` CLI is a host-side management path (D8): it opens the same
+	// SQLite file the running agent has open and must never build a log sink
+	// or touch certs/ — see cli.go for why. It is dispatched before the
+	// server path so it never triggers state-dir prep, log-sink construction,
+	// or certificate loading meant only for the long-running agent.
+	if flag.Arg(0) == "device" {
+		return runDeviceCommand(context.Background(), cfg, flag.Args()[1:])
+	}
+
 	if err := prepareStateDir(cfg); err != nil {
 		return err
 	}
@@ -118,8 +127,27 @@ func serve(ctx context.Context, cfg config.Config, sink *logging.Sink, log *slog
 		slog.Int("schema_version", schemaVersion),
 	)
 
-	// certs already logs the WARN on drift; re-issuance needs the Phase 2 CA.
-	cert, _, err := certs.LoadOrCreateServerCert(cfg.CertsDir(), cfg.PublicAddrs, log)
+	// The identity consistency check MUST run before LoadOrCreateCA: once the CA
+	// is created, the partial-restore signature this check exists to catch can
+	// never fire again (D9).
+	if err := certs.CheckIdentityConsistency(cfg.CertsDir(), !st.FirstRun); err != nil {
+		return err
+	}
+
+	ca, caCreated, err := certs.LoadOrCreateCA(cfg.CertsDir(), log)
+	if err != nil {
+		return err
+	}
+	if caCreated {
+		log.Warn("generated a new certificate authority; record this fingerprint, it is the pairing anchor every device pins",
+			slog.String("fingerprint", ca.Fingerprint()),
+		)
+	}
+
+	// certs already logs the WARN on SAN drift and re-issues the leaf from ca
+	// automatically; no device has to re-pair because clients pin the CA, not
+	// this leaf.
+	cert, err := certs.LoadOrCreateServerCert(cfg.CertsDir(), cfg.PublicAddrs, ca, log)
 	if err != nil {
 		return err
 	}
@@ -130,9 +158,10 @@ func serve(ctx context.Context, cfg config.Config, sink *logging.Sink, log *slog
 	}
 	defer func() { _ = dc.Close() }()
 
-	// nil client CAs: there is no CA until Phase 2, so no client certificate can
-	// be verified against anything.
-	srv := httpapi.NewServer(cfg, st, tlsconf.Build(cert, nil), log)
+	// Client CAs come from the agent's own certificate authority: a device's
+	// client certificate is verified against ca.Pool() at the handshake.
+	tlsCfg := tlsconf.Build(cert, ca.Pool())
+	srv := httpapi.NewServer(cfg, st, ca, tlsCfg, log)
 	pruner := state.NewPruner(st, cfg.AuditMaxAge, cfg.AuditMaxRows, log)
 
 	log.Info("agent listening",

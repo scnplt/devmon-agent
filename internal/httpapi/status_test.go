@@ -1,19 +1,24 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/scnplt/devmon-agent/internal/certs"
 	"github.com/scnplt/devmon-agent/internal/config"
 	"github.com/scnplt/devmon-agent/internal/policy"
+	"github.com/scnplt/devmon-agent/internal/state"
 	"github.com/scnplt/devmon-agent/internal/version"
 )
 
@@ -24,14 +29,53 @@ func testLogger() *slog.Logger {
 func testServer(t *testing.T, mode policy.Mode) *Server {
 	t.Helper()
 	cfg := config.Config{StateDir: t.TempDir(), ListenAddr: ":8443", PolicyMode: mode}
-	return NewServer(cfg, nil, nil, testLogger())
+	return NewServer(cfg, nil, nil, nil, testLogger())
+}
+
+// testServerWithCA is a second helper, additive to testServer, for tests that
+// need a real CA to exercise handleStatus's fingerprint derivation. Several
+// passing tests rely on testServer constructing a Server with a nil CA, so
+// that helper stays unchanged rather than being widened.
+func testServerWithCA(t *testing.T, mode policy.Mode) (*Server, *certs.CA) {
+	t.Helper()
+	cfg := config.Config{StateDir: t.TempDir(), ListenAddr: ":8443", PolicyMode: mode}
+	ca, _, err := certs.LoadOrCreateCA(t.TempDir(), testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA: %v", err)
+	}
+	return NewServer(cfg, nil, ca, nil, testLogger()), ca
+}
+
+// testServerWithStore is a third helper, additive to testServer and
+// testServerWithCA, for tests that exercise requireDevice's live lookup
+// against a real *state.Store. testServer keeps passing nil, which several
+// passing tests rely on.
+func testServerWithStore(t *testing.T) (*Server, *state.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Config{StateDir: dir, ListenAddr: ":8443", PolicyMode: policy.ModeDefault}
+	st, err := state.Open(context.Background(), filepath.Join(dir, "devmon.db"), testLogger())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return NewServer(cfg, st, nil, nil, testLogger()), st
+}
+
+// peerCertWithSerial builds a *tls.ConnectionState carrying a single peer
+// certificate whose serial number is serial, for driving requireDevice
+// without a real TLS handshake.
+func peerCertWithSerial(serial *big.Int) *tls.ConnectionState {
+	return &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{{SerialNumber: serial}},
+	}
 }
 
 // TestStatusFieldCount is the guard that stops a later phase from quietly
-// widening a pre-authentication surface. Asserting only that the four expected
-// keys are PRESENT would let a fifth slip in unnoticed; asserting the exact
+// widening a pre-authentication surface. Asserting only that the five expected
+// keys are PRESENT would let a sixth slip in unnoticed; asserting the exact
 // count forces any addition through a deliberate edit of this test. Phase 2
-// changes 4 to 5 when ca_fingerprint lands.
+// added ca_fingerprint, changing the count from 4 to 5.
 func TestStatusFieldCount(t *testing.T) {
 	t.Parallel()
 
@@ -51,12 +95,43 @@ func TestStatusFieldCount(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if len(body) != 4 {
-		t.Fatalf("status payload has %d keys (%v), want exactly 4", len(body), keysOf(body))
+	if len(body) != 5 {
+		t.Fatalf("status payload has %d keys (%v), want exactly 5", len(body), keysOf(body))
 	}
-	for _, key := range []string{"api_version", "agent_version", "policy_mode", "server_time"} {
+	for _, key := range []string{"api_version", "agent_version", "policy_mode", "server_time", "ca_fingerprint"} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("status payload is missing %q", key)
+		}
+	}
+}
+
+// TestStatusCAFingerprint asserts the fingerprint is the real pinning anchor:
+// 64 lowercase hex characters, equal to ca.Fingerprint().
+func TestStatusCAFingerprint(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, ca := testServerWithCA(t, policy.ModeDefault)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+
+	// Assert
+	var body statusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.CAFingerprint != ca.Fingerprint() {
+		t.Errorf("ca_fingerprint = %q, want %q", body.CAFingerprint, ca.Fingerprint())
+	}
+	if len(body.CAFingerprint) != 64 {
+		t.Errorf("ca_fingerprint length = %d, want 64", len(body.CAFingerprint))
+	}
+	for _, r := range body.CAFingerprint {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			t.Errorf("ca_fingerprint = %q, contains non-lowercase-hex rune %q", body.CAFingerprint, r)
+			break
 		}
 	}
 }
@@ -185,6 +260,11 @@ func TestUnknownPathLeaksNothing(t *testing.T) {
 	}
 }
 
+// TestRequireDeviceRejectsWithoutCertificate covers the cases requireDevice
+// rejects before it ever needs a store lookup, so testServer's nil store is
+// safe to use here. The case of a presented certificate whose serial must be
+// resolved against a real registry — unknown, revoked, or active — lives in
+// TestRequireDeviceResolvesRealDevice, which uses testServerWithStore.
 func TestRequireDeviceRejectsWithoutCertificate(t *testing.T) {
 	t.Parallel()
 
@@ -194,10 +274,6 @@ func TestRequireDeviceRejectsWithoutCertificate(t *testing.T) {
 	}{
 		{name: "plain connection", tlsS: nil},
 		{name: "tls with no peer certificates", tlsS: &tls.ConnectionState{}},
-		{
-			name: "tls with a peer certificate but no CA to verify it",
-			tlsS: &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}},
-		},
 	}
 
 	for _, tt := range tests {
@@ -207,7 +283,7 @@ func TestRequireDeviceRejectsWithoutCertificate(t *testing.T) {
 			// Arrange
 			s := testServer(t, policy.ModeDefault)
 			guarded := s.requireDevice(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				t.Error("guarded handler ran; Phase 1 must reject every request")
+				t.Error("guarded handler ran; no client certificate was presented")
 				w.WriteHeader(http.StatusOK)
 			}))
 			req := httptest.NewRequest(http.MethodGet, "/v1/protected", nil)
@@ -229,6 +305,115 @@ func TestRequireDeviceRejectsWithoutCertificate(t *testing.T) {
 				t.Errorf("error = %q, want the terse %q", body.Error, msgClientCertRequired)
 			}
 		})
+	}
+}
+
+// TestRequireDeviceResolvesRealDevice extends the requireDevice table above
+// with cases that need a live *state.Store: an unknown serial and a revoked
+// device must both fail with the identical terse 401 the no-certificate case
+// produces, while an active device's certificate must let the wrapped
+// handler run and hand it the resolved Device via DeviceFrom.
+func TestRequireDeviceResolvesRealDevice(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a store with one active and one revoked device, each with a
+	// certificate serial recorded against it.
+	s, st := testServerWithStore(t)
+	ctx := context.Background()
+
+	active, err := st.CreateDevice(ctx, "active device")
+	if err != nil {
+		t.Fatalf("CreateDevice(active): %v", err)
+	}
+	activeSerial := big.NewInt(101)
+	notBefore := time.Now()
+	notAfter := notBefore.Add(90 * 24 * time.Hour)
+	if err := st.RecordDeviceCert(ctx, active.ID, activeSerial.Text(16), notBefore, notAfter); err != nil {
+		t.Fatalf("RecordDeviceCert(active): %v", err)
+	}
+
+	revoked, err := st.CreateDevice(ctx, "revoked device")
+	if err != nil {
+		t.Fatalf("CreateDevice(revoked): %v", err)
+	}
+	revokedSerial := big.NewInt(202)
+	if err := st.RecordDeviceCert(ctx, revoked.ID, revokedSerial.Text(16), notBefore, notAfter); err != nil {
+		t.Fatalf("RecordDeviceCert(revoked): %v", err)
+	}
+	if err := st.RevokeDevice(ctx, revoked.ID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+
+	unknownSerial := big.NewInt(303)
+
+	tests := []struct {
+		name       string
+		tlsS       *tls.ConnectionState
+		wantStatus int
+		wantRun    bool
+	}{
+		{name: "no client certificate", tlsS: nil, wantStatus: http.StatusUnauthorized},
+		{name: "unknown certificate serial", tlsS: peerCertWithSerial(unknownSerial), wantStatus: http.StatusUnauthorized},
+		{name: "revoked device", tlsS: peerCertWithSerial(revokedSerial), wantStatus: http.StatusUnauthorized},
+		{name: "active device", tlsS: peerCertWithSerial(activeSerial), wantStatus: http.StatusOK, wantRun: true},
+	}
+
+	var rejectionBodies []string
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not run in parallel: rejectionBodies is collected across cases.
+
+			// Arrange
+			var ran bool
+			var gotDevice state.Device
+			var gotOK bool
+			guarded := s.requireDevice(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ran = true
+				gotDevice, gotOK = DeviceFrom(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/v1/protected", nil)
+			req.TLS = tt.tlsS
+			rec := httptest.NewRecorder()
+
+			// Act
+			guarded.ServeHTTP(rec, req)
+
+			// Assert
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if ran != tt.wantRun {
+				t.Errorf("handler ran = %v, want %v", ran, tt.wantRun)
+			}
+			if tt.wantRun {
+				if !gotOK {
+					t.Error("DeviceFrom returned ok=false for a guarded handler behind an active device")
+				}
+				if gotDevice.ID != active.ID {
+					t.Errorf("DeviceFrom device id = %q, want %q", gotDevice.ID, active.ID)
+				}
+			} else {
+				var body errorBody
+				if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				if body.Error != msgClientCertRequired {
+					t.Errorf("error = %q, want the terse %q", body.Error, msgClientCertRequired)
+				}
+				rejectionBodies = append(rejectionBodies, rec.Body.String())
+			}
+		})
+	}
+
+	// Assert — every rejection reason must be byte-identical: the client
+	// cannot distinguish "no certificate" from "unknown serial" from
+	// "revoked device".
+	for i := 1; i < len(rejectionBodies); i++ {
+		if rejectionBodies[i] != rejectionBodies[0] {
+			t.Errorf("rejection body %d = %q, want byte-identical to %q", i, rejectionBodies[i], rejectionBodies[0])
+		}
 	}
 }
 
