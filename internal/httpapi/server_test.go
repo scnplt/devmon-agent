@@ -28,7 +28,7 @@ func testTLSConfig(t *testing.T) *tls.Config {
 func runnableServer(t *testing.T, addr string) *Server {
 	t.Helper()
 	cfg := config.Config{StateDir: t.TempDir(), ListenAddr: addr, PolicyMode: policy.ModeDefault}
-	return NewServer(cfg, nil, testTLSConfig(t), testLogger())
+	return NewServer(cfg, nil, nil, testTLSConfig(t), testLogger())
 }
 
 // TestRunShutsDownCleanly is the graceful-shutdown contract: SIGTERM cancels the

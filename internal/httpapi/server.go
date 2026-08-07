@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/scnplt/devmon-agent/internal/certs"
 	"github.com/scnplt/devmon-agent/internal/config"
 	"github.com/scnplt/devmon-agent/internal/state"
 )
@@ -37,14 +38,20 @@ const (
 type Server struct {
 	cfg  config.Config
 	st   *state.Store
+	ca   *certs.CA
 	log  *slog.Logger
 	http *http.Server
 }
 
 // NewServer wires the API. tlsCfg carries the server certificate, so the
-// listener never re-reads it from disk.
-func NewServer(cfg config.Config, st *state.Store, tlsCfg *tls.Config, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, st: st, log: log}
+// listener never re-reads it from disk. ca is retained on Server — not just
+// its fingerprint — because guarded routes added in a later phase issue and
+// renew device certificates from it; the status handler derives the public
+// fingerprint from it on each call. ca may be nil in tests that do not
+// exercise certificate issuance; handleStatus tolerates that by serving an
+// empty fingerprint.
+func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, tlsCfg *tls.Config, log *slog.Logger) *Server {
+	s := &Server{cfg: cfg, st: st, ca: ca, log: log}
 
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -70,6 +77,15 @@ func (s *Server) routes() http.Handler {
 	// The Go 1.22+ method pattern matters. Registering "/v1/status" alone would
 	// also match POST, DELETE, and everything else.
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
+
+	// Unauthenticated by design (D2): the device has no certificate yet, so
+	// the pairing code itself is what authenticates this one call.
+	mux.HandleFunc("POST /v1/pair", s.handlePair)
+
+	// Guarded: both act on the calling device's own identity, resolved by
+	// requireDevice from its client certificate — never from the request.
+	mux.Handle("POST /v1/device/renew", s.requireDevice(http.HandlerFunc(s.handleRenew)))
+	mux.Handle("DELETE /v1/device/self", s.requireDevice(http.HandlerFunc(s.handleUnpairSelf)))
 
 	return s.withRecovery(s.withRequestLog(mux))
 }

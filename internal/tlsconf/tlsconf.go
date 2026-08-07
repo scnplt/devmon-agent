@@ -9,8 +9,9 @@ import (
 
 // Build returns the TLS config for the agent's single listening port.
 //
-// clientCAs is nil in Phase 1, because no CA exists yet, and non-nil from
-// Phase 2 onward.
+// clientCAs is the agent's own certificate authority pool (internal/certs),
+// used to verify a device's client certificate at the handshake. It is nil
+// only in tests that do not exercise mTLS.
 //
 // When clientCAs is non-nil the mode is VerifyClientCertIfGiven, deliberately
 // NOT RequireAndVerifyClientCert. ClientAuth is a property of the LISTENER,
