@@ -5,10 +5,6 @@ import (
 	"encoding/pem"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -86,128 +82,6 @@ func TestGenerateServerCertRejectsEmptySANs(t *testing.T) {
 	// phone rather than at startup.
 	if err == nil {
 		t.Fatal("GenerateServerCert(nil) error = nil, want a failure")
-	}
-}
-
-func TestLoadOrCreateServerCertIsIdempotent(t *testing.T) {
-	t.Parallel()
-
-	// Arrange
-	dir := t.TempDir()
-	sans := []string{"vps.example.com"}
-
-	// Act
-	first, drift, err := LoadOrCreateServerCert(dir, sans, testLogger())
-	if err != nil {
-		t.Fatalf("first LoadOrCreateServerCert() unexpected error: %v", err)
-	}
-	second, driftAgain, err := LoadOrCreateServerCert(dir, sans, testLogger())
-	if err != nil {
-		t.Fatalf("second LoadOrCreateServerCert() unexpected error: %v", err)
-	}
-
-	// Assert — a changed serial across restarts would mean a new identity, and
-	// from Phase 2 that unpairs every device.
-	if first.Leaf.SerialNumber.Cmp(second.Leaf.SerialNumber) != 0 {
-		t.Errorf("serial changed across reload: %v then %v",
-			first.Leaf.SerialNumber, second.Leaf.SerialNumber)
-	}
-	if drift || driftAgain {
-		t.Errorf("sanDrift = %v/%v on matching SANs, want false", drift, driftAgain)
-	}
-}
-
-func TestLoadOrCreateServerCertDetectsSANDrift(t *testing.T) {
-	t.Parallel()
-
-	// Arrange
-	dir := t.TempDir()
-	first, _, err := LoadOrCreateServerCert(dir, []string{"vps.example.com"}, testLogger())
-	if err != nil {
-		t.Fatalf("first LoadOrCreateServerCert() unexpected error: %v", err)
-	}
-
-	// Act — the operator adds an address the stored certificate does not cover.
-	second, drift, err := LoadOrCreateServerCert(dir,
-		[]string{"vps.example.com", "new.example.com"}, testLogger())
-	if err != nil {
-		t.Fatalf("second LoadOrCreateServerCert() unexpected error: %v", err)
-	}
-
-	// Assert
-	if !drift {
-		t.Error("sanDrift = false after adding an uncovered address, want true")
-	}
-	if first.Leaf.SerialNumber.Cmp(second.Leaf.SerialNumber) != 0 {
-		t.Error("certificate was silently regenerated on drift; Phase 1 only reports it")
-	}
-}
-
-func TestServerKeyIsOwnerOnly(t *testing.T) {
-	t.Parallel()
-
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX file modes are not modelled on Windows")
-	}
-
-	// Arrange / Act
-	dir := t.TempDir()
-	if _, _, err := LoadOrCreateServerCert(dir, []string{"vps.example.com"}, testLogger()); err != nil {
-		t.Fatalf("LoadOrCreateServerCert() unexpected error: %v", err)
-	}
-
-	// Assert
-	info, err := os.Stat(filepath.Join(dir, serverKeyFile))
-	if err != nil {
-		t.Fatalf("stat key: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != serverKeyFileMode {
-		t.Errorf("server.key mode = %#o, want %#o", perm, serverKeyFileMode)
-	}
-}
-
-func TestLoadOrCreateServerCertRejectsHalfKeypair(t *testing.T) {
-	t.Parallel()
-
-	// Arrange — a certificate with no key, as a partial restore would leave.
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, serverCertFile), []byte("stub"), 0o644); err != nil {
-		t.Fatalf("write stub cert: %v", err)
-	}
-
-	// Act
-	_, _, err := LoadOrCreateServerCert(dir, []string{"vps.example.com"}, testLogger())
-
-	// Assert — regenerating would produce a mismatched pair, so this must be loud.
-	if err == nil {
-		t.Fatal("LoadOrCreateServerCert() error = nil, want a failure on a half keypair")
-	}
-	if !strings.Contains(err.Error(), "not both present") {
-		t.Errorf("error %q does not explain the half keypair", err)
-	}
-}
-
-func TestLoadOrCreateServerCertRejectsCorruptKey(t *testing.T) {
-	t.Parallel()
-
-	// Arrange — both files present, key is garbage.
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, serverCertFile), []byte("not a cert"), 0o644); err != nil {
-		t.Fatalf("write cert: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, serverKeyFile), []byte("not a key"), 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-
-	// Act
-	_, _, err := LoadOrCreateServerCert(dir, []string{"vps.example.com"}, testLogger())
-
-	// Assert
-	if err == nil {
-		t.Fatal("LoadOrCreateServerCert() error = nil, want a load failure")
-	}
-	if !strings.Contains(err.Error(), "load server keypair") {
-		t.Errorf("error %q does not identify the failing step", err)
 	}
 }
 

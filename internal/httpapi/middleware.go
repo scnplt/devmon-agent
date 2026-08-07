@@ -1,36 +1,86 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/scnplt/devmon-agent/internal/state"
 )
 
 // msgClientCertRequired is the terse rejection served to any unauthenticated
 // caller on a guarded route. It says nothing about why.
 const msgClientCertRequired = "client certificate required"
 
-// requireDevice rejects any request without a verified client certificate.
+// deviceCtxKey is the context key under which requireDevice stores the
+// resolved Device. An empty struct type, not a string: a string key can
+// collide with another package's context value, an empty struct type cannot.
+type deviceCtxKey struct{}
+
+// DeviceFrom returns the Device requireDevice resolved for this request, if
+// any. Handlers behind requireDevice may call this without a second lookup.
+func DeviceFrom(ctx context.Context) (state.Device, bool) {
+	device, ok := ctx.Value(deviceCtxKey{}).(state.Device)
+	return device, ok
+}
+
+// requireDevice rejects any request without a verified client certificate
+// belonging to an active, registered device.
 //
 // This is the other half of the single-port design: because the listener uses
 // VerifyClientCertIfGiven rather than RequireAndVerifyClientCert (see
 // internal/tlsconf), a connection with no client certificate reaches HTTP. This
 // middleware is what stops it from reaching a protected route.
 //
-// Phase 1 has no CA, so every request is rejected — and no route is wrapped in
-// it yet, because none exists. Phase 2 fills in the device lookup against
-// state.Store and starts guarding real handlers.
+// Every rejection reason — no certificate, unknown serial, revoked device —
+// answers with the identical msgClientCertRequired body and 401 status. The
+// real reason is logged for the operator; a scanner probing the port learns
+// nothing that distinguishes the cases.
 func (s *Server) requireDevice(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 			s.writeError(w, http.StatusUnauthorized, msgClientCertRequired)
 			return
 		}
-		// Phase 2: resolve r.TLS.PeerCertificates[0] to a non-revoked device and
-		// call next. Until then a presented certificate cannot be verified
-		// against anything, so it fails closed.
-		_ = next
-		s.writeError(w, http.StatusUnauthorized, msgClientCertRequired)
+
+		serial := r.TLS.PeerCertificates[0].SerialNumber.Text(16)
+
+		device, err := s.st.DeviceByCertSerial(r.Context(), serial)
+		if err != nil {
+			if !errors.Is(err, state.ErrDeviceNotFound) {
+				s.log.Error("resolve device by certificate serial",
+					slog.String("serial", serial),
+					slog.Any("err", err),
+				)
+			} else {
+				s.log.Warn("rejected request with unknown certificate serial",
+					slog.String("serial", serial),
+				)
+			}
+			s.writeError(w, http.StatusUnauthorized, msgClientCertRequired)
+			return
+		}
+		if device.IsRevoked() {
+			s.log.Warn("rejected request from revoked device",
+				slog.String("device_id", device.ID),
+			)
+			s.writeError(w, http.StatusUnauthorized, msgClientCertRequired)
+			return
+		}
+
+		// A failed last-seen write is bookkeeping, not authorisation — it must
+		// never fail the request.
+		if err := s.st.TouchDevice(r.Context(), device.ID); err != nil {
+			s.log.Warn("touch device last seen",
+				slog.String("device_id", device.ID),
+				slog.Any("err", err),
+			)
+		}
+
+		ctx := context.WithValue(r.Context(), deviceCtxKey{}, device)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
