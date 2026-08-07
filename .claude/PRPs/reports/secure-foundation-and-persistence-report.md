@@ -163,12 +163,21 @@ not only in unit tests.
 
 ## Issues Encountered
 
-- **`-race` is unavailable on this machine** (no C toolchain on PATH; `gcc` not
-  found). All tests were run without it locally. The `make test-race` target is
-  fixed and correct, but the race-detector run itself is **outstanding** and
-  should be executed in CI or on a Linux host before merge. The concurrency test
-  that most needs it — `state.TestConcurrentStores`, two `Store` handles writing
-  simultaneously — passes without the detector but has not been race-verified.
+- **`-race` was initially unavailable on this machine** (no C toolchain on PATH;
+  `gcc` not found), so the first pass of tests ran without the detector.
+  **Resolved:** MinGW-w64 (WinLibs, GCC 16.1.0, `x86_64-w64-mingw32`, UCRT) was
+  installed and the full suite re-run with `CGO_ENABLED=1 go test -race`. All
+  packages pass and **no data races were reported**, including
+  `state.TestConcurrentStores` — two `Store` handles writing simultaneously — which
+  was the test most in need of the detector. Coverage under `-race` is 84.5%,
+  identical to the non-race run. `./cmd/...` passes under `-race` as well.
+
+  Note for anyone reproducing this on Windows: the classic mingw.org "MinGW
+  Installation Manager" toolchain does **not** work. It targets `i686` only, cgo
+  needs a 64-bit compiler for `windows/amd64`, and dropping to `GOARCH=386` is not
+  an escape hatch because the race detector does not support `windows/386` at all.
+  A MinGW-w64 distribution (WinLibs, MSYS2 `mingw-w64-ucrt-x86_64-gcc`, or
+  w64devkit) is required.
 - **`gosec` G304** in `internal/certs`. Fixed genuinely rather than suppressed;
   see Deviation 2.
 - **Git Bash mangles container paths** on Windows (`/var/run/docker.sock` became
@@ -270,13 +279,14 @@ future base-image regression cannot silently reintroduce this.
 
 ## Next Steps
 
-- [ ] **Run `make test-race` on a Linux host or in CI** — the only validation
-      command from the plan not executed locally.
+- [x] **Run `make test-race`** — done. Executed locally after installing MinGW-w64;
+      all packages pass with no data races, and the `cover` target reports 84.5%.
+      Both Makefile targets are now verified end to end, not just believed correct.
 - [ ] Upgrade the local Go toolchain to ≥1.26.5 and consider pinning the
       Dockerfile builder to an exact patch version.
 - [ ] Measure the retention bound under sustained load (`DEVMON_LOG_MAX_TOTAL_MB=8`,
       `DEVMON_LOG_LEVEL=debug`) and record the numbers; the PRD's open question
       about default log budgets is answerable only with that measurement.
 - [ ] Code review via `/ecc:code-review` or `/ecc:go-review`
-- [ ] Commit and open a PR
+- [x] Commit and open a PR — PR #2, `feat/secure-foundation-and-persistence` -> `dev`
 - [ ] `/ecc:prp-plan` for Phase 2 — identity, pairing & revocation
