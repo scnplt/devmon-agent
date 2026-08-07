@@ -19,6 +19,28 @@ used in chat. This is non-negotiable and applies to:
 
 If the user writes in another language, still produce these artifacts in English.
 
+## Model routing (MANDATORY)
+
+Planning runs on Opus, implementation runs on Sonnet. The session model stays Opus so the
+main loop can orchestrate and review; it delegates rather than doing the work itself.
+
+| Work | Who | Model |
+|------|-----|-------|
+| Phase plan files (`.claude/PRPs/plans/*.plan.md`), architecture, PRD changes | `phase-planner` agent, or the main session | Opus |
+| Production Go code and its tests (`cmd/`, `internal/`, build files) | `go-implementer` agent — one plan task per invocation | Sonnet |
+| Review of written code | `ecc:go-reviewer`, `ecc:security-reviewer` | Sonnet |
+
+Rules:
+
+- **The main session does not write production Go code.** Delegate each plan task to
+  `go-implementer` and verify its reported gate output. Independent tasks go out in parallel.
+- Exception: a one-line mechanical fix the main session is already holding in context
+  (a typo, a rename) may be edited directly rather than paying a delegation round trip.
+- Docs, config, and `.claude/**` files are main-session work.
+- In a `Workflow` script, set the tier explicitly per stage:
+  `agent(prompt, {model: 'opus'})` for planning stages, `{model: 'sonnet'}` for
+  implementation stages — a workflow agent otherwise inherits the Opus session model.
+
 ## Branching
 
 `main` = production/release, `dev` = integration, every feature on its own
