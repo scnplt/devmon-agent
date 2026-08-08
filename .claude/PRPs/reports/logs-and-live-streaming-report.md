@@ -125,27 +125,69 @@ guard the plan called for without naming the file.
 | `internal/httpapi/logs_test.go` | Both routes end to end: status mapping, tail bounds, lazy-header 404, terminal error frame, slot exhaustion and release, keepalive race under `-race`, goroutine leak, field counts, log hygiene, error-body leakage |
 | `internal/httpapi/server_test.go` | `statusRecorder` flushability, route precedence between `/{id}`, `/{id}/logs`, `/{id}/logs/stream` |
 
+## End-to-End Validation
+
+Environment: `devmon-agent:phase4` built from this branch, running in its own container against a
+real Engine (29.6.1), with a genuinely paired device (EC keypair → CSR → `/v1/pair` → certificate;
+the returned CA fingerprint `28a36b3d…` matched the one the agent logged at first start). The client
+ran from a second container on the same network so the TLS path was real rather than mocked. As in
+Phase 3, the Engine was reached through a socat proxy for the failure test so it could be cut
+*while the agent stayed running*.
+
+| Check | Result |
+|---|---|
+| **Stream across the 30s `WriteTimeout`** | 70s continuous, 142 lines, ended only by the client's own timeout — D7 holds on a real server |
+| **Silent container** | `content-type: text/event-stream`, all SSE headers present, keepalive every 20s, connection open at 65s — **H1's fix confirmed on host** |
+| Historical `?tail=20` | 20 items, `truncated:false`, 3 keys per ordinary line |
+| stdout/stderr interleaving | Both streams present and in write order — D4's reason for the hand-rolled reader |
+| TTY container | Lines labelled `stdout`, no header bytes anywhere |
+| Oversized line | `truncated:true`, 8161 visible chars (8192 raw, less the 31-byte timestamp prefix) |
+| Failure codes | 404 unknown, 400 bad `since`, 400 invalid ref, 401 no cert, 405 `POST` |
+| `?tail=abc` | 200, falls back to the default |
+| `?since=` in the future | 200 with `items:[]`, not an error |
+| 9th concurrent stream | 503 `too many concurrent log streams`; 200 again after one is released |
+| Slot leak on error paths | 12 consecutive 404s, then a valid stream still 200 — no leak |
+| **Resume from cursor** | Boundary line repeated exactly once — the documented at-least-once contract (D6) |
+| Container exits mid-stream | Clean close, all lines delivered, **zero** error frames, curl exit 0 |
+| **Engine death mid-stream** | Response already 200, then a terminal `event: error` `docker engine unavailable`; agent up, 0 restarts — D12's post-stream path |
+| 20 abandoned streams | Slots all released, fresh stream 200, agent up, 0 restarts |
+| `read-only` policy mode | Both routes 200, stream delivers — `OpLogs` is `ModeReadOnly` |
+| Device revoked mid-session | Both routes 401 immediately, no agent restart |
+| **Log hygiene (D16)** | A container printing `DB_PASSWORD=hunter2` returned it in full to the client and left **zero** occurrences in `agent.log` — and zero anywhere in `/var/lib/devmon`, `devmon.db` included |
+
+### One new finding: a client disconnect logs at ERROR
+
+The observation carried out of the code review is now measured. Twenty-one abandoned streams
+produced twenty-one `ERROR` lines, all identical:
+
+```
+level=ERROR msg="stream container logs: write terminal error frame" err="flush sse frame: client disconnected"
+```
+
+The behaviour is correct — the stream unwinds, the slot is released, the agent is unharmed — but
+closing a log view is the most ordinary thing a user does, and each one writes an ERROR to a log
+that is size-capped and rotated (`DEVMON_LOG_MAX_TOTAL_MB`). On a phone that opens and closes log
+views routinely this becomes the dominant line in `agent.log`, which both burns the operator's log
+budget and buries the failures they would actually want to find.
+
+Severity is operational rather than correctness or security. The fix is small: when the stream error
+is already a client-gone error, skip the terminal frame instead of attempting a write that cannot
+land, or log the failed write at DEBUG. Recorded here rather than fixed, so the decision is a
+deliberate one.
+
 ## Outstanding validation
 
-None of these can be executed from this environment — they need a real Docker host and, for two of
-them, a real phone on mobile data. They are the plan's own Manual Validation checklist and the
-remaining Phase 4 acceptance criteria:
+Everything on the plan's Manual Validation checklist has now been run against a real Engine except
+the two items that need an actual device on a mobile network:
 
-- [ ] The 30-second test: a stream still delivering at 60s and at 5 minutes (proves D7/D8 on a real server)
-- [ ] The 30-minute endurance run across a network handover — the PRD's Phase 4 success signal
-- [ ] TTY container: no stray header bytes
-- [ ] Interleaving: a known alternating stdout/stderr order preserved
-- [ ] Oversized line cut at 8 KiB with no agent memory spike
-- [ ] Silent container: keepalive comments visible under `curl -N`
-- [ ] Abandoned stream: goroutine and connection counts return to baseline
-- [ ] Container exit mid-stream: clean end, no error frame
-- [ ] Engine death mid-stream: terminal `event: error`, agent stays up
-- [ ] `DEVMON_POLICY_MODE=read-only`: both routes still 200
-- [ ] Revocation mid-stream: reconnect refused 401 without a restart
-- [ ] Log hygiene: a secret printed by a container never appears in `agent.log`
+- [ ] **The 30-minute endurance run** — the PRD's Phase 4 success signal. A 70-second run passed,
+      which proves the write-deadline fix; it does not prove a half-hour session.
+- [ ] **Wi-Fi to mobile-data handover** — the app reconnects with `?since=<last id>` and the log
+      resumes with at most one repeated line. Resume itself is verified (the boundary line repeats
+      exactly once); what is unverified is the app-side reconnect across a real network change.
 
-The last one is already enforced by `TestAgentLogNeverCarriesLineContent`, but the on-host check is
-worth running against a real logger and a real rotation file.
+Both need the Android client, so they belong with its first integration rather than with this
+branch.
 
 ## Observations for a future phase
 
