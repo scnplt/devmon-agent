@@ -103,12 +103,18 @@ Each of these was checked against the source directly, not accepted on a reviewe
 | Tests (`go test ./... -race`) | Pass |
 | Coverage `./internal/...` | Pass — 85.5% (floor 80%) |
 | Build (`CGO_ENABLED=0`) | Pass |
-| `golangci-lint` | **Skipped — not installed** |
-| `gosec` | **Skipped — not installed** |
+| `golangci-lint` (v2.12.2) | Pass — `0 issues` repo-wide |
+| `gosec` | Pass — `gosec ./...` → `0 issues`, 34 files, 4,468 lines |
 
-`golangci-lint` and `gosec` are named in the plan's validation section and could not be run on
-this machine. They should run in CI or locally before merge; this review does not substitute
-for them.
+Both were run after the initial review, once the tools were installed.
+
+Worth stating precisely, because the two tools disagree at first glance: `gosec ./...` skips
+`_test.go` files by default. `gosec -tests ./...` reports 5 findings and
+`golangci-lint --enable gosec` reports 4 of the same set. All are in Phase 1–2 test files this
+phase never touched — `certs/ca_test.go:346,367` and `certs/store_test.go:141,163` (G306,
+fixtures writing `0o644` into a temp dir), `state/pairing_test.go:126` (G115,
+`string(rune('a'+n))`). Production code is clean under both tools. Left out of this PR to avoid
+widening the diff; worth a separate cleanup.
 
 ## Files Reviewed
 
@@ -120,7 +126,8 @@ Docs: `README.md`, `go.mod`
 
 ## Recommendation
 
-Approve for merge into `dev` once `golangci-lint` and `gosec` have run clean, and once the
-manual validation checklist has been worked against a host with a live Docker daemon — in
-particular the `-e DB_PASSWORD=hunter2` end-to-end secret check, which is the one assertion
-that closes the loop on this phase's central risk. M4 needs a decision but does not block.
+Approve for merge into `dev` once the manual validation checklist has been worked against a host
+with a live Docker daemon — in particular the `-e DB_PASSWORD=hunter2` end-to-end secret check,
+which is the one assertion that closes the loop on this phase's central risk. `golangci-lint`
+and `gosec` have since run clean against this phase's code. M4 needs a decision but does not
+block.

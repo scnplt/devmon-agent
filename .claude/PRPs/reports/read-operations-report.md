@@ -38,16 +38,32 @@ at any nesting depth.
 | Level | Status | Notes |
 |---|---|---|
 | Static analysis (`gofmt`, `go vet`) | Pass | `go vet ./...` clean; new files gofmt-clean |
-| Lint (`golangci-lint`) | **Not run** | Not installed on this machine |
-| Security scan (`gosec`) | **Not run** | Not installed on this machine |
+| Lint (`golangci-lint`) | Pass | v2.12.2, default linter set, `0 issues` repo-wide |
+| Security scan (`gosec`) | Pass | `gosec ./...` → **0 issues**, 34 files, 4,468 lines |
 | Unit tests | Pass | `go test ./internal/... -race` all green |
 | Coverage | Pass | 85.4% on `./internal/...`, floor is 80% |
 | Build | Pass | `CGO_ENABLED=0` static binary, 18.9 MB |
 | Integration / E2E | **Not run** | Requires a real host with a live Docker daemon |
 | Edge cases | Pass (unit level) | Nil-pointer, truncation, empty-list, traversal all covered |
 
-Per-package coverage: certs 79.1, config 90.9, dockerx 94.1, httpapi 84.8, logging 84.6,
+Per-package coverage: certs 79.1, config 90.9, dockerx 95.2, httpapi 84.8, logging 84.6,
 policy 100, state 80.2, tlsconf 100.
+
+**On the two security-scan numbers.** `gosec ./...` — the command in the Makefile and this plan —
+reports **0 issues**, because gosec skips `_test.go` files unless `-tests` is passed. Running
+`gosec -tests ./...` surfaces 5 findings, and `golangci-lint --enable gosec` surfaces 4 of the
+same set (it applies its own severity filtering). Every one of them is in a Phase 1–2 test file
+this phase never touched:
+
+| File | Rule | Note |
+|---|---|---|
+| `internal/certs/ca_test.go:346,367` | G306 | Fixture writes a stub file with `0o644` into a temp dir |
+| `internal/certs/store_test.go:141,163` | G306 | Same |
+| `internal/state/pairing_test.go:126` | G115 | `string(rune('a'+n))` int→rune conversion in a test loop |
+
+Production code is clean under both tools. The test-file findings are left alone deliberately —
+fixing them here would widen this PR beyond the eight read routes — but they are worth a small
+separate cleanup so that `gosec -tests` is also clean.
 
 ## Files Changed
 
@@ -156,14 +172,15 @@ appears in a `VolumeSummary`. A field-level assertion would miss a future embedd
 - [x] No response DTO carries env vars or volume driver options, proven by marshalled-JSON tests
 - [x] `ErrNotFound` → 404, `ErrInvalidRef` → 400, all other Engine failures → 502; no 500 from a read route
 - [x] Lists capped at 500 with an honest `truncated` flag; empty list marshals as `[]`
-- [x] `gofmt`, `go vet` clean — **`golangci-lint` and `gosec` not run (not installed)**
+- [x] `gofmt`, `go vet`, `golangci-lint`, `gosec` all clean for this phase's code
 - [x] `./internal/...` coverage 85.4% ≥ 80%
 - [ ] **A paired client retrieves accurate data on a host with real workloads** — not verified;
       requires a live daemon. This is the PRD's Phase 3 success signal and remains open.
 
 ## Next Steps
 
-- [ ] Run `golangci-lint run ./...` and `gosec ./...` once installed, or rely on CI
+- [x] ~~Run `golangci-lint` and `gosec`~~ — done, both clean
+- [ ] Separate cleanup commit for the five `gosec -tests` findings in Phase 1–2 test files
 - [ ] Work the plan's Manual Validation checklist against a real host — in particular:
       start a container with `-e DB_PASSWORD=hunter2` and confirm the string appears
       nowhere in the API response; stop the daemon and confirm 502 with the agent still up
