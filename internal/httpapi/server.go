@@ -12,6 +12,7 @@ import (
 
 	"github.com/scnplt/devmon-agent/internal/certs"
 	"github.com/scnplt/devmon-agent/internal/config"
+	"github.com/scnplt/devmon-agent/internal/policy"
 	"github.com/scnplt/devmon-agent/internal/state"
 )
 
@@ -36,9 +37,11 @@ const (
 
 // Server owns the HTTPS listener and its routes.
 type Server struct {
-	cfg  config.Config
-	st   *state.Store
-	ca   *certs.CA
+	cfg config.Config
+	st  *state.Store
+	ca  *certs.CA
+	// dc is the Docker read surface the eight read routes depend on.
+	dc   DockerReader
 	log  *slog.Logger
 	http *http.Server
 }
@@ -49,9 +52,11 @@ type Server struct {
 // renew device certificates from it; the status handler derives the public
 // fingerprint from it on each call. ca may be nil in tests that do not
 // exercise certificate issuance; handleStatus tolerates that by serving an
-// empty fingerprint.
-func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, tlsCfg *tls.Config, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, st: st, ca: ca, log: log}
+// empty fingerprint. dc may likewise be nil in tests that do not exercise the
+// Docker read routes; every read handler tolerates that by serving 502
+// instead of panicking.
+func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
+	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log}
 
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -86,6 +91,20 @@ func (s *Server) routes() http.Handler {
 	// requireDevice from its client certificate — never from the request.
 	mux.Handle("POST /v1/device/renew", s.requireDevice(http.HandlerFunc(s.handleRenew)))
 	mux.Handle("DELETE /v1/device/self", s.requireDevice(http.HandlerFunc(s.handleUnpairSelf)))
+
+	// Read operations. Every one is guarded twice: requireDevice proves who is
+	// calling, requireOp proves the host's startup policy permits it.
+	read := func(pattern string, h http.HandlerFunc) {
+		mux.Handle(pattern, s.requireDevice(s.requireOp(policy.OpRead, h)))
+	}
+	read("GET /v1/containers", s.handleListContainers)
+	read("GET /v1/containers/{id}", s.handleInspectContainer)
+	read("GET /v1/images", s.handleListImages)
+	read("GET /v1/images/{id}", s.handleInspectImage)
+	read("GET /v1/networks", s.handleListNetworks)
+	read("GET /v1/networks/{id}", s.handleInspectNetwork)
+	read("GET /v1/volumes", s.handleListVolumes)
+	read("GET /v1/volumes/{name}", s.handleInspectVolume)
 
 	return s.withRecovery(s.withRequestLog(mux))
 }
