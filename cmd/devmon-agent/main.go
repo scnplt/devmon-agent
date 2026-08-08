@@ -161,7 +161,7 @@ func serve(ctx context.Context, cfg config.Config, sink *logging.Sink, log *slog
 	// Client CAs come from the agent's own certificate authority: a device's
 	// client certificate is verified against ca.Pool() at the handshake.
 	tlsCfg := tlsconf.Build(cert, ca.Pool())
-	srv := httpapi.NewServer(cfg, st, ca, tlsCfg, log)
+	srv := httpapi.NewServer(cfg, st, ca, dc, tlsCfg, log)
 	pruner := state.NewPruner(st, cfg.AuditMaxAge, cfg.AuditMaxRows, log)
 
 	log.Info("agent listening",

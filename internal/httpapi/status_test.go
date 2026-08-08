@@ -29,7 +29,7 @@ func testLogger() *slog.Logger {
 func testServer(t *testing.T, mode policy.Mode) *Server {
 	t.Helper()
 	cfg := config.Config{StateDir: t.TempDir(), ListenAddr: ":8443", PolicyMode: mode}
-	return NewServer(cfg, nil, nil, nil, testLogger())
+	return NewServer(cfg, nil, nil, nil, nil, testLogger())
 }
 
 // testServerWithCA is a second helper, additive to testServer, for tests that
@@ -43,7 +43,7 @@ func testServerWithCA(t *testing.T, mode policy.Mode) (*Server, *certs.CA) {
 	if err != nil {
 		t.Fatalf("LoadOrCreateCA: %v", err)
 	}
-	return NewServer(cfg, nil, ca, nil, testLogger()), ca
+	return NewServer(cfg, nil, ca, nil, nil, testLogger()), ca
 }
 
 // testServerWithStore is a third helper, additive to testServer and
@@ -59,7 +59,7 @@ func testServerWithStore(t *testing.T) (*Server, *state.Store) {
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewServer(cfg, st, nil, nil, testLogger()), st
+	return NewServer(cfg, st, nil, nil, nil, testLogger()), st
 }
 
 // peerCertWithSerial builds a *tls.ConnectionState carrying a single peer
@@ -247,7 +247,7 @@ func TestUnknownPathLeaksNothing(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	// Act
-	s.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/containers", nil))
+	s.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/system/info", nil))
 
 	// Assert
 	if rec.Code != http.StatusNotFound {

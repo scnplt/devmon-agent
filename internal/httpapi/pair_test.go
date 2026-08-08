@@ -38,7 +38,7 @@ func testServerForPairing(t *testing.T) (*Server, *state.Store, *certs.CA) {
 	if err != nil {
 		t.Fatalf("LoadOrCreateCA: %v", err)
 	}
-	return NewServer(cfg, st, ca, nil, testLogger()), st, ca
+	return NewServer(cfg, st, ca, nil, nil, testLogger()), st, ca
 }
 
 // generateCSRPEM builds a PEM-encoded PKCS#10 CSR from a fresh EC P-256 key,
