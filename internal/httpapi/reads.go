@@ -39,14 +39,17 @@ type VolumeReader interface {
 	InspectVolume(ctx context.Context, ref string) (dockerx.VolumeSummary, error)
 }
 
-// DockerReader is the full read-only surface the eight routes in this file
-// depend on. *dockerx.Client satisfies it; a test fake can satisfy it without
-// a live Engine.
+// DockerReader is the full read-only surface the routes in this file and in
+// logs.go depend on. *dockerx.Client satisfies it; a test fake can satisfy it
+// without a live Engine. LogReader is embedded rather than added as a fifth
+// constructor parameter (D14): NewServer's signature stays untouched, and
+// LogReader remains independently referenceable.
 type DockerReader interface {
 	ContainerReader
 	ImageReader
 	NetworkReader
 	VolumeReader
+	LogReader
 }
 
 // Compile-time proof the concrete client still satisfies the contract. A

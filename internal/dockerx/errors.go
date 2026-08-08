@@ -17,6 +17,12 @@ var ErrNotFound = errors.New("docker object not found")
 // ErrInvalidRef is returned by ValidateRef. It never reaches the Engine.
 var ErrInvalidRef = errors.New("invalid docker object reference")
 
+// ErrInvalidSince is returned when a caller-supplied resume cursor does not
+// parse as a timestamp. Like ErrInvalidRef it never reaches the Engine: the
+// value is interpolated into the Engine's request URL, so it is validated at
+// the agent's boundary rather than trusted to an upstream parser.
+var ErrInvalidSince = errors.New("invalid since timestamp")
+
 // classify maps a raw Engine error onto the package's sentinel errors,
 // wrapping the result with op so a caller can name the failing operation
 // without inspecting the underlying error type.
