@@ -2,11 +2,46 @@ package dockerx
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
 )
+
+// TestErrInvalidSinceIsDistinctSentinel guards against ErrInvalidSince ever
+// being folded into another sentinel (e.g. ErrInvalidRef) by an accidental
+// reuse — the two are raised at different validation points (ref vs. resume
+// cursor) and a caller must be able to tell them apart via errors.Is.
+func TestErrInvalidSinceIsDistinctSentinel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "is itself", err: ErrInvalidSince, want: ErrInvalidSince},
+		{name: "wrapped still matches", err: fmt.Errorf("since param: %w", ErrInvalidSince), want: ErrInvalidSince},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act & Assert
+			if !errors.Is(tt.err, tt.want) {
+				t.Errorf("errors.Is(%v, ErrInvalidSince) = false, want true", tt.err)
+			}
+			if errors.Is(tt.err, ErrInvalidRef) {
+				t.Errorf("errors.Is(%v, ErrInvalidRef) = true, want false", tt.err)
+			}
+			if errors.Is(tt.err, ErrNotFound) {
+				t.Errorf("errors.Is(%v, ErrNotFound) = true, want false", tt.err)
+			}
+		})
+	}
+}
 
 func TestClassify(t *testing.T) {
 	t.Parallel()

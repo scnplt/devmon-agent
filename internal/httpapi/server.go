@@ -33,6 +33,15 @@ const (
 	// Docker's own stop timeout is 10s by default, so this must not be the thing
 	// that turns a clean stop into a SIGKILL.
 	shutdownGrace = 5 * time.Second
+
+	// maxConcurrentStreams bounds simultaneous live log streams. Each holds a
+	// goroutine, an Engine connection, and a socket for its entire life, so an
+	// unbounded count is a file-descriptor exhaustion the agent inflicts on the
+	// host it exists to protect. A constant rather than an env var: the PRD's
+	// rule is that every extra startup setting is surface the operator has to
+	// understand at install time, and eight concurrent log views on one phone is
+	// already beyond any real use.
+	maxConcurrentStreams = 8
 )
 
 // Server owns the HTTPS listener and its routes.
@@ -41,9 +50,14 @@ type Server struct {
 	st  *state.Store
 	ca  *certs.CA
 	// dc is the Docker read surface the eight read routes depend on.
-	dc   DockerReader
-	log  *slog.Logger
-	http *http.Server
+	dc  DockerReader
+	log *slog.Logger
+	// streams bounds concurrent live log streams (D10). Buffered to
+	// maxConcurrentStreams and initialised here rather than lazily in the
+	// handler: a nil channel blocks forever on send and never succeeds on a
+	// non-blocking select, which would answer every stream request with 503.
+	streams chan struct{}
+	http    *http.Server
 }
 
 // NewServer wires the API. tlsCfg carries the server certificate, so the
@@ -56,7 +70,7 @@ type Server struct {
 // Docker read routes; every read handler tolerates that by serving 502
 // instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log}
+	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: make(chan struct{}, maxConcurrentStreams)}
 
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -105,6 +119,14 @@ func (s *Server) routes() http.Handler {
 	read("GET /v1/networks/{id}", s.handleInspectNetwork)
 	read("GET /v1/volumes", s.handleListVolumes)
 	read("GET /v1/volumes/{name}", s.handleInspectVolume)
+
+	// Log routes. Same double guard as the read routes, with policy.OpLogs —
+	// which, like OpRead, every mode permits (see internal/policy/mode.go).
+	logs := func(pattern string, h http.HandlerFunc) {
+		mux.Handle(pattern, s.requireDevice(s.requireOp(policy.OpLogs, h)))
+	}
+	logs("GET /v1/containers/{id}/logs", s.handleContainerLogs)
+	logs("GET /v1/containers/{id}/logs/stream", s.handleStreamContainerLogs)
 
 	return s.withRecovery(s.withRequestLog(mux))
 }
