@@ -47,6 +47,25 @@ Rules:
 `<type>/<slug>` branch cut from `dev`. Never commit directly to `main` or `dev`.
 Full model: `.claude/rules/ecc/common/git-workflow.md`.
 
+## Commit cadence (MANDATORY)
+
+**One commit per plan task, not one commit per phase.** After a task's gates pass, the main
+session commits that task before starting the next one. Never batch several completed tasks
+into a single commit.
+
+- The commit lands as soon as the task is verified — `go-implementer` still never touches git
+  (see `.claude/agents/go-implementer.md`); the main session owns every commit.
+- Subject line: `<type>: <what the task delivered>`, e.g. `feat: add container lifecycle calls
+  with self-exclusion`. Reference the task as `Task <n> of <plan-file>` in the body.
+- Tasks dispatched in parallel are committed one at a time as each returns, in the order they
+  finish.
+- After the last task, a final commit may cover phase-wide work — docs, the PRD status row,
+  the implementation report.
+
+Rationale: a phase can run long enough to exhaust a usage window mid-flight. Task-sized commits
+mean an interrupted phase resumes from the last verified task instead of losing everything since
+the phase began, and each commit is small enough to review on its own.
+
 ## Commands
 
 Nothing is implemented yet — `go.mod` is created by Task 1 of the current plan, so these
