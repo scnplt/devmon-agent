@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/scnplt/devmon-agent/internal/dockerx"
+	"github.com/scnplt/devmon-agent/internal/state"
 )
 
 // Four small interfaces, declared here rather than in dockerx, because the
@@ -39,17 +40,19 @@ type VolumeReader interface {
 	InspectVolume(ctx context.Context, ref string) (dockerx.VolumeSummary, error)
 }
 
-// DockerReader is the full read-only surface the routes in this file and in
-// logs.go depend on. *dockerx.Client satisfies it; a test fake can satisfy it
-// without a live Engine. LogReader is embedded rather than added as a fifth
-// constructor parameter (D14): NewServer's signature stays untouched, and
-// LogReader remains independently referenceable.
+// DockerReader is the full Docker surface the routes in this file, in
+// logs.go, and in lifecycle.go depend on. *dockerx.Client satisfies it; a
+// test fake can satisfy it without a live Engine. LogReader and
+// ContainerController are embedded rather than added as extra constructor
+// parameters (D14, D7): NewServer's signature stays untouched, and each
+// remains independently referenceable.
 type DockerReader interface {
 	ContainerReader
 	ImageReader
 	NetworkReader
 	VolumeReader
 	LogReader
+	ContainerController
 }
 
 // Compile-time proof the concrete client still satisfies the contract. A
@@ -77,19 +80,49 @@ const (
 	// so its failures are gateway failures (502), not agent bugs (500) —
 	// 500 must keep meaning "the agent itself broke".
 	msgEngineUnavailable = "docker engine unavailable"
+
+	// msgSelfProtected is served when a lifecycle operation targets the
+	// agent's own container — a fixed rule, not a policy tier (D1).
+	msgSelfProtected = "the agent cannot act on itself"
+
+	// msgSelfUnknown is served when the agent is containerised but could not
+	// determine which container it is, so the self-exclusion rule cannot be
+	// enforced and lifecycle operations fail closed (D3).
+	msgSelfUnknown = "agent cannot identify its own container"
+
+	// msgContainerConflict is served when the Engine refuses an operation
+	// because of the object's current state — in practice, deleting a
+	// running container (D10).
+	msgContainerConflict = "container is running"
 )
 
 // writeDockerError maps a dockerx failure onto a status code. ErrInvalidRef
-// is a client mistake (400), ErrNotFound is an answer (404), and everything
-// else is the Engine failing upstream of us (502) — never 500, which must
-// keep meaning "the agent itself broke".
-func (s *Server) writeDockerError(w http.ResponseWriter, op string, err error) {
+// and ErrConflict are client mistakes (400, 409), ErrNotFound is an answer
+// (404), ErrSelfProtected and ErrSelfUnknown are the self-exclusion rule
+// refusing an operation (403, 503), and everything else is the Engine
+// failing upstream of us (502) — never 500, which must keep meaning "the
+// agent itself broke". r carries the in-flight audit entry (a no-op outside
+// a mutating route, via setAuditOutcome), so every failure path — including
+// the pre-existing not-found and invalid-ref branches — is recorded.
+func (s *Server) writeDockerError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	switch {
 	case errors.Is(err, dockerx.ErrInvalidRef):
+		setAuditOutcome(r.Context(), state.OutcomeInvalid, "")
 		s.writeError(w, http.StatusBadRequest, msgInvalidRef)
 	case errors.Is(err, dockerx.ErrNotFound):
+		setAuditOutcome(r.Context(), state.OutcomeNotFound, "")
 		s.writeError(w, http.StatusNotFound, msgNotFound)
+	case errors.Is(err, dockerx.ErrSelfProtected):
+		setAuditOutcome(r.Context(), state.OutcomeDeniedSelf, "")
+		s.writeError(w, http.StatusForbidden, msgSelfProtected)
+	case errors.Is(err, dockerx.ErrSelfUnknown):
+		setAuditOutcome(r.Context(), state.OutcomeUnavailable, "")
+		s.writeError(w, http.StatusServiceUnavailable, msgSelfUnknown)
+	case errors.Is(err, dockerx.ErrConflict):
+		setAuditOutcome(r.Context(), state.OutcomeConflict, "")
+		s.writeError(w, http.StatusConflict, msgContainerConflict)
 	default:
+		setAuditOutcome(r.Context(), state.OutcomeEngineError, "")
 		s.log.Error(op, slog.Any("err", err))
 		s.writeError(w, http.StatusBadGateway, msgEngineUnavailable)
 	}
@@ -127,7 +160,7 @@ func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.ListContainers(r.Context(), listAllParam(r))
 	if err != nil {
-		s.writeDockerError(w, "list containers", err)
+		s.writeDockerError(w, r, "list containers", err)
 		return
 	}
 
@@ -142,7 +175,7 @@ func (s *Server) handleInspectContainer(w http.ResponseWriter, r *http.Request) 
 
 	resp, err := s.dc.InspectContainer(r.Context(), r.PathValue("id"))
 	if err != nil {
-		s.writeDockerError(w, "inspect container", err)
+		s.writeDockerError(w, r, "inspect container", err)
 		return
 	}
 
@@ -157,7 +190,7 @@ func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.ListImages(r.Context())
 	if err != nil {
-		s.writeDockerError(w, "list images", err)
+		s.writeDockerError(w, r, "list images", err)
 		return
 	}
 
@@ -172,7 +205,7 @@ func (s *Server) handleInspectImage(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.InspectImage(r.Context(), r.PathValue("id"))
 	if err != nil {
-		s.writeDockerError(w, "inspect image", err)
+		s.writeDockerError(w, r, "inspect image", err)
 		return
 	}
 
@@ -187,7 +220,7 @@ func (s *Server) handleListNetworks(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.ListNetworks(r.Context())
 	if err != nil {
-		s.writeDockerError(w, "list networks", err)
+		s.writeDockerError(w, r, "list networks", err)
 		return
 	}
 
@@ -203,7 +236,7 @@ func (s *Server) handleInspectNetwork(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.InspectNetwork(r.Context(), r.PathValue("id"))
 	if err != nil {
-		s.writeDockerError(w, "inspect network", err)
+		s.writeDockerError(w, r, "inspect network", err)
 		return
 	}
 
@@ -218,7 +251,7 @@ func (s *Server) handleListVolumes(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.ListVolumes(r.Context())
 	if err != nil {
-		s.writeDockerError(w, "list volumes", err)
+		s.writeDockerError(w, r, "list volumes", err)
 		return
 	}
 
@@ -235,7 +268,7 @@ func (s *Server) handleInspectVolume(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.InspectVolume(r.Context(), r.PathValue("name"))
 	if err != nil {
-		s.writeDockerError(w, "inspect volume", err)
+		s.writeDockerError(w, r, "inspect volume", err)
 		return
 	}
 
