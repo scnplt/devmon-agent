@@ -64,6 +64,12 @@ plan's checklist line is now inaccurate and someone should decide deliberately: 
 it and correct the expectation, or template the path in the log. Flagged rather than silently
 resolved.
 
+**Confirmed empirically during E2E validation.** The agent's Debug log carries entries like
+`path=/v1/containers/cb6831df964c…` — the full reference. It carries no secrets: across the
+entire run there were zero hits for env values, private key material, or pairing codes. So the
+project's "never log key material" rule holds; only the checklist's stricter "no reference
+values" wording is contradicted. Still a decision, not a defect.
+
 ### LOW
 
 **L1** — `toContainerDetail` is 58 lines, over the project's 50-line guideline. Flat, not
@@ -126,8 +132,10 @@ Docs: `README.md`, `go.mod`
 
 ## Recommendation
 
-Approve for merge into `dev` once the manual validation checklist has been worked against a host
-with a live Docker daemon — in particular the `-e DB_PASSWORD=hunter2` end-to-end secret check,
-which is the one assertion that closes the loop on this phase's central risk. `golangci-lint`
-and `gosec` have since run clean against this phase's code. M4 needs a decision but does not
-block.
+**Approve for merge into `dev`.** Every precondition this review named has since been met:
+`golangci-lint` and `gosec` run clean, and the full manual checklist has been worked against
+Docker 29.6.1 / API 1.55 with a real paired device — including the `-e DB_PASSWORD=hunter2`
+check, which is the assertion that closes the loop on this phase's central risk. The response
+was 698 bytes and contained neither the secret nor an `env` key.
+
+M4 needs a decision but does not block; it is now backed by evidence rather than inference.

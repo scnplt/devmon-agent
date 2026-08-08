@@ -43,7 +43,7 @@ at any nesting depth.
 | Unit tests | Pass | `go test ./internal/... -race` all green |
 | Coverage | Pass | 85.4% on `./internal/...`, floor is 80% |
 | Build | Pass | `CGO_ENABLED=0` static binary, 18.9 MB |
-| Integration / E2E | **Not run** | Requires a real host with a live Docker daemon |
+| Integration / E2E | Pass | Full manual checklist run against Docker 29.6.1 / API 1.55 — see below |
 | Edge cases | Pass (unit level) | Nil-pointer, truncation, empty-list, traversal all covered |
 
 Per-package coverage: certs 79.1, config 90.9, dockerx 95.2, httpapi 84.8, logging 84.6,
@@ -174,8 +174,41 @@ appears in a `VolumeSummary`. A field-level assertion would miss a future embedd
 - [x] Lists capped at 500 with an honest `truncated` flag; empty list marshals as `[]`
 - [x] `gofmt`, `go vet`, `golangci-lint`, `gosec` all clean for this phase's code
 - [x] `./internal/...` coverage 85.4% ≥ 80%
-- [ ] **A paired client retrieves accurate data on a host with real workloads** — not verified;
-      requires a live daemon. This is the PRD's Phase 3 success signal and remains open.
+- [x] **A paired client retrieves accurate data on a host with real workloads** — verified against
+      Docker 29.6.1 / API 1.55. The PRD's Phase 3 success signal is met.
+
+## End-to-End Validation
+
+Environment: agent running in its own container against a real daemon, a genuinely paired device
+(EC keypair → CSR → `/v1/pair` → 201), and fixtures built to carry real secrets. The Engine was
+reached through a socat proxy so it could be made unreachable *while the agent stayed running* —
+stopping the host daemon would have killed the agent container too and proved nothing.
+
+| Check | Result |
+|---|---|
+| Container with `-e DB_PASSWORD=hunter2`, inspected | 698-byte body, no `hunter2`, no `DB_PASSWORD`, no `env` key |
+| Image with `ENV API_KEY=supersecretkey123`, inspected | no `supersecretkey123`, no `API_KEY`, no `env`, no `config` |
+| Volume with `type=tmpfs,o=size=1m,uid=1000` | no `options` key, none of the option values |
+| All eight routes, `default` mode | 200 |
+| All eight routes, `read-only` mode | 200 (confirms D10) |
+| Stopped container | absent from `/v1/containers`, present in `?all=true` as `exited` / `Exited (1)` |
+| Engine unreachable | four list routes 502 `docker engine unavailable`; `/v1/status` still 200; agent up, 0 restarts |
+| Engine restored | reads recover with no agent restart |
+| Unknown object | 404 |
+| `%2e%2e`, `%2e%2e%2finfo`, `a%2fb`, `foo$bar`, `-leading`, `sha256:ab` | 400 `invalid object reference`, none reached the Engine |
+| `POST /v1/containers` | 405 |
+| No client certificate | 401 `client certificate required` |
+| Device revoked | every read route 401 immediately, no agent restart |
+
+Two things worth recording:
+
+- **`curl` normalizes `%2e%2e` client-side**, which made the first traversal probe look like a
+  404 from the agent. With `--path-as-is` the request reaches the handler and returns the
+  documented 400. The contract holds; the initial reading was a client artifact.
+- **Confirmed review finding M4 with evidence.** The Debug request log does carry reference
+  values (`path=/v1/containers/cb6831df…`). It carries no secrets: zero hits for env values,
+  private key material, or pairing codes across the whole run. The "never log secrets" rule
+  holds; the plan checklist's "no reference values" claim does not.
 
 ## Next Steps
 
