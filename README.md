@@ -4,12 +4,13 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so an
 Android client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: Phase 2 — identity, pairing & revocation.** The agent is its own
-certificate authority. An operator mints a pairing code on the host, the device
-generates a keypair and exchanges a CSR for a client certificate, and every
-guarded request is authenticated against that certificate. Revocation takes
-effect on the next request. There is still no Docker read or write operation;
-those arrive in Phases 3–5.
+**Status: Phase 3 — read operations.** The agent is its own certificate
+authority. An operator mints a pairing code on the host, the device generates a
+keypair and exchanges a CSR for a client certificate, and every guarded request
+is authenticated against that certificate. Revocation takes effect on the next
+request. A paired client can list and inspect containers, images, networks and
+volumes. Nothing mutates state yet: logs and live streaming arrive in Phase 4,
+and lifecycle operations with audit logging in Phase 5.
 
 License: AGPL-3.0-only.
 
@@ -397,6 +398,28 @@ make lint           # gofmt + go vet + golangci-lint when installed
 make sec            # gosec
 make image          # docker build
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs the same gates on GitHub Actions, scaled to the
+branch a pull request targets:
+
+| Job | Runs on | What it does |
+|---|---|---|
+| `test` | every PR, and pushes to `dev`/`main` | `go build ./...`, race tests over the whole module, and the 80% coverage floor over `./internal/...` |
+| `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
+| `image` | PRs into `main` only | `docker build` of the release image |
+| `gosec` | PRs into `main` only | `gosec ./...` |
+
+`dev` is the integration branch, so a PR into it gets fast feedback from `test`
+alone; the full release bar applies on the way into `main`. The three
+`main`-only jobs are gated on `github.base_ref` and are skipped, not queued, on
+a `dev` PR.
+
+Toolchain versions come from `go.mod`, and the linter and scanner versions are
+pinned in the workflow's `env` block — bump them there, deliberately, rather
+than tracking `latest`. Note that `-race` needs `CGO_ENABLED=1` even though the
+shipped binary is built with `CGO_ENABLED=0`.
 
 Two things that will bite anyone writing code here from memory:
 
