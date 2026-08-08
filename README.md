@@ -206,6 +206,15 @@ than failing obscurely at the first query.
 | `GET /v1/networks/{id}` | client cert | Inspect one network |
 | `GET /v1/volumes` | client cert | List volumes |
 | `GET /v1/volumes/{name}` | client cert | Inspect one volume |
+| `GET /v1/containers/{id}/logs` | client cert | Recent log lines as JSON |
+| `GET /v1/containers/{id}/logs/stream` | client cert | Live log stream (Server-Sent Events) |
+
+Both log routes accept `?tail=<n>` and `?since=<rfc3339>`. `tail` is bounded to
+1…2000 and falls back to its default — 200 historical, 100 for the stream — when
+it is absent, unparsable, or out of range, because a typo must not fail a
+diagnostic request in the middle of an incident. `since` is the opposite: it is
+interpolated into the Engine's own request URL, so an unparsable value is a 400
+rather than a silently ignored preference.
 
 Failure modes shared by every read route:
 
@@ -214,8 +223,10 @@ Failure modes shared by every read route:
 | No, unknown, or revoked client certificate | 401 | `{"error":"client certificate required"}` |
 | Host policy forbids the operation | 403 | `{"error":"operation not permitted by host policy"}` |
 | Malformed object reference | 400 | `{"error":"invalid object reference"}` |
+| Unparsable `?since=` timestamp | 400 | `{"error":"invalid since timestamp"}` |
 | No such object | 404 | `{"error":"not found"}` |
 | Engine unreachable, timed out, or otherwise failing | 502 | `{"error":"docker engine unavailable"}` |
+| All live stream slots in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
 
 502 rather than 500 is deliberate: the Engine is an upstream dependency, so its
 failures are gateway failures. That keeps 500 meaning "the agent itself broke",
@@ -235,6 +246,14 @@ called, so the fields simply do not exist in the response types. The same
 reasoning removes a volume's driver `Options`, which routinely carry NFS and
 CIFS credentials.
 
+**Container log content is returned in full**, and that is not a contradiction
+of the rule above. Env vars are stripped because nobody asked for them: they
+ride along inside an inspect response the operator wanted for other reasons. A
+log line is the thing the operator explicitly requested, and a log viewer that
+redacted the output would have no purpose. The agent passes those lines through
+without inspecting them, and — see below — without ever writing them to its own
+log.
+
 **Command lines are returned.** Unlike env vars, the command, entrypoint, and
 args are what identify a misconfigured container, and they are already visible
 in the host's process table and in `docker ps`. This is a bounded, deliberate
@@ -244,6 +263,74 @@ disclosure rather than an oversight.
 thousands of images would otherwise send a multi-megabyte body to a phone on a
 mobile connection. The cap is server-side and cannot be raised by a client,
 which is the same rule the rest of the agent's configuration follows.
+
+### Live log streaming
+
+`GET /v1/containers/{id}/logs/stream` is Server-Sent Events, not a WebSocket.
+Nothing ever flows client to server on this feature — logs are strictly
+one-directional — so a bidirectional transport would buy nothing and cost a new
+module on an internet-facing port plus a framing and authentication story that
+sits beside the HTTP middleware instead of inside it. SSE reuses the same
+certificate and policy guards as every other route, and resumption is part of
+its own specification rather than something invented here.
+
+Each frame carries one line:
+
+```
+id: 2026-08-08T10:02:14.882Z
+event: log
+data: {"ts":"2026-08-08T10:02:14.882Z","stream":"stderr","line":"panic: nil map write"}
+```
+
+The timestamp is extracted into its own field rather than left as the prefix
+Docker emits, so a client never has to parse a Docker-specific wire format to
+find its resume cursor. `stream` is `stdout` or `stderr`, and the two are
+interleaved in the order the container wrote them — that ordering is most of
+what a log is worth during an incident, so the agent demultiplexes Docker's
+frames itself rather than pumping them into two separate sinks.
+
+**Resuming is at-least-once.** After a network handover, a client reconnects
+with `?since=<the last id it saw>`. Docker's `since` filter is inclusive at its
+granularity boundary, so a resume can repeat the last line or two; clients
+should dedupe on `(ts, line)`. Guaranteeing exactly-once would mean the agent
+keeping a durable per-device cursor, which is server-side state this feature has
+no business adding. A repeated line is cosmetic; a dropped one is a diagnostic
+failure, and the trade goes the right way round.
+
+**A silent stream is still a live stream.** The agent writes an SSE keepalive
+comment every 20 seconds. A container that logs nothing for five minutes is
+ordinary; a TCP connection that sends nothing for five minutes is dropped by
+mobile-carrier NAT and by any proxy in between. The keepalive is also how the
+agent notices a client that vanished without closing — the write fails, and the
+stream unwinds instead of leaking a connection.
+
+**Single lines are capped at 8 KiB** and marked `"truncated":true` when cut. A
+container printing one enormous line — a stack dump, a base64 payload, a
+minified bundle — would otherwise be accumulated whole in agent memory before
+any line boundary arrived, which is the agent OOM-killing itself while reading
+logs.
+
+**Eight live streams at once**, after which the route answers 503 with
+`too many concurrent log streams`. Each stream holds a goroutine, an Engine
+connection, and a socket for its entire life, so an unbounded count is
+file-descriptor exhaustion the agent inflicts on the host it exists to protect.
+The limit is a constant rather than a setting, on the same reasoning as the rest
+of the configuration: every additional knob is surface the operator has to
+understand at install time.
+
+If the container turns out not to exist, or the Engine is unreachable, the
+failure arrives as an ordinary 404 or 502 with a JSON body — the response
+headers are not written until there is a first line to send, precisely so the
+status code stays correctable. Once the stream has started, a later failure can
+only be a terminal `event: error` frame on a response that already said 200.
+
+**Container logs are never persisted by the agent.** They are not written to
+`devmon.db`, not written to `logs/agent.log`, and not cached anywhere in
+`/var/lib/devmon`. Log lines are by design whatever the container printed,
+including the secrets the projection rules above work to keep out of
+responses — the difference is only that here the operator asked for them. That
+makes it more important, not less, that they pass through in transit and leave
+nothing behind.
 
 `/v1/status` is the only endpoint served without a client certificate. Its fields
 are a strict allowlist — it may inform, never issue — and it carries no host,

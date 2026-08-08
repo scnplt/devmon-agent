@@ -233,6 +233,44 @@ func TestVolumeSummaryFieldCount(t *testing.T) {
 	}
 }
 
+// TestLogLineFieldCount is the D9/D3 guard: Truncated is the only omitempty
+// field, so an ordinary line marshals to exactly three keys and a truncated
+// one to four.
+func TestLogLineFieldCount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		line LogLine
+		want int
+	}{
+		{
+			name: "ordinary line has three keys",
+			line: LogLine{Timestamp: "2023-11-14T22:13:20.5Z", Stream: "stdout", Line: "listening on :8080"},
+			want: 3,
+		},
+		{
+			name: "truncated line has four keys",
+			line: LogLine{Timestamp: "2023-11-14T22:13:20.5Z", Stream: "stderr", Line: "panic: ...", Truncated: true},
+			want: 4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act
+			body := marshalToMap(t, tt.line)
+
+			// Assert
+			if len(body) != tt.want {
+				t.Fatalf("LogLine payload has %d keys (%v), want exactly %d", len(body), keysOf(body), tt.want)
+			}
+		})
+	}
+}
+
 func TestListResultFieldCount(t *testing.T) {
 	t.Parallel()
 

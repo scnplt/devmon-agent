@@ -32,6 +32,12 @@ type fakeDocker struct {
 	inspectNetworkFn   func(ctx context.Context, ref string) (dockerx.NetworkDetail, error)
 	listVolumesFn      func(ctx context.Context) (dockerx.ListResult[dockerx.VolumeSummary], error)
 	inspectVolumeFn    func(ctx context.Context, ref string) (dockerx.VolumeSummary, error)
+
+	// containerLogsFn and streamContainerLogsFn back LogReader (D14). Nil-safe
+	// by default like every field above, so every existing test that leaves
+	// them unset keeps working unmodified.
+	containerLogsFn       func(ctx context.Context, ref string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error)
+	streamContainerLogsFn func(ctx context.Context, ref string, opts dockerx.LogOptions, emit func(dockerx.LogLine) error) error
 }
 
 var _ DockerReader = (*fakeDocker)(nil)
@@ -90,6 +96,20 @@ func (fd *fakeDocker) InspectVolume(ctx context.Context, ref string) (dockerx.Vo
 		return dockerx.VolumeSummary{}, nil
 	}
 	return fd.inspectVolumeFn(ctx, ref)
+}
+
+func (fd *fakeDocker) ContainerLogs(ctx context.Context, ref string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error) {
+	if fd.containerLogsFn == nil {
+		return dockerx.ListResult[dockerx.LogLine]{}, nil
+	}
+	return fd.containerLogsFn(ctx, ref, opts)
+}
+
+func (fd *fakeDocker) StreamContainerLogs(ctx context.Context, ref string, opts dockerx.LogOptions, emit func(dockerx.LogLine) error) error {
+	if fd.streamContainerLogsFn == nil {
+		return nil
+	}
+	return fd.streamContainerLogsFn(ctx, ref, opts, emit)
 }
 
 // testServerWithDocker is a fifth Server helper, additive to testServer,

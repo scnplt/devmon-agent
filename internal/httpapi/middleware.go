@@ -139,3 +139,12 @@ func (r *statusRecorder) WriteHeader(code int) {
 	}
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap exposes the wrapped ResponseWriter to http.ResponseController.
+//
+// Without this, ResponseController cannot find the underlying writer's Flush
+// or SetWriteDeadline and returns http.ErrNotSupported for both — because
+// statusRecorder embeds the ResponseWriter *interface*, whose method set is
+// only Header/Write/WriteHeader. The SSE stream in logs.go depends on both:
+// one to deliver each line, the other to escape the server's 30s WriteTimeout.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
