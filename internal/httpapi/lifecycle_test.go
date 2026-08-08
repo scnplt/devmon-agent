@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/scnplt/devmon-agent/internal/dockerx"
 	"github.com/scnplt/devmon-agent/internal/policy"
+	"github.com/scnplt/devmon-agent/internal/state"
 )
 
 // lifecycleRouteCase describes one of the five mutating container routes:
@@ -172,6 +174,209 @@ func TestLifecycleNilDockerReader(t *testing.T) {
 			}
 			if body.Error != msgEngineUnavailable {
 				t.Errorf("error = %q, want %q", body.Error, msgEngineUnavailable)
+			}
+		})
+	}
+}
+
+// apiLifecycleRoute describes one of the five mutating routes exactly as
+// server.go's routes() registers it (Task 9): the real method and path
+// pattern, the policy operation that gates it, the lowest mode that permits
+// it, and a way to observe whether the underlying fakeDocker method ran.
+type apiLifecycleRoute struct {
+	name       string
+	method     string
+	pathf      string // fmt-style, one %s for the container id
+	op         policy.Operation
+	minMode    policy.Mode
+	markCalled func(fd *fakeDocker, called *bool)
+}
+
+func apiLifecycleRoutes() []apiLifecycleRoute {
+	return []apiLifecycleRoute{
+		{
+			name: "start", method: http.MethodPost, pathf: "/v1/containers/%s/start",
+			op: policy.OpStart, minMode: policy.ModeDefault,
+			markCalled: func(fd *fakeDocker, called *bool) {
+				fd.startContainerFn = func(context.Context, string) error { *called = true; return nil }
+			},
+		},
+		{
+			name: "restart", method: http.MethodPost, pathf: "/v1/containers/%s/restart",
+			op: policy.OpRestart, minMode: policy.ModeDefault,
+			markCalled: func(fd *fakeDocker, called *bool) {
+				fd.restartContainerFn = func(context.Context, string) error { *called = true; return nil }
+			},
+		},
+		{
+			name: "stop", method: http.MethodPost, pathf: "/v1/containers/%s/stop",
+			op: policy.OpStop, minMode: policy.ModeDefault,
+			markCalled: func(fd *fakeDocker, called *bool) {
+				fd.stopContainerFn = func(context.Context, string) error { *called = true; return nil }
+			},
+		},
+		{
+			name: "kill", method: http.MethodPost, pathf: "/v1/containers/%s/kill",
+			op: policy.OpKill, minMode: policy.ModeFull,
+			markCalled: func(fd *fakeDocker, called *bool) {
+				fd.killContainerFn = func(context.Context, string) error { *called = true; return nil }
+			},
+		},
+		{
+			name: "delete", method: http.MethodDelete, pathf: "/v1/containers/%s",
+			op: policy.OpDelete, minMode: policy.ModeFull,
+			markCalled: func(fd *fakeDocker, called *bool) {
+				fd.removeContainerFn = func(context.Context, string) error { *called = true; return nil }
+			},
+		},
+	}
+}
+
+// apiLifecycleRequest builds a request for one real registered route, with
+// serial as the authenticating peer certificate (nil for unauthenticated
+// requests).
+func apiLifecycleRequest(route apiLifecycleRoute, serial *big.Int) *http.Request {
+	path := fmt.Sprintf(route.pathf, "target-id")
+	req := httptest.NewRequest(route.method, path, nil)
+	if serial != nil {
+		req.TLS = peerCertWithSerial(serial)
+	}
+	return req
+}
+
+// TestLifecyclePolicyMatrix drives all five mutating routes, registered
+// exactly as server.go's routes() registers them, across every policy mode.
+// Each combination must answer 204 when the mode permits the operation and
+// 403 with msgPolicyForbidden otherwise, matching minMode in
+// internal/policy/mode.go.
+func TestLifecyclePolicyMatrix(t *testing.T) {
+	t.Parallel()
+
+	modes := []policy.Mode{policy.ModeReadOnly, policy.ModeDefault, policy.ModeFull}
+
+	for _, mode := range modes {
+		for _, route := range apiLifecycleRoutes() {
+			t.Run(mode.String()+"/"+route.name, func(t *testing.T) {
+				t.Parallel()
+
+				// Arrange
+				fd := &fakeDocker{}
+				var called bool
+				route.markCalled(fd, &called)
+				s, st := testServerWithDocker(t, mode, fd)
+				serial := pairDeviceForRead(t, st)
+				req := apiLifecycleRequest(route, serial)
+				rec := httptest.NewRecorder()
+
+				wantAllowed := mode.Allows(route.op)
+				wantStatus := http.StatusForbidden
+				if wantAllowed {
+					wantStatus = http.StatusNoContent
+				}
+
+				// Act
+				s.routes().ServeHTTP(rec, req)
+
+				// Assert
+				if rec.Code != wantStatus {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, wantStatus, rec.Body.String())
+				}
+				if called != wantAllowed {
+					t.Errorf("docker method called = %v, want %v", called, wantAllowed)
+				}
+
+				entries, err := st.ListAudit(context.Background(), 10)
+				if err != nil {
+					t.Fatalf("ListAudit: %v", err)
+				}
+				if len(entries) != 1 {
+					t.Fatalf("len(entries) = %d, want 1", len(entries))
+				}
+				wantOutcome := state.OutcomeDeniedPolicy
+				if wantAllowed {
+					wantOutcome = state.OutcomeSuccess
+				}
+				if entries[0].Outcome != wantOutcome {
+					t.Errorf("outcome = %q, want %q", entries[0].Outcome, wantOutcome)
+				}
+			})
+		}
+	}
+}
+
+// TestLifecycleRequiresDevice asserts every mutating route answers 401 and
+// writes zero audit rows when the request carries no client certificate —
+// requireDevice must run before withAudit ever seeds a row (D15).
+func TestLifecycleRequiresDevice(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range apiLifecycleRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			fd := &fakeDocker{}
+			var called bool
+			route.markCalled(fd, &called)
+			s, st := testServerWithDocker(t, policy.ModeFull, fd)
+			req := apiLifecycleRequest(route, nil)
+			rec := httptest.NewRecorder()
+
+			// Act
+			s.routes().ServeHTTP(rec, req)
+
+			// Assert
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+			}
+			if called {
+				t.Error("docker method called, want requireDevice to reject before it")
+			}
+			entries, err := st.ListAudit(context.Background(), 10)
+			if err != nil {
+				t.Fatalf("ListAudit: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("len(entries) = %d, want 0", len(entries))
+			}
+		})
+	}
+}
+
+// TestLifecycleRejectsOtherMethods asserts a method the pattern does not
+// register falls through to ServeMux's default 405, exactly as it does for
+// the read and log routes.
+func TestLifecycleRejectsOtherMethods(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "GET on start", method: http.MethodGet, path: "/v1/containers/target-id/start"},
+		{name: "GET on restart", method: http.MethodGet, path: "/v1/containers/target-id/restart"},
+		{name: "GET on stop", method: http.MethodGet, path: "/v1/containers/target-id/stop"},
+		{name: "GET on kill", method: http.MethodGet, path: "/v1/containers/target-id/kill"},
+		{name: "POST on delete path", method: http.MethodPost, path: "/v1/containers/target-id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			s, st := testServerWithDocker(t, policy.ModeFull, &fakeDocker{})
+			serial := pairDeviceForRead(t, st)
+			req := requestWithPeerSerial(tt.method, tt.path, nil, serial)
+			rec := httptest.NewRecorder()
+
+			// Act
+			s.routes().ServeHTTP(rec, req)
+
+			// Assert
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 			}
 		})
 	}

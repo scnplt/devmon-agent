@@ -128,6 +128,18 @@ func (s *Server) routes() http.Handler {
 	logs("GET /v1/containers/{id}/logs", s.handleContainerLogs)
 	logs("GET /v1/containers/{id}/logs/stream", s.handleStreamContainerLogs)
 
+	// Mutating operations. Three guards, and the order is load-bearing (D15):
+	// requireDevice proves who is calling, withAudit records the attempt whatever
+	// happens to it, requireOp proves the host's startup policy permits it.
+	mutate := func(pattern string, op policy.Operation, h http.HandlerFunc) {
+		mux.Handle(pattern, s.requireDevice(s.withAudit(op, s.requireOp(op, h))))
+	}
+	mutate("POST /v1/containers/{id}/start", policy.OpStart, s.handleStartContainer)
+	mutate("POST /v1/containers/{id}/restart", policy.OpRestart, s.handleRestartContainer)
+	mutate("POST /v1/containers/{id}/stop", policy.OpStop, s.handleStopContainer)
+	mutate("POST /v1/containers/{id}/kill", policy.OpKill, s.handleKillContainer)
+	mutate("DELETE /v1/containers/{id}", policy.OpDelete, s.handleRemoveContainer)
+
 	return s.withRecovery(s.withRequestLog(mux))
 }
 
