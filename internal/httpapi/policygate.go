@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/scnplt/devmon-agent/internal/policy"
+	"github.com/scnplt/devmon-agent/internal/state"
 )
 
 // msgPolicyForbidden is served when the host's startup policy does not permit
@@ -29,6 +30,7 @@ func (s *Server) requireOp(op policy.Operation, next http.Handler) http.Handler 
 				attrs = append(attrs, slog.String("device_id", device.ID))
 			}
 			s.log.Warn("rejected request forbidden by host policy", attrs...)
+			setAuditOutcome(r.Context(), state.OutcomeDeniedPolicy, "")
 			s.writeError(w, http.StatusForbidden, msgPolicyForbidden)
 			return
 		}
