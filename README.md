@@ -197,6 +197,52 @@ than failing obscurely at the first query.
 | `POST /v1/pair` | pairing code | Exchange a CSR for a client certificate |
 | `POST /v1/device/renew` | client cert | Exchange a CSR for a fresh certificate |
 | `DELETE /v1/device/self` | client cert | Unpair this device |
+| `GET /v1/containers?all=<bool>` | client cert | List containers; `all=true` includes stopped ones |
+| `GET /v1/containers/{id}` | client cert | Inspect one container |
+| `GET /v1/images` | client cert | List images |
+| `GET /v1/images/{id}` | client cert | Inspect one image |
+| `GET /v1/networks` | client cert | List networks |
+| `GET /v1/networks/{id}` | client cert | Inspect one network |
+| `GET /v1/volumes` | client cert | List volumes |
+| `GET /v1/volumes/{name}` | client cert | Inspect one volume |
+
+Failure modes shared by every read route:
+
+| Condition | Status | Body |
+|---|---|---|
+| No, unknown, or revoked client certificate | 401 | `{"error":"client certificate required"}` |
+| Host policy forbids the operation | 403 | `{"error":"operation not permitted by host policy"}` |
+| Malformed object reference | 400 | `{"error":"invalid object reference"}` |
+| No such object | 404 | `{"error":"not found"}` |
+| Engine unreachable, timed out, or otherwise failing | 502 | `{"error":"docker engine unavailable"}` |
+
+502 rather than 500 is deliberate: the Engine is an upstream dependency, so its
+failures are gateway failures. That keeps 500 meaning "the agent itself broke",
+which is a different page for whoever is on call.
+
+### Why responses are projections
+
+Read responses are not the Docker Engine's JSON. Every field is copied into an
+explicit allowlist type before it is serialised, so what the API returns is a
+decision rather than a consequence of whatever the Engine emits this release.
+
+**Environment variables are never returned, at any level.** A container's
+`Config.Env` and an image's baked-in env hold the database passwords and API
+keys the operator passed in, and this channel was never designed to carry them.
+Redacting values would still disclose which secrets exist and what they are
+called, so the fields simply do not exist in the response types. The same
+reasoning removes a volume's driver `Options`, which routinely carry NFS and
+CIFS credentials.
+
+**Command lines are returned.** Unlike env vars, the command, entrypoint, and
+args are what identify a misconfigured container, and they are already visible
+in the host's process table and in `docker ps`. This is a bounded, deliberate
+disclosure rather than an oversight.
+
+**Lists are capped at 500 items** and carry a `truncated` flag. A host with
+thousands of images would otherwise send a multi-megabyte body to a phone on a
+mobile connection. The cap is server-side and cannot be raised by a client,
+which is the same rule the rest of the agent's configuration follows.
 
 `/v1/status` is the only endpoint served without a client certificate. Its fields
 are a strict allowlist — it may inform, never issue — and it carries no host,
