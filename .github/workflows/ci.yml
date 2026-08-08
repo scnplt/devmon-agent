@@ -1,0 +1,136 @@
+name: CI
+
+# Two bars, scaled to the target branch:
+#   PR -> dev  : `test` only, for fast feedback on the integration branch.
+#   PR -> main : `test` plus `lint`, `image` and `gosec` — the release bar.
+# The main-only jobs are gated on `github.base_ref`, so they never queue on a dev PR.
+# Branch protection is per branch, so `dev` requires `test` and `main` requires all four.
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so an upstream release cannot turn a protected branch red overnight.
+  GOLANGCI_LINT_VERSION: v2.12.2
+  GOSEC_VERSION: v2.28.0
+  COVERAGE_FLOOR: 80
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # go.mod is the single source of truth for the toolchain version.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      # -race is implemented in cgo, so it needs CGO_ENABLED=1 even though the
+      # shipped binary is built with CGO_ENABLED=0. gcc ships on ubuntu-latest.
+      #
+      # Coverage is measured over ./internal/... only, matching `make cover`:
+      # cmd/ is wiring exercised by the manual checklist, and folding it in would
+      # misreport the number for the code that is actually unit-testable. The two
+      # commands together still run every test in the module exactly once.
+      - name: Test ./internal/... with coverage
+        env:
+          CGO_ENABLED: 1
+        run: go test ./internal/... -race -coverprofile=coverage.out
+
+      - name: Test ./cmd/...
+        env:
+          CGO_ENABLED: 1
+        run: go test ./cmd/... -race
+
+      - name: Enforce coverage floor
+        run: |
+          total=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Total coverage over ./internal/...: ${total}% (floor ${COVERAGE_FLOOR}%)" >> "$GITHUB_STEP_SUMMARY"
+          if ! awk -v t="$total" -v f="$COVERAGE_FLOOR" 'BEGIN { exit (t+0 >= f+0) ? 0 : 1 }'; then
+            echo "::error::coverage ${total}% is below the ${COVERAGE_FLOOR}% floor"
+            exit 1
+          fi
+          echo "coverage ${total}% meets the ${COVERAGE_FLOOR}% floor"
+
+  lint:
+    name: lint
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # `gofmt -l` exits 0 even when it lists files, so the output is what fails.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: ./...
+
+  image:
+    name: image
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Proves the CGO_ENABLED=0 / distroless-static path still links and runs.
+      - name: docker build
+        run: |
+          docker build \
+            --build-arg VERSION=ci \
+            --build-arg COMMIT=${GITHUB_SHA::7} \
+            --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            -t devmon-agent:ci .
+
+  gosec:
+    name: gosec
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Installed from source rather than via a third-party action, to keep the
+      # supply-chain surface of a security gate as small as possible.
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
+
+      - name: gosec
+        run: gosec ./...
