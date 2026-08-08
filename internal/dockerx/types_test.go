@@ -57,14 +57,15 @@ func TestContainerSummaryFieldCount(t *testing.T) {
 		Health:    "healthy",
 		Labels:    map[string]string{"app": "myapp"},
 		Ports:     []Port{{PrivatePort: 8080, Protocol: "tcp"}},
+		Protected: true,
 	}
 
 	// Act
 	body := marshalToMap(t, cs)
 
 	// Assert
-	if len(body) != 11 {
-		t.Fatalf("ContainerSummary payload has %d keys (%v), want exactly 11", len(body), keysOf(body))
+	if len(body) != 12 {
+		t.Fatalf("ContainerSummary payload has %d keys (%v), want exactly 12", len(body), keysOf(body))
 	}
 }
 
@@ -97,14 +98,15 @@ func TestContainerDetailFieldCount(t *testing.T) {
 		Mounts:        []Mount{{Type: "volume", Source: "/data", Destination: "/data", ReadWrite: true}},
 		Networks:      []EndpointSummary{{NetworkName: "bridge", NetworkID: "net1"}},
 		Ports:         []Port{{PrivatePort: 8080, Protocol: "tcp"}},
+		Protected:     true,
 	}
 
 	// Act
 	body := marshalToMap(t, cd)
 
 	// Assert
-	if len(body) != 24 {
-		t.Fatalf("ContainerDetail payload has %d keys (%v), want exactly 24", len(body), keysOf(body))
+	if len(body) != 25 {
+		t.Fatalf("ContainerDetail payload has %d keys (%v), want exactly 25", len(body), keysOf(body))
 	}
 }
 
@@ -304,7 +306,7 @@ func TestContainerDetailNeverCarriesEnv(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerDetail(r)
+	got := toContainerDetail(r, "")
 	raw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("json.Marshal(got) error = %v", err)
@@ -322,6 +324,49 @@ func TestContainerDetailNeverCarriesEnv(t *testing.T) {
 // asserts both on marshalled JSON (Task 5), and re-adding them under
 // different names would be redundant coverage of the same D2 guarantee
 // rather than a new guard.
+
+// TestContainerSummaryProtected is the D18 guard: protected has no
+// omitempty, so a non-self container must still marshal "protected":false
+// rather than omitting the field, and a container whose ID equals the self
+// ID must marshal "protected":true.
+func TestContainerSummaryProtected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cs   ContainerSummary
+		want string
+	}{
+		{
+			name: "non-self container marshals protected false",
+			cs:   ContainerSummary{ID: "abc123", Protected: false},
+			want: `"protected":false`,
+		},
+		{
+			name: "self container marshals protected true",
+			cs:   ContainerSummary{ID: "abc123", Protected: true},
+			want: `"protected":true`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act
+			raw, err := json.Marshal(tt.cs)
+			if err != nil {
+				t.Fatalf("json.Marshal(tt.cs) error = %v", err)
+			}
+
+			// Assert
+			got := string(raw)
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("marshalled ContainerSummary = %s, want it to contain %s", got, tt.want)
+			}
+		})
+	}
+}
 
 // TestEmptyListMarshalsAsArray asserts a zero-item ListResult marshals its
 // Items field as an empty array, never null, so a client never has to handle

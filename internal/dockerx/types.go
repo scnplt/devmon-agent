@@ -49,7 +49,7 @@ type EndpointSummary struct {
 	Aliases     []string `json:"aliases,omitempty"`
 }
 
-// ContainerSummary is one entry of a container list. 11 fields.
+// ContainerSummary is one entry of a container list. 12 fields.
 type ContainerSummary struct {
 	ID        string            `json:"id"`
 	Names     []string          `json:"names"`
@@ -62,9 +62,15 @@ type ContainerSummary struct {
 	Health    string            `json:"health,omitempty"` // "" when Health is nil
 	Labels    map[string]string `json:"labels"`
 	Ports     []Port            `json:"ports"`
+	// Protected reports whether this is the agent's own container (D18). No
+	// omitempty: a false value must appear in the JSON, or an app that
+	// cannot distinguish "not protected" from "this agent version does not
+	// report protection" would quietly offer a delete button on the agent
+	// itself.
+	Protected bool `json:"protected"`
 }
 
-// ContainerDetail is the full projection of a single container. 24 fields.
+// ContainerDetail is the full projection of a single container. 25 fields.
 // NO env. NO raw Engine payload.
 type ContainerDetail struct {
 	ID            string            `json:"id"`
@@ -91,6 +97,9 @@ type ContainerDetail struct {
 	Mounts        []Mount           `json:"mounts"`
 	Networks      []EndpointSummary `json:"networks"`
 	Ports         []Port            `json:"ports"`
+	// Protected reports whether this is the agent's own container (D18). See
+	// ContainerSummary.Protected for why it has no omitempty.
+	Protected bool `json:"protected"`
 }
 
 // ImageSummary is one entry of an image list. 8 fields.
