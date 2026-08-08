@@ -147,6 +147,18 @@ type NetworkEndpoint struct {
 	IPv6Address string `json:"ipv6_address,omitempty"`
 }
 
+// LogLine is one demultiplexed line of container output. Unlike every other DTO
+// in this package, its payload is not a projection of Engine metadata — Line is
+// whatever the container printed, which is precisely what the operator asked
+// for. That makes it the one field in the codebase that may legitimately carry
+// a secret, and the reason D16 forbids writing it to the agent's own log.
+type LogLine struct {
+	Timestamp string `json:"ts"`                  // RFC3339Nano; "" if the Engine emitted no parsable prefix
+	Stream    string `json:"stream"`              // "stdout" or "stderr"
+	Line      string `json:"line"`
+	Truncated bool   `json:"truncated,omitempty"` // set when the line exceeded maxLogLineBytes
+}
+
 // VolumeSummary is both a volume list entry and a volume inspect response
 // (VolumeDetail is VolumeSummary; there is no separate detail shape). 7 fields.
 //
