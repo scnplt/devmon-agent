@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ const (
 	envLogMaxTotalMB   = "DEVMON_LOG_MAX_TOTAL_MB"
 	envAuditMaxAgeDays = "DEVMON_AUDIT_MAX_AGE_DAYS"
 	envAuditMaxRows    = "DEVMON_AUDIT_MAX_ROWS"
+	envSelfContainerID = "DEVMON_SELF_CONTAINER_ID"
 )
 
 // Defaults. DEVMON_PUBLIC_ADDR deliberately has none — a server certificate with
@@ -68,6 +70,15 @@ const (
 
 const hoursPerDay = 24
 
+// shortContainerIDPattern and fullContainerIDPattern match Docker's short
+// (12-character) and full (64-character) hex container IDs. Docker always
+// lower-cases these; an uppercase value is treated as a typo rather than
+// silently normalized, so the operator finds out at start.
+var (
+	shortContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
+	fullContainerIDPattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
+
 // Config is the fully parsed, validated startup configuration.
 type Config struct {
 	StateDir      string
@@ -80,6 +91,11 @@ type Config struct {
 	LogMaxTotalMB int
 	AuditMaxAge   time.Duration
 	AuditMaxRows  int
+
+	// SelfContainerID is an operator-supplied override for the agent's own
+	// container ID, used when the agent cannot detect it automatically. Empty
+	// is the normal case; it has no default.
+	SelfContainerID string
 }
 
 // Derived paths live here as methods so no other package ever concatenates a
@@ -130,6 +146,8 @@ func Load(getenv func(string) string) (Config, error) {
 		LogMaxTotalMB: l.boundedInt(envLogMaxTotalMB, defaultLogMaxTotalMB, minLogMaxTotalMB),
 		AuditMaxAge:   l.days(envAuditMaxAgeDays, defaultAuditMaxAgeDays),
 		AuditMaxRows:  l.boundedInt(envAuditMaxRows, defaultAuditMaxRows, minAuditMaxRows),
+
+		SelfContainerID: l.selfContainerID(),
 	}
 
 	l.checkRetentionOrder(cfg)
@@ -225,6 +243,23 @@ func (l *loader) dockerHost() string {
 		l.fail(envDockerHost, "scheme %q is not supported (want one of: unix, tcp)", u.Scheme)
 	}
 	return host
+}
+
+// selfContainerID parses the optional self-identification override. Absent is
+// the normal path: the agent detects its own container ID by other means and
+// this variable exists only as the documented fallback. A value that is
+// present but malformed is a startup configuration error, not a warning — an
+// operator who typos it must find out at start rather than when the delete
+// button stays greyed out.
+func (l *loader) selfContainerID() string {
+	id := l.raw(envSelfContainerID, "")
+	if id == "" {
+		return ""
+	}
+	if !shortContainerIDPattern.MatchString(id) && !fullContainerIDPattern.MatchString(id) {
+		l.fail(envSelfContainerID, "%q is not a valid container ID (want 12 or 64 lowercase hex characters)", id)
+	}
+	return id
 }
 
 func (l *loader) logLevel() slog.Level {
