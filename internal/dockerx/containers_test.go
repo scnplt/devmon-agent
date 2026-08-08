@@ -21,7 +21,7 @@ func TestToContainerSummaryZeroValue(t *testing.T) {
 	s := container.Summary{}
 
 	// Act
-	got := toContainerSummary(s)
+	got := toContainerSummary(s, "")
 
 	// Assert
 	if got.Health != "" {
@@ -56,7 +56,7 @@ func TestToContainerDetailNilState(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerDetail(r)
+	got := toContainerDetail(r, "")
 
 	// Assert
 	if got.State != "" {
@@ -94,7 +94,7 @@ func TestToContainerSummaryCreatedAt(t *testing.T) {
 	s := container.Summary{Created: 1700000000}
 
 	// Act
-	got := toContainerSummary(s)
+	got := toContainerSummary(s, "")
 
 	// Assert
 	want := "2023-11-14T22:13:20Z"
@@ -113,7 +113,7 @@ func TestToContainerSummaryCreatedAtZero(t *testing.T) {
 	s := container.Summary{Created: 0}
 
 	// Act
-	got := toContainerSummary(s)
+	got := toContainerSummary(s, "")
 
 	// Assert
 	if got.CreatedAt != "" {
@@ -130,7 +130,7 @@ func TestToContainerDetailCreatedAtPassthrough(t *testing.T) {
 	r := container.InspectResponse{Created: "2023-11-14T22:13:20.123456789Z"}
 
 	// Act
-	got := toContainerDetail(r)
+	got := toContainerDetail(r, "")
 
 	// Assert
 	want := "2023-11-14T22:13:20.123456789Z"
@@ -209,7 +209,7 @@ func TestToContainerSummaryHealthAndNetworkSettings(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerSummary(s)
+	got := toContainerSummary(s, "")
 
 	// Assert
 	if got.Health != string(container.Unhealthy) {
@@ -267,7 +267,7 @@ func TestToContainerDetailFullState(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerDetail(r)
+	got := toContainerDetail(r, "")
 
 	// Assert
 	if got.FinishedAt != "" {
@@ -316,6 +316,75 @@ func TestToContainerDetailFullState(t *testing.T) {
 	body := string(bodyBytes)
 	if strings.Contains(body, "hunter2") || strings.Contains(body, "DB_PASSWORD") || strings.Contains(body, `"env"`) {
 		t.Errorf("marshalled ContainerDetail leaks env data: %s", body)
+	}
+}
+
+// TestToContainerSummaryProtected covers the D18 self-exclusion flag: it is
+// true only when the container's ID equals a non-empty selfID, and false for
+// every other container, including when selfID is unresolved ("").
+func TestToContainerSummaryProtected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		id     string
+		selfID string
+		want   bool
+	}{
+		{name: "matches self ID", id: "abc123", selfID: "abc123", want: true},
+		{name: "does not match self ID", id: "abc123", selfID: "def456", want: false},
+		{name: "self ID unresolved", id: "abc123", selfID: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			s := container.Summary{ID: tt.id}
+
+			// Act
+			got := toContainerSummary(s, tt.selfID)
+
+			// Assert
+			if got.Protected != tt.want {
+				t.Errorf("got.Protected = %v, want %v", got.Protected, tt.want)
+			}
+		})
+	}
+}
+
+// TestToContainerDetailProtected mirrors TestToContainerSummaryProtected for
+// toContainerDetail.
+func TestToContainerDetailProtected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		id     string
+		selfID string
+		want   bool
+	}{
+		{name: "matches self ID", id: "abc123", selfID: "abc123", want: true},
+		{name: "does not match self ID", id: "abc123", selfID: "def456", want: false},
+		{name: "self ID unresolved", id: "abc123", selfID: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			r := container.InspectResponse{ID: tt.id}
+
+			// Act
+			got := toContainerDetail(r, tt.selfID)
+
+			// Assert
+			if got.Protected != tt.want {
+				t.Errorf("got.Protected = %v, want %v", got.Protected, tt.want)
+			}
+		})
 	}
 }
 
