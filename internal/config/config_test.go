@@ -157,6 +157,36 @@ func TestLoadOverrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "self container id override, short form",
+			env:  map[string]string{envSelfContainerID: "0123456789ab"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.SelfContainerID != "0123456789ab" {
+					t.Errorf("SelfContainerID = %q, want 0123456789ab", cfg.SelfContainerID)
+				}
+			},
+		},
+		{
+			name: "self container id override, full form",
+			env: map[string]string{
+				envSelfContainerID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			check: func(t *testing.T, cfg Config) {
+				want := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+				if cfg.SelfContainerID != want {
+					t.Errorf("SelfContainerID = %q, want %s", cfg.SelfContainerID, want)
+				}
+			},
+		},
+		{
+			name: "self container id absent is the normal path",
+			env:  map[string]string{},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.SelfContainerID != "" {
+					t.Errorf("SelfContainerID = %q, want empty", cfg.SelfContainerID)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -211,6 +241,21 @@ func TestLoadRejections(t *testing.T) {
 			name:    "audit age shorter than log age",
 			env:     map[string]string{envLogMaxAgeDays: "7", envAuditMaxAgeDays: "1"},
 			wantKey: envAuditMaxAgeDays,
+		},
+		{
+			name:    "self container id uppercase",
+			env:     map[string]string{envSelfContainerID: "0123456789AB"},
+			wantKey: envSelfContainerID,
+		},
+		{
+			name:    "self container id wrong length",
+			env:     map[string]string{envSelfContainerID: "0123456789abc"},
+			wantKey: envSelfContainerID,
+		},
+		{
+			name:    "self container id non-hex",
+			env:     map[string]string{envSelfContainerID: "0123456789zz"},
+			wantKey: envSelfContainerID,
 		},
 	}
 

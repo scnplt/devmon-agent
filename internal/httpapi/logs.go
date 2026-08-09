@@ -94,7 +94,7 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.dc.ContainerLogs(r.Context(), r.PathValue("id"), opts)
 	if err != nil {
-		s.writeDockerError(w, "container logs", err)
+		s.writeDockerError(w, r, "container logs", err)
 		return
 	}
 
@@ -183,7 +183,7 @@ func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !sse.Started() {
-		s.writeDockerError(w, "stream container logs", streamErr)
+		s.writeDockerError(w, r, "stream container logs", streamErr)
 		return
 	}
 

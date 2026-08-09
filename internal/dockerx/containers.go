@@ -28,7 +28,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool) (ListResult[Conta
 
 	items := make([]ContainerSummary, 0, len(res.Items))
 	for _, s := range res.Items {
-		items = append(items, toContainerSummary(s))
+		items = append(items, toContainerSummary(s, c.self.id))
 	}
 
 	items, truncated := truncate(items)
@@ -53,13 +53,15 @@ func (c *Client) InspectContainer(ctx context.Context, ref string) (ContainerDet
 		return ContainerDetail{}, classify("inspect container", err)
 	}
 
-	return toContainerDetail(res.Container), nil
+	return toContainerDetail(res.Container, c.self.id), nil
 }
 
 // toContainerSummary projects a container.Summary onto the allowlisted DTO.
 // s.Health and s.NetworkSettings are nil for ordinary containers (no
-// healthcheck, no attached network) and must be guarded.
-func toContainerSummary(s container.Summary) ContainerSummary {
+// healthcheck, no attached network) and must be guarded. selfID is the
+// agent's own resolved container ID (D18); "" means self-resolution never
+// succeeded, so nothing can ever be marked protected.
+func toContainerSummary(s container.Summary, selfID string) ContainerSummary {
 	var health string
 	if s.Health != nil {
 		health = string(s.Health.Status)
@@ -85,14 +87,17 @@ func toContainerSummary(s container.Summary) ContainerSummary {
 		Health:    health,
 		Labels:    defaultLabels(s.Labels),
 		Ports:     ports,
+		Protected: s.ID == selfID && selfID != "",
 	}
 }
 
 // toContainerDetail projects a container.InspectResponse onto the allowlisted
 // DTO. State, Config, and HostConfig are all nil in ordinary real-world cases
 // (a container mid-creation, an image with no config, a restore of an old
-// record) and must be guarded individually.
-func toContainerDetail(r container.InspectResponse) ContainerDetail {
+// record) and must be guarded individually. selfID is the agent's own
+// resolved container ID (D18); "" means self-resolution never succeeded, so
+// nothing can ever be marked protected.
+func toContainerDetail(r container.InspectResponse, selfID string) ContainerDetail {
 	d := ContainerDetail{
 		ID:           r.ID,
 		Name:         r.Name,
@@ -102,6 +107,7 @@ func toContainerDetail(r container.InspectResponse) ContainerDetail {
 		Platform:     r.Platform,
 		RestartCount: r.RestartCount,
 		Mounts:       toMounts(r.Mounts),
+		Protected:    r.ID == selfID && selfID != "",
 	}
 
 	args := make([]string, 0, len(r.Args))

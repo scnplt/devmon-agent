@@ -39,6 +39,13 @@ const (
 // has never made an authenticated request since it was paired.
 const lastSeenNever = "never"
 
+// auditLimitFlag is the --limit flag on `audit list`.
+const auditLimitFlag = "limit"
+
+// defaultAuditLimit caps `audit list` when --limit is not given, so a large
+// audit table does not scroll an operator's terminal off by default.
+const defaultAuditLimit = 100
+
 // Tabwriter layout for `device list`.
 const (
 	tabwriterMinWidth = 0
@@ -195,4 +202,86 @@ func runDevicePairCode(ctx context.Context, st *state.Store, args []string) erro
 	fmt.Printf("Pairing code: %s\n", code)
 	fmt.Printf("Expires:      %s\n", expiresAt.Format(deviceTimeFormat))
 	return nil
+}
+
+// runAuditCommand dispatches an `audit <subcommand>` invocation, mirroring
+// runDeviceCommand line for line. args holds everything after "audit" on the
+// command line. `list` is the only subcommand — the audit log is deliberately
+// not reachable over the HTTPS API (D20), so this CLI is its only reader.
+//
+// It opens the SAME SQLite file the running agent has open, exactly as
+// runDeviceCommand does, and for the same reasons (see that function's
+// comment).
+func runAuditCommand(ctx context.Context, cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("audit: missing subcommand (want one of: %s)", subcommandList)
+	}
+
+	st, err := openDeviceStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	switch args[0] {
+	case subcommandList:
+		return runAuditListCommand(ctx, st, args[1:])
+	default:
+		return fmt.Errorf("audit: unknown subcommand %q (want one of: %s)", args[0], subcommandList)
+	}
+}
+
+// runAuditListCommand parses the `audit list` flags and prints the result to
+// stdout.
+func runAuditListCommand(ctx context.Context, st *state.Store, args []string) error {
+	fs := flag.NewFlagSet(subcommandList, flag.ContinueOnError)
+	limit := fs.Int(auditLimitFlag, defaultAuditLimit, "maximum number of audit rows to print, most recent first")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("audit list: %w", err)
+	}
+	return runAuditList(ctx, st, os.Stdout, *limit)
+}
+
+// runAuditList prints the most recent audit rows as a table: WHEN, DEVICE,
+// OPERATION, TARGET, OUTCOME, DETAIL. It takes an io.Writer, unlike
+// runDeviceList's direct os.Stdout, so formatting can be asserted in tests.
+func runAuditList(ctx context.Context, st *state.Store, w io.Writer, limit int) error {
+	entries, err := st.ListAudit(ctx, limit)
+	if err != nil {
+		return fmt.Errorf("list audit entries: %w", err)
+	}
+
+	// Joined here, not per-row, so a large audit table costs one ListDevices
+	// call rather than one per row.
+	devices, err := st.ListDevices(ctx)
+	if err != nil {
+		return fmt.Errorf("list devices for audit: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(w, tabwriterMinWidth, tabwriterPadding, tabwriterPadding, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "WHEN\tDEVICE\tOPERATION\tTARGET\tOUTCOME\tDETAIL"); err != nil {
+		return fmt.Errorf("write audit list header: %w", err)
+	}
+	for _, e := range entries {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			e.OccurredAt.Format(deviceTimeFormat), auditDeviceColumn(devices, e.DeviceID), e.Operation, e.Target, e.Outcome, e.Detail); err != nil {
+			return fmt.Errorf("write audit list row: %w", err)
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("write audit list: %w", err)
+	}
+	return nil
+}
+
+// auditDeviceColumn joins a device ID to its current name, mirroring
+// runDeviceRevoke's lookup. A device whose row was deleted still has audit
+// rows — the bare ID is printed rather than failing, because the audit trail
+// outliving the device is the point.
+func auditDeviceColumn(devices []state.Device, id string) string {
+	name := deviceNameByID(devices, id)
+	if name == "" {
+		return id
+	}
+	return fmt.Sprintf("%s (%s)", id, name)
 }
