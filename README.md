@@ -91,6 +91,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_PUBLIC_ADDR` | comma list | *(required)* | ≥1 entry; each a DNS name or IP; used as server-certificate SANs |
 | `DEVMON_POLICY_MODE` | enum | `default` | One of `read-only`, `default`, `full` |
 | `DEVMON_DOCKER_HOST` | URL | `unix:///var/run/docker.sock` | Scheme `unix` or `tcp` |
+| `DEVMON_SELF_CONTAINER_ID` | hex | *(auto-detected)* | 12 or 64 lowercase hex characters |
 | `DEVMON_LOG_LEVEL` | enum | `info` | One of `debug`, `info`, `warn`, `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | int | `1` | ≥1 |
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
@@ -124,6 +125,56 @@ one — useful out of the box, incapable of destroying anything.
 | `read-only` | list, inspect, logs |
 | `default` | the above, plus start, restart, stop |
 | `full` | the above, plus kill, delete |
+
+The mode is fixed at startup and read once. **No client can widen it** — there
+is no API call that changes the tier, by design: a compromised phone must not be
+able to grant itself more than the operator granted. Changing the mode means
+changing `DEVMON_POLICY_MODE` on the host and restarting the agent.
+
+Enforcement is server-side. The app reads `policy_mode` from `/v1/status` and
+greys out what the host forbids, but that is a courtesy to the user, not the
+boundary — a request for a forbidden operation is refused with a 403 whatever
+the client believes, and the refusal is recorded in the audit log.
+
+### The agent excludes itself
+
+The agent will not start, restart, stop, kill, or delete **its own container**,
+in any policy mode. This is a fixed rule rather than a setting: an agent that
+deletes itself destroys the operator's only remote access, and no configuration
+may opt into that.
+
+The rule is enforced on the container ID the Engine resolves, not on the text
+the device sent, so naming the agent by container name, by short ID, or by full
+ID is refused identically. Its row in `GET /v1/containers` carries
+`"protected": true`; every other row carries `"protected": false`, so the app
+can grey out those controls and explain why.
+
+To identify itself, the agent checks `DEVMON_SELF_CONTAINER_ID` first, then
+looks for a container ID in `/proc/self/mountinfo` and `/proc/self/cgroup`, then
+falls back to `$HOSTNAME`. Each candidate is confirmed against the Engine before
+it is accepted, because no single source is reliable — cgroup v2 with a private
+namespace reports nothing useful, and `$HOSTNAME` stops being the container ID
+the moment anyone passes `--hostname`. The resolved ID is logged once at
+startup, so an operator can confirm it protected the right thing.
+
+If the agent is containerised but **no** candidate is confirmed, it logs an
+ERROR naming `DEVMON_SELF_CONTAINER_ID` and answers **503 on the five lifecycle
+routes only**. Reads, logs, pairing, and status keep working. The fix is one
+line — take the ID from `docker ps` and set it:
+
+```yaml
+environment:
+  DEVMON_SELF_CONTAINER_ID: "3f2a91c4e5b8"   # 12 or 64 lowercase hex chars
+```
+
+A malformed value is a startup configuration error (exit 2), not a warning: this
+is the documented fix for the one case where lifecycle is unavailable, so a typo
+must surface at start rather than when the button stays grey. Setting it to a
+valid but *wrong* ID protects that container instead — the override is trusted.
+
+Running the agent directly on the host rather than in a container is fine: there
+is no container to protect, so lifecycle works normally and the agent says so
+once at INFO.
 
 ### Retention
 
@@ -208,6 +259,26 @@ than failing obscurely at the first query.
 | `GET /v1/volumes/{name}` | client cert | Inspect one volume |
 | `GET /v1/containers/{id}/logs` | client cert | Recent log lines as JSON |
 | `GET /v1/containers/{id}/logs/stream` | client cert | Live log stream (Server-Sent Events) |
+| `POST /v1/containers/{id}/start` | client cert | Start a stopped container — needs `default` |
+| `POST /v1/containers/{id}/restart` | client cert | Restart a container — needs `default` |
+| `POST /v1/containers/{id}/stop` | client cert | Stop a running container — needs `default` |
+| `POST /v1/containers/{id}/kill` | client cert | SIGKILL a running container — needs `full` |
+| `DELETE /v1/containers/{id}` | client cert | Delete a stopped container — needs `full` |
+
+The five mutating routes answer **204 with no body**. The Engine's lifecycle
+calls return before the container has finished changing state — a restart
+returns before it is healthy, a stop while the process is still unwinding — so
+any state sent back would be a snapshot that is already stale. Re-fetch
+`GET /v1/containers/{id}` instead; it is one cheap request and always true.
+
+Starting a container that is already running, or stopping one that is already
+stopped, is a **204**, not an error. The goal is already met, and reporting a
+failure would invite a retry that cannot help.
+
+Delete never force-stops. A running container is a 409, so removing one is stop
+then delete: two deliberate operations leaving two audit rows, rather than one
+tap that kills and destroys in a single step. Kill is always SIGKILL — there is
+no `?signal=`, because the kill button means "stop this now".
 
 Both log routes accept `?tail=<n>` and `?since=<rfc3339>`. `tail` is bounded to
 1…2000 and falls back to its default — 200 historical, 100 for the stream — when
@@ -227,6 +298,18 @@ Failure modes shared by every read route:
 | No such object | 404 | `{"error":"not found"}` |
 | Engine unreachable, timed out, or otherwise failing | 502 | `{"error":"docker engine unavailable"}` |
 | All live stream slots in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
+
+The mutating routes add three of their own:
+
+| Condition | Status | Body |
+|---|---|---|
+| The target is the agent's own container | 403 | `{"error":"the agent cannot act on itself"}` |
+| Delete of a running container | 409 | `{"error":"container is running"}` |
+| The agent is containerised but cannot identify itself | 503 | `{"error":"agent cannot identify its own container"}` |
+
+403 is deliberately distinguishable from 401 and 502 so the app can say "your
+host forbids this" rather than "something broke", and 409 lets it offer "stop it
+first" instead of a bare failure.
 
 502 rather than 500 is deliberate: the Engine is an upstream dependency, so its
 failures are gateway failures. That keeps 500 meaning "the agent itself broke",
@@ -471,6 +554,37 @@ trade.
 
 Reading this list while the agent runs is safe and expected — that is what WAL
 mode and the busy timeout were configured for.
+
+### The audit log
+
+Every mutating request writes exactly **one** row — successes, refusals by
+policy, refusals by self-exclusion, and failures alike. Reads are not recorded:
+a row per list refresh would drown the record the log exists for and then push
+the destructive-operation history out under retention.
+
+```bash
+$ docker exec devmon-agent /usr/local/bin/devmon-agent audit list --limit 5
+WHEN                  DEVICE            OPERATION  TARGET  OUTCOME        DETAIL
+2026-08-08T21:06:40Z  3f9a1c… (pixel-8) delete     devmon  denied_self
+2026-08-08T21:05:02Z  3f9a1c… (pixel-8) kill       api     denied_policy
+2026-08-08T21:04:11Z  3f9a1c… (pixel-8) restart    api     success        9c2e…
+```
+
+Each row carries the calling device, the operation, the target **as the device
+supplied it**, and the outcome. Recording only the resolved ID would erase the
+case where a device named a container that does not exist — precisely the
+pattern that separates a fat-fingered operator from something scanning for
+targets. `detail` holds the resolved container ID or a short fixed reason, never
+an Engine message, which could name a socket path or a host mount.
+
+An unauthenticated request writes **no** row. Attribution is the point, and
+letting an anonymous caller write would hand a scanner a way to flood the record.
+
+The log lives in the same SQLite file as the device registry, bounded by
+`DEVMON_AUDIT_MAX_AGE_DAYS` and `DEVMON_AUDIT_MAX_ROWS`. It **is not reachable
+over the API**, in any policy mode — it is the one artifact whose value survives
+a compromised device, and a phone that can read it can see what it would need to
+cover up. Host access is the authority here, exactly as it is for revocation.
 
 ---
 
