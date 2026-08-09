@@ -187,7 +187,7 @@ func TestListAuditOrdersMostRecentFirstByID(t *testing.T) {
 			t.Errorf("ListAudit() entries[%d].Target = %q, want %q", i, entry.Target, want[i])
 		}
 	}
-	if !(entries[0].ID > entries[1].ID && entries[1].ID > entries[2].ID) {
+	if entries[0].ID <= entries[1].ID || entries[1].ID <= entries[2].ID {
 		t.Errorf("ListAudit() ids not descending: %d, %d, %d", entries[0].ID, entries[1].ID, entries[2].ID)
 	}
 }

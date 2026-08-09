@@ -73,6 +73,10 @@ func dockerenvExists(root string) bool {
 // or unreadable file yields an empty slice, never an error: every source
 // here is best-effort.
 func hexIDsIn(path string) []string {
+	// #nosec G304 -- path is assembled by Detect from a caller-supplied root
+	// plus fixed literal segments ("proc/self/mountinfo", "proc/self/cgroup").
+	// The root is "/" in production and a test temp dir otherwise; no part of
+	// it comes from a request, a device, or any other untrusted source.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
