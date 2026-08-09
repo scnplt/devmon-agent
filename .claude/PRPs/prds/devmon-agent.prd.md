@@ -208,7 +208,7 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 | 2 | Identity, pairing & revocation | Agent CA, pairing codes, per-device credentials, device registry, renewal, self-unpair, host-side device commands, missing-state handling | complete | - | 1 | [identity-pairing-and-revocation.plan.md](../plans/completed/identity-pairing-and-revocation.plan.md) · [report](../reports/identity-pairing-and-revocation-report.md) |
 | 3 | Read operations | Container/image/network/volume list and inspect | complete | with 4 | 2 | [read-operations.plan.md](../plans/completed/read-operations.plan.md) · [report](../reports/read-operations-report.md) |
 | 4 | Logs & live streaming | Historical logs plus a resilient live stream channel | awaiting device validation | with 3 | 2 | [logs-and-live-streaming.plan.md](../plans/completed/logs-and-live-streaming.plan.md) · [report](../reports/logs-and-live-streaming-report.md) |
-| 5 | Lifecycle, policy & audit | start/restart/stop/kill/delete, server-side mode enforcement, agent self-exclusion, audit logging | in-progress | - | 3 | [lifecycle-policy-and-audit.plan.md](../plans/lifecycle-policy-and-audit.plan.md) |
+| 5 | Lifecycle, policy & audit | start/restart/stop/kill/delete, server-side mode enforcement, agent self-exclusion, audit logging | awaiting host validation | - | 3 | [lifecycle-policy-and-audit.plan.md](../plans/completed/lifecycle-policy-and-audit.plan.md) · [report](../reports/lifecycle-policy-and-audit-report.md) |
 | 6 | Hardening & OSS release | Rate limiting, security review, automated installer, threat-model docs, AGPL-3.0 release | pending | - | 4, 5 | - |
 
 ### Phase Details
