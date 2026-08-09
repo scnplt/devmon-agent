@@ -65,10 +65,13 @@ type pairResponseBody struct {
 // Device is one paired client: an ECDSA P-256 key, the certificate the agent
 // issued for it, and an http.Client whose RootCAs pool contains ONLY the
 // pinned CA. No field of it is safe to print directly — use String(), which
-// redacts, or the exported ID and CAFingerprint fields.
+// redacts, or the exported ID, CAFingerprint, CertCommonName, and CertSerial
+// fields.
 type Device struct {
-	ID            string
-	CAFingerprint string // SHA-256 hex of the pinned CA, comparable across restarts
+	ID             string
+	CAFingerprint  string // SHA-256 hex of the pinned CA, comparable across restarts
+	CertCommonName string // the issued leaf's Subject.CommonName — always the device ID, never the CSR's own Subject (internal/certs/issue.go ignores it)
+	CertSerialHex  string // the issued leaf's serial number, base16 — distinct per device and per renewal
 
 	baseURL   string
 	tlsConfig *tls.Config
@@ -88,6 +91,24 @@ func (d *Device) TLSConfig() *tls.Config {
 	return d.tlsConfig.Clone()
 }
 
+// Rebind returns a copy of d pointed at a's BaseURL, keeping the same
+// pinned trust and client certificate. A restart test needs this: pairings
+// survive a restart (the CA and every device row are persisted), but the
+// listen port does not — each StartAgent call allocates a fresh one, so a
+// Device minted against the pre-restart agent must be repointed before it
+// can be used against the post-restart one.
+func (d *Device) Rebind(a *Agent) *Device {
+	return &Device{
+		ID:             d.ID,
+		CAFingerprint:  d.CAFingerprint,
+		CertCommonName: d.CertCommonName,
+		CertSerialHex:  d.CertSerialHex,
+		baseURL:        a.BaseURL,
+		tlsConfig:      d.tlsConfig,
+		client:         d.client,
+	}
+}
+
 // PairDevice performs the full documented pairing sequence against a running
 // agent and returns a client pinned to the CA it received. name is passed to
 // the host-side `device pair-code` command and becomes the device's display
@@ -98,20 +119,26 @@ func PairDevice(t *testing.T, a *Agent, name string) *Device {
 	t.Helper()
 
 	code := MintPairingCode(t, a, name)
+	key := GenerateDeviceKey(t)
+	csrPEM := DeviceCSRPEM(t, key, "devmon-e2e-device")
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate device key: %v", err)
-	}
-	csrPEM, err := buildCSRPEM(key)
-	if err != nil {
-		t.Fatalf("build device CSR: %v", err)
+	status, raw := TryPairDevice(t, a, code, csrPEM)
+	if status != http.StatusCreated {
+		t.Fatalf("POST /v1/pair: status = %d, want %d; body = %s", status, http.StatusCreated, redact(raw))
 	}
 
-	resp, ok := bootstrapPair(t, a, code, csrPEM)
-	if !ok {
-		t.Fatalf("pairing did not return a usable response")
+	var resp pairResponseBody
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode /v1/pair response: %v; body = %s", err, redact(raw))
 	}
+
+	return deviceFromPairResponse(t, a, key, resp)
+}
+
+// deviceFromPairResponse parses a successful pairing response into a Device
+// pinned to the CA it received.
+func deviceFromPairResponse(t *testing.T, a *Agent, key *ecdsa.PrivateKey, resp pairResponseBody) *Device {
+	t.Helper()
 
 	caCert, err := parseSingleCertPEM(resp.CACertificate)
 	if err != nil {
@@ -124,25 +151,52 @@ func PairDevice(t *testing.T, a *Agent, name string) *Device {
 
 	pool := x509.NewCertPool()
 	pool.AddCert(caCert)
+	sum := sha256.Sum256(caCert.Raw)
+
+	return buildDevice(t, a.BaseURL, resp.DeviceID, hex.EncodeToString(sum[:]), pool, key, deviceCert)
+}
+
+// NewDeviceFromRenewal builds a Device from a successful POST
+// /v1/device/renew response, reusing prior's device ID and pinned CA pool —
+// renewal never changes the CA (internal/certs — clients pin the CA, not the
+// leaf) — but replacing the key, certificate, and http.Client. prior is not
+// mutated or invalidated: its own certificate keeps working until its own
+// expiry (internal/httpapi/device.go), which is exactly the property a test
+// asserting renewal must be able to check by using both Devices afterward.
+func NewDeviceFromRenewal(t *testing.T, prior *Device, key *ecdsa.PrivateKey, certificatePEM string) *Device {
+	t.Helper()
+
+	deviceCert, err := parseSingleCertPEM(certificatePEM)
+	if err != nil {
+		t.Fatalf("parse certificate_pem from renew response: %v", err)
+	}
+
+	return buildDevice(t, prior.baseURL, prior.ID, prior.CAFingerprint, prior.tlsConfig.RootCAs, key, deviceCert)
+}
+
+// buildDevice assembles a Device around an already-parsed leaf certificate
+// and CA pool. Shared by deviceFromPairResponse and NewDeviceFromRenewal so
+// the pinned-client construction lives in exactly one place.
+func buildDevice(t *testing.T, baseURL, id, caFingerprint string, pool *x509.CertPool, key *ecdsa.PrivateKey, deviceCert *x509.Certificate) *Device {
+	t.Helper()
 
 	tlsCert := tls.Certificate{
 		Certificate: [][]byte{deviceCert.Raw},
 		PrivateKey:  key,
 	}
-
 	tlsCfg := &tls.Config{
 		RootCAs:      pool,
 		Certificates: []tls.Certificate{tlsCert},
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	sum := sha256.Sum256(caCert.Raw)
-
 	return &Device{
-		ID:            resp.DeviceID,
-		CAFingerprint: hex.EncodeToString(sum[:]),
-		baseURL:       a.BaseURL,
-		tlsConfig:     tlsCfg,
+		ID:             id,
+		CAFingerprint:  caFingerprint,
+		CertCommonName: deviceCert.Subject.CommonName,
+		CertSerialHex:  deviceCert.SerialNumber.Text(16),
+		baseURL:        baseURL,
+		tlsConfig:      tlsCfg,
 		client: &http.Client{
 			Timeout:   deviceRequestTimeout,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
@@ -150,27 +204,43 @@ func PairDevice(t *testing.T, a *Agent, name string) *Device {
 	}
 }
 
-// buildCSRPEM generates a PKCS#10 CSR for key. The Subject is intentionally
-// minimal: internal/certs/issue.go ignores it entirely, so any value here is
-// equally valid, and asserting that is a security property a future test may
-// exercise by inspecting the issued certificate's CN instead.
-func buildCSRPEM(key *ecdsa.PrivateKey) ([]byte, error) {
+// GenerateDeviceKey creates a fresh ECDSA P-256 key — the only curve
+// internal/certs/issue.go accepts for a device certificate request.
+func GenerateDeviceKey(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate device key: %v", err)
+	}
+	return key
+}
+
+// DeviceCSRPEM builds a PKCS#10 CSR PEM block for key. commonName is
+// intentionally caller-controlled: internal/certs/issue.go ignores the CSR's
+// Subject entirely, so a test asserting that (a CSR asking for CN=admin
+// still gets a certificate whose CN is the device ID) needs to be able to
+// set it to something obviously wrong.
+func DeviceCSRPEM(t *testing.T, key *ecdsa.PrivateKey, commonName string) []byte {
+	t.Helper()
 	template := x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: "devmon-e2e-device"},
+		Subject: pkix.Name{CommonName: commonName},
 	}
 	der, err := x509.CreateCertificateRequest(rand.Reader, &template, key)
 	if err != nil {
-		return nil, fmt.Errorf("create certificate request: %w", err)
+		t.Fatalf("create certificate request: %v", err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificateRequest, Bytes: der}), nil
+	return pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificateRequest, Bytes: der})
 }
 
-// bootstrapPair issues the one-time, unverified POST /v1/pair request — the
-// exact shape of the README's `curl -k` step. InsecureSkipVerify is
-// permitted here and nowhere else besides Agent.waitReady's readiness probe
-// (D7): the device has no pinned CA yet, so there is nothing else it could
-// verify against.
-func bootstrapPair(t *testing.T, a *Agent, code string, csrPEM []byte) (pairResponseBody, bool) {
+// TryPairDevice issues the one-time, unverified POST /v1/pair request — the
+// exact shape of the README's `curl -k` step — and returns the raw status
+// and body instead of failing the test. It exists for tests that must
+// observe a REJECTED pairing attempt (a reused code, an unknown code, a
+// malformed CSR): PairDevice itself fails the test on anything but success.
+// InsecureSkipVerify is permitted here and nowhere else besides
+// Agent.waitReady's readiness probe (D7): the device has no pinned CA yet,
+// so there is nothing else it could verify against.
+func TryPairDevice(t *testing.T, a *Agent, code string, csrPEM []byte) (status int, body []byte) {
 	t.Helper()
 
 	reqBody, err := json.Marshal(pairRequestBody{PairingCode: code, CSRPEM: string(csrPEM)})
@@ -197,15 +267,7 @@ func bootstrapPair(t *testing.T, a *Agent, code string, csrPEM []byte) (pairResp
 	if err != nil {
 		t.Fatalf("read /v1/pair response body: %v", err)
 	}
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("POST /v1/pair: status = %d, want %d; body = %s", resp.StatusCode, http.StatusCreated, redact(raw))
-	}
-
-	var body pairResponseBody
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatalf("decode /v1/pair response: %v; body = %s", err, redact(raw))
-	}
-	return body, true
+	return resp.StatusCode, raw
 }
 
 // parseSingleCertPEM decodes exactly one PEM-encoded certificate.
