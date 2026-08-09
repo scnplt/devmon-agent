@@ -23,8 +23,9 @@ const pingTimeout = 5 * time.Second
 
 // Client is the agent's handle on the Docker Engine.
 type Client struct {
-	api *client.Client
-	log *slog.Logger
+	api  *client.Client
+	log  *slog.Logger
+	self selfInfo
 }
 
 // New dials the Docker Engine at host and verifies it responds.
@@ -32,7 +33,11 @@ type Client struct {
 // A host whose Engine is unreachable cannot serve any agent operation, so this
 // is a fatal startup error rather than a degraded mode: an agent that starts and
 // then fails every request is harder to diagnose than one that refuses to start.
-func New(ctx context.Context, host string, log *slog.Logger) (*Client, error) {
+//
+// selfOverride is the operator's DEVMON_SELF_CONTAINER_ID, or "" when unset.
+// It is the escape hatch for the rare host where every filesystem-derived
+// candidate is wrong (D2).
+func New(ctx context.Context, host string, selfOverride string, log *slog.Logger) (*Client, error) {
 	// WithHost, not client.FromEnv: the socket path comes from the agent's own
 	// validated configuration and must not be redirectable by an unrelated
 	// DOCKER_HOST in the process environment.
@@ -59,7 +64,12 @@ func New(ctx context.Context, host string, log *slog.Logger) (*Client, error) {
 		slog.String("api_version", res.APIVersion),
 		slog.String("os_type", res.OSType),
 	)
-	return &Client{api: api, log: log}, nil
+
+	c := &Client{api: api, log: log}
+	// Resolved once here, right after Ping, so Client stays immutable for
+	// its whole life (D5) — no later write for concurrent handlers to race.
+	c.self = c.resolveSelf(ctx, selfOverride)
+	return c, nil
 }
 
 // Close releases the Engine connection.

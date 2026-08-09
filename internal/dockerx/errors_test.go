@@ -49,13 +49,15 @@ func TestClassify(t *testing.T) {
 	originalErr := errors.New("boom")
 
 	tests := []struct {
-		name          string
-		op            string
-		err           error
-		wantNil       bool
-		wantNotFound  bool
-		wantOriginal  error
-		wantOpInError string
+		name            string
+		op              string
+		err             error
+		wantNil         bool
+		wantNotFound    bool
+		wantNotModified bool
+		wantConflict    bool
+		wantOriginal    error
+		wantOpInError   string
 	}{
 		{
 			name:    "nil error passes through as nil",
@@ -69,6 +71,20 @@ func TestClassify(t *testing.T) {
 			err:           cerrdefs.ErrNotFound,
 			wantNotFound:  true,
 			wantOpInError: "inspect container",
+		},
+		{
+			name:            "not modified error maps to ErrNotModified",
+			op:              "start container",
+			err:             cerrdefs.ErrNotModified,
+			wantNotModified: true,
+			wantOpInError:   "start container",
+		},
+		{
+			name:          "conflict error maps to ErrConflict",
+			op:            "remove container",
+			err:           cerrdefs.ErrConflict,
+			wantConflict:  true,
+			wantOpInError: "remove container",
 		},
 		{
 			name:          "plain error is wrapped but not classified as not found",
@@ -104,8 +120,34 @@ func TestClassify(t *testing.T) {
 				return
 			}
 
+			if tt.wantNotModified {
+				if !errors.Is(got, ErrNotModified) {
+					t.Errorf("errors.Is(got, ErrNotModified) = false, want true")
+				}
+				if !strings.HasPrefix(got.Error(), tt.wantOpInError) {
+					t.Errorf("got.Error() = %q, want prefix %q", got.Error(), tt.wantOpInError)
+				}
+				return
+			}
+
+			if tt.wantConflict {
+				if !errors.Is(got, ErrConflict) {
+					t.Errorf("errors.Is(got, ErrConflict) = false, want true")
+				}
+				if !strings.HasPrefix(got.Error(), tt.wantOpInError) {
+					t.Errorf("got.Error() = %q, want prefix %q", got.Error(), tt.wantOpInError)
+				}
+				return
+			}
+
 			if errors.Is(got, ErrNotFound) {
 				t.Errorf("errors.Is(got, ErrNotFound) = true, want false")
+			}
+			if errors.Is(got, ErrNotModified) {
+				t.Errorf("errors.Is(got, ErrNotModified) = true, want false")
+			}
+			if errors.Is(got, ErrConflict) {
+				t.Errorf("errors.Is(got, ErrConflict) = true, want false")
 			}
 			if !errors.Is(got, tt.wantOriginal) {
 				t.Errorf("errors.Is(got, originalErr) = false, want true")

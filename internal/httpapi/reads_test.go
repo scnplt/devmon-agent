@@ -38,6 +38,15 @@ type fakeDocker struct {
 	// them unset keeps working unmodified.
 	containerLogsFn       func(ctx context.Context, ref string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error)
 	streamContainerLogsFn func(ctx context.Context, ref string, opts dockerx.LogOptions, emit func(dockerx.LogLine) error) error
+
+	// The five lifecycle fields back ContainerController (D7). Nil-safe by
+	// default like every field above: a nil function answers with no error,
+	// mirroring an Engine call that succeeded.
+	startContainerFn   func(ctx context.Context, ref string) error
+	restartContainerFn func(ctx context.Context, ref string) error
+	stopContainerFn    func(ctx context.Context, ref string) error
+	killContainerFn    func(ctx context.Context, ref string) error
+	removeContainerFn  func(ctx context.Context, ref string) error
 }
 
 var _ DockerReader = (*fakeDocker)(nil)
@@ -110,6 +119,41 @@ func (fd *fakeDocker) StreamContainerLogs(ctx context.Context, ref string, opts 
 		return nil
 	}
 	return fd.streamContainerLogsFn(ctx, ref, opts, emit)
+}
+
+func (fd *fakeDocker) StartContainer(ctx context.Context, ref string) error {
+	if fd.startContainerFn == nil {
+		return nil
+	}
+	return fd.startContainerFn(ctx, ref)
+}
+
+func (fd *fakeDocker) RestartContainer(ctx context.Context, ref string) error {
+	if fd.restartContainerFn == nil {
+		return nil
+	}
+	return fd.restartContainerFn(ctx, ref)
+}
+
+func (fd *fakeDocker) StopContainer(ctx context.Context, ref string) error {
+	if fd.stopContainerFn == nil {
+		return nil
+	}
+	return fd.stopContainerFn(ctx, ref)
+}
+
+func (fd *fakeDocker) KillContainer(ctx context.Context, ref string) error {
+	if fd.killContainerFn == nil {
+		return nil
+	}
+	return fd.killContainerFn(ctx, ref)
+}
+
+func (fd *fakeDocker) RemoveContainer(ctx context.Context, ref string) error {
+	if fd.removeContainerFn == nil {
+		return nil
+	}
+	return fd.removeContainerFn(ctx, ref)
 }
 
 // testServerWithDocker is a fifth Server helper, additive to testServer,

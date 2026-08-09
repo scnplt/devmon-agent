@@ -75,6 +75,15 @@ func run() error {
 		return runDeviceCommand(context.Background(), cfg, flag.Args()[1:])
 	}
 
+	// The `audit list` CLI (D19) is the audit trail's only reader — it is
+	// deliberately not exposed over the HTTPS API (D20). It is dispatched here
+	// for the same reason as `device`: it must never trigger state-dir prep,
+	// log-sink construction, or certificate loading meant only for the
+	// long-running agent.
+	if flag.Arg(0) == "audit" {
+		return runAuditCommand(context.Background(), cfg, flag.Args()[1:])
+	}
+
 	if err := prepareStateDir(cfg); err != nil {
 		return err
 	}
@@ -152,7 +161,7 @@ func serve(ctx context.Context, cfg config.Config, sink *logging.Sink, log *slog
 		return err
 	}
 
-	dc, err := dockerx.New(ctx, cfg.DockerHost, log)
+	dc, err := dockerx.New(ctx, cfg.DockerHost, cfg.SelfContainerID, log)
 	if err != nil {
 		return err
 	}
