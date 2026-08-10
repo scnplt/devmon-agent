@@ -21,7 +21,14 @@ export CGO_ENABLED := 0
 # number for the code that is actually testable.
 COVER_PKGS := ./internal/...
 
-.PHONY: all build test test-race cover lint sec image fmt clean
+# The end-to-end suite needs a real Docker Engine and is excluded from every
+# default target by the `e2e` build tag, so `go build ./...`, `go vet ./...` and
+# `go test ./internal/...` never compile or run a line of it. -count=1 defeats
+# the test cache: e2e results depend entirely on state outside the module, so a
+# cached PASS from before a change is a false green.
+E2E_PKGS := ./internal/e2e/...
+
+.PHONY: all build test test-race cover lint sec image fmt clean e2e e2e-container e2e-endurance e2e-lint
 
 all: build
 
@@ -53,6 +60,32 @@ lint:
 
 sec:
 	gosec ./...
+
+# -race instruments the test binary only; the agent binary it builds and runs as
+# a child process is still built with CGO_ENABLED=0, matching the shipped
+# artifact. Requires a Linux Engine over unix:// or tcp:// — on Windows, run
+# these from a WSL2 shell.
+e2e:
+	CGO_ENABLED=1 go test -tags e2e $(E2E_PKGS) -race -count=1 -timeout 15m
+
+e2e-container:
+	CGO_ENABLED=1 go test -tags e2e ./internal/e2e/incontainer/... -race -count=1 -timeout 15m
+
+# The 30-minute stream and the retention budget. Both are compiled by every e2e
+# run and skip unless DEVMON_E2E_ENDURANCE=1, which this target sets along with
+# the longer timeout they need room inside.
+e2e-endurance:
+	DEVMON_E2E_ENDURANCE=1 CGO_ENABLED=1 go test -tags e2e ./internal/e2e/api/... -race -count=1 -timeout 45m
+
+# `make lint` already covers the e2e files with gofmt, which ignores build tags.
+# go vet and golangci-lint do not, which is the only reason this target exists.
+# Do not fold `--build-tags e2e` into `lint`: it would pull the e2e packages into
+# every ordinary lint run and slow the fast dev-PR path for no benefit.
+e2e-lint:
+	go vet -tags e2e ./...
+	@command -v golangci-lint >/dev/null 2>&1 \
+		&& golangci-lint run --build-tags e2e $(E2E_PKGS) \
+		|| echo "golangci-lint not installed — go vet -tags e2e was the only lint run"
 
 image:
 	docker build \
