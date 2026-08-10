@@ -37,6 +37,12 @@ type Result struct {
 	// Candidates are container-ID candidates in priority order, longest and
 	// most trustworthy first. May be empty even when Containerized is true.
 	Candidates []string
+	// Override is the operator-supplied DEVMON_SELF_CONTAINER_ID, or "" when
+	// none was set. Carried alongside Candidates (rather than requiring the
+	// caller to remember it separately) so internal/dockerx's confirmSelf can
+	// tell whether a skipped candidate was the operator's explicit choice and
+	// log accordingly.
+	Override string
 }
 
 // Detect gathers candidates. root is the filesystem root to read under ("/"
@@ -47,6 +53,7 @@ type Result struct {
 func Detect(root, override string, getenv func(string) string) Result {
 	result := Result{
 		Containerized: dockerenvExists(root),
+		Override:      override,
 	}
 
 	var candidates []string

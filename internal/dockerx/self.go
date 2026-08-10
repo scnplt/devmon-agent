@@ -65,6 +65,16 @@ func (c *Client) confirmSelf(ctx context.Context, detected selfid.Result) selfIn
 					slog.Any("err", err),
 				)
 			}
+			// The override is the operator's explicit configuration, not a
+			// best-effort filesystem guess like mountinfo or cgroup — losing
+			// it silently leaves no signal that DEVMON_SELF_CONTAINER_ID was
+			// discarded. detected.Override appears in Candidates at most
+			// once (selfid.Detect dedupes), so this fires exactly once.
+			if detected.Override != "" && candidate == detected.Override {
+				c.log.Warn("discarding DEVMON_SELF_CONTAINER_ID: the Engine does not recognise it",
+					slog.String("container_id", detected.Override),
+				)
+			}
 			continue
 		}
 
