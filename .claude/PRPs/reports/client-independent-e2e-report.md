@@ -20,6 +20,14 @@ default gate is untouched: every file carries `//go:build e2e`, so `go build ./.
 `go vet ./...`, `go test ./internal/... -race` and `make cover` neither compile nor run a
 line of it.
 
+**The suite has been run against a real Engine and is green** — Docker 29.6.1 on
+Ubuntu 26.04 under WSL2. 71 tests pass across the three groups, including both PRD
+success signals this phase existed to close: the agent refusing to act on itself in
+`full` mode across all fifteen (route × reference-form) cells, and a 30-minute log
+stream held open with no gap and no reconnect. The first run found five defects,
+all in the suite, and one divergence between the documented contract and what the
+agent actually does — recorded as Finding 1, not fixed here.
+
 ## Assessment vs Reality
 
 | Metric | Predicted (Plan) | Actual |
@@ -77,52 +85,117 @@ long pole and the audit tests reuse nothing from it.
 | `go test ./internal/... -race` | Pass | All 10 packages, unchanged package list and duration |
 | `gosec ./...` | Pass | Unchanged — the e2e files are both tag-excluded and `_test.go`, so the scanner never sees them |
 | Module hygiene | Pass | `go.mod` and `go.sum` byte-identical to the start of the phase |
-| **`make e2e` against a real Engine** | **Not run** | See Outstanding |
+| **Host-binary group** | **Pass** | 58 passed, 2 skipped (env-gated endurance), 0 failed — 49.5s |
+| **In-container group** | **Pass** | 11 passed, 0 failed — 180.4s |
+| **Endurance group** | **Pass** | 2 passed — 1820.2s |
 
-## Outstanding — the suite has not yet been observed green
+### The environment the suite was proved against
 
-**No part of this suite has been executed against a Docker Engine.** The development
-machine is Windows with Docker Desktop's Linux engine stopped, and D6 puts the documented
-path inside WSL2. What has been proved is that everything compiles under `-tags e2e`, that
-the pure-function parts (SSE frame parsing, proxy bookkeeping, the skip gates) behave, and
-that the default gate is unaffected.
+| | |
+|---|---|
+| Engine | Docker **29.6.1**, linux/amd64 |
+| Host | Ubuntu 26.04 LTS under WSL2 (kernel 6.18.33.2-microsoft-standard-WSL2) on Windows 11 |
+| Go | 1.26.4 linux/amd64, `CGO_ENABLED=1` for the test binary, `CGO_ENABLED=0` for the agent under test |
+| Wall clock | ~4.5 min for both ordinary groups; 30.3 min for the endurance group |
 
-This is why **the PRD's Phase 4 and Phase 5 rows were not flipped to `complete`**. The
-plan is explicit that they may move only after a green run is actually observed and
-recorded here with the Engine version it ran against, and that flipping them on the
-strength of the code existing is precisely the failure this phase was created to end.
-Phase 6's own row reads `awaiting a green run on a real Engine` for the same reason.
+The documented Windows path is WSL2 (D6) and this is it: Docker Desktop's Linux
+engine, reached over `unix:///var/run/docker.sock` from inside the distro. A
+Windows-native run skips, as designed — verified below.
 
-Falsifiability is in the same position. Each test's doc comment records how it should be
-falsified — the specific inversion, wrong target, or omitted setup step that must turn it
-red — but those inversions have not been performed. The per-task obligation is therefore
-**discharged in design and outstanding in execution**, and a green first run is not
-sufficient to close it: a green test that has never been red is indistinguishable from a
-test that asserts nothing.
+## PRD Success Signals — both now closed
 
-### What a first run must do, in order
+| Signal | Test | Result |
+|---|---|---|
+| **Phase 5 headline**: the agent survives a delete attempt in the most permissive mode | `TestAgentRefusesToActOnItself` | **Pass** — 15 cells (5 routes × name/short-ID/full-ID) all 403 under `full` mode; container still running, restart count 0, API still answering, confirmed by asking the Engine rather than the agent |
+| **Phase 4**: a 30-minute stream without loss | `TestStreamEnduranceThirtyMinutes` | **Pass** — 1802.86s, every line in order, no gap, no reconnect |
+| **Phase 1**: retention bounds disk use | `TestLogRetentionBoundsDiskUse` | **Pass** — rotation fired, `.gz` backups present, directory within budget |
+| Pairings survive restart and image upgrade | `TestPairingsSurviveImageUpgrade` | **Pass** |
 
-1. `make e2e` from a WSL2 shell with the Linux engine running. Record the Engine version,
-   the platform, and the wall-clock duration in this report.
-2. Work through the failures. A first run of 76 tests written without execution will not be
-   green, and the interesting question is which failures are the suite's and which are the
-   agent's. **A defect the suite uncovers is recorded here and fixed in its own task and
-   its own commit** (D19) — never folded into a fix of the test that found it.
-3. Perform each test's recorded falsification once, and note in this report how each was
-   falsified.
-4. `make e2e-endurance` once — the 30-minute stream is the PRD's Phase 4 success signal.
-5. Only then flip the PRD's Phase 4, Phase 5, and Phase 6 rows.
+## Defects Found by the First Run
 
-### The rest of the manual checklist
+Every one was in the suite. **No production Go file was changed** (D19). Findings
+about production behaviour are recorded below rather than fixed.
 
-- [ ] `make e2e` on a clean Linux host, Engine version recorded
-- [ ] `make e2e` from WSL2; confirm both groups run rather than skip
-- [ ] `make e2e` Windows-native; confirm the skip names WSL2 and does not read as a failure
-- [ ] Two concurrent runs on one host; confirm neither disturbs the other's fixtures
-- [ ] Docker stopped: suite skips, target exits 0; with `DEVMON_E2E_REQUIRE=1`, it fails
-- [ ] A full `-v` run inspected for any pairing code, PEM block, or private key
-- [ ] `docker ps -a` after a full run shows no leftover `com.devmon.e2e` container
-- [ ] The CI `e2e` job runs on a PR into `main` and is skipped, not queued, on a PR into `dev`
+| # | Defect | Consequence | Commit |
+|---|---|---|---|
+| 1 | `harness.Proxy.shutdown` closed the listener but not live connections, then waited on the forward `WaitGroup` | An idle keep-alive connection to the Engine parked `io.Copy` forever; cleanup deadlocked and the whole package died on the 15m timeout with no per-test results | `a239b38` |
+| 2 | Two audit tests drove `DELETE` under `default` policy expecting `not_found` | The policy gate runs before the Engine lookup, so the answer is 403 `denied_policy` regardless of the target. The agent was right; the tests were wrong | `a239b38` |
+| 3 | `TestMissingCertsDirIsLoudNotSilent` asserted `certs/` was absent after a refused start | `prepareStateDir` recreates the state subdirectories before the identity check; an empty `certs/` is correct. The property that matters is that no CA material was minted | `a239b38` |
+| 4 | `ContainerAgent.Restart` kept a stale `BaseURL` | The published host port is requested as `"0"`, so the Engine assigns a fresh ephemeral port at every start — measured 32770 → 32771. The restarted agent was unreachable at the old address | `df9ab01` |
+| 5 | `TestStreamResumeRepeatsAtMostOneLine` could not fail | Found by running its own recorded falsification — see below | `1982d71` |
+
+### Finding 1 (production behaviour, not fixed here)
+
+**An unrecognised `DEVMON_SELF_CONTAINER_ID` is silently ignored.**
+
+`internal/selfid/selfid.go:54-59` makes the override merely the *first* candidate,
+and `internal/dockerx/self.go`'s `confirmSelf` skips a candidate the Engine does not
+recognise exactly as it skips a stale mountinfo line — with **no log line at all**
+(only a non-not-found inspect error earns a `Warn`). The mountinfo candidate then
+resolves, so the agent self-identifies correctly.
+
+Measured: all five lifecycle routes answered 403 `the agent cannot act on itself`,
+and `agent.log` contained neither an `ERROR` nor the string
+`DEVMON_SELF_CONTAINER_ID`. The plan and the Phase 5 checklist had specified 503
+plus an ERROR line.
+
+**Security posture is sound** — self-exclusion is fully armed, via a correctly
+detected ID. What is lost is operator visibility: someone who pins the wrong
+container ID gets silent fallback and no signal that their explicit configuration
+was discarded. `TestUnresolvableSelfIDFailsClosed` was renamed to
+`TestUnresolvableSelfIDFallsBackToDetection` and now asserts the measured
+behaviour, because a permanently red test asserting an unimplemented contract is
+worth nothing. **Recommended for Phase 7**: at minimum a `Warn` naming the
+discarded override. The test logs a note if a future fix makes the override appear
+in the log, so the change is noticed rather than silently absorbed.
+
+## Falsification
+
+Performed against the same Engine. Every inversion was reverted afterward.
+
+| Assertion | Inversion | Result |
+|---|---|---|
+| D4 — the suite asserts the wire, not the agent's structs | Renamed `json:"truncated"` → `json:"is_truncated"` in `internal/dockerx/types.go` | **Red**: `response key set = [is_truncated items], want [items truncated]`. This is the plan's acceptance criterion |
+| Engine-unavailable 502 path | Skipped `proxy.Sever` | **Red** on all four read routes (`status = 200, want 502`) |
+| Self-exclusion (the headline metric) | Built into the test: the same 15 cells against fixture containers | **Green as required** — fixtures answer 204, pinning the 403s to the target rather than to a broken client |
+| Resume cursor honoured | Omitted `?since=` | **GREEN — the test could not fail.** See below |
+
+The resume inversion is why this round mattered. With `?since=` omitted the test
+still passed: the fixture had written only ~5 lines, so the server's default
+100-line backlog replayed from line 0, and the old "did it repeat? otherwise did it
+skip ahead?" shape waved that through on *both* branches. A resumed stream that
+replayed from **before** the cursor was indistinguishable from one that honoured
+it. The first resumed line is now bounded from below as well, and re-running the
+inversion fails with `resume replayed the backlog: ... 4 lines BEHIND the cursor`.
+
+## Manual Checklist
+
+- [x] `make e2e` on a real Engine, version recorded — Docker 29.6.1, above
+- [x] Run from WSL2; both groups run rather than skip
+- [x] Windows-native skips with the WSL2 sentence and exits 0 — `Windows-native running is not supported; run from WSL2 (make e2e from a WSL shell), or set DEVMON_E2E_DOCKER_HOST to a reachable tcp:// endpoint`
+- [x] `DEVMON_E2E_REQUIRE=1` turns the same condition into a hard failure (exit 1), message suffixed `(required by DEVMON_E2E_REQUIRE=1)`
+- [x] Two concurrent runs on one host — both 58 passed, 0 failed, neither disturbed the other's fixtures
+- [x] `docker ps -a --filter label=com.devmon.e2e` is empty after a full run
+- [x] Full `-v` output swept for credential material: **0** PEM blocks, **0** pairing-code-shaped strings, **0** occurrences of "pairing code"
+- [x] Every falsification in the table above performed and reverted
+- [x] `make e2e-endurance` run once — 30.3 min, both tests green
+- [ ] The CI `e2e` job runs on a PR into `main` and is skipped on a PR into `dev` — observable only once a `main` PR exists
+
+## Outstanding
+
+Only two things remain, and neither is a gap in what the suite proves.
+
+**The CI `e2e` job has not been observed running.** It is gated on
+`github.base_ref == 'main'`, so it is skipped — correctly — on the PR into `dev`
+that carries this phase. It first executes on the `dev` -> `main` release PR, and
+confirming it there is the last unticked box above.
+
+**Falsification is discharged for the assertions that carry the phase, not for all
+76 tests individually.** The four inversions performed are the ones the plan names:
+the D4 wire-contract criterion, the 502 path, the self-exclusion metric, and the
+resume cursor. One of them found a test that could not fail. Every remaining test
+still carries its recorded inversion in its doc comment, and the suite now has a
+demonstrated habit of those inversions being worth running.
 
 ## Coverage of the Plan's Contract
 
