@@ -2,9 +2,9 @@ name: CI
 
 # Two bars, scaled to the target branch:
 #   PR -> dev  : `test` only, for fast feedback on the integration branch.
-#   PR -> main : `test` plus `lint`, `image` and `gosec` — the release bar.
+#   PR -> main : `test` plus `lint`, `image`, `gosec` and `e2e` — the release bar.
 # The main-only jobs are gated on `github.base_ref`, so they never queue on a dev PR.
-# Branch protection is per branch, so `dev` requires `test` and `main` requires all four.
+# Branch protection is per branch, so `dev` requires `test` and `main` requires all five.
 
 on:
   pull_request:
@@ -134,3 +134,32 @@ jobs:
 
       - name: gosec
         run: gosec ./...
+
+  # The end-to-end suite runs the real binary — and the real image — against the
+  # runner's own Docker Engine. It takes minutes, so it stays on the release bar
+  # rather than taxing every integration PR into dev.
+  e2e:
+    name: e2e
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Docker version
+        run: docker version
+
+      # DEVMON_E2E_REQUIRE turns "no Engine answered, skipping" from a silent
+      # green into a hard failure. A suite that quietly does nothing is worse
+      # than no suite, because a green run is what flips a PRD row.
+      - name: make e2e
+        env:
+          DEVMON_E2E_REQUIRE: 1
+        run: make e2e
+
+      - name: e2e lint
+        run: make e2e-lint

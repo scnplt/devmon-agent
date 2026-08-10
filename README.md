@@ -600,6 +600,62 @@ make sec            # gosec
 make image          # docker build
 ```
 
+### End-to-end suite
+
+`internal/e2e/` runs the real agent against a real Docker Engine, with no phone
+and no emulator anywhere in the loop. It is the executable definition of the API
+contract: assertions are written against the wire — status codes, headers, and
+JSON decoded into `map[string]any` — never against the agent's own structs, so a
+renamed JSON tag fails the suite instead of silently breaking a client.
+
+Two groups:
+
+- **`internal/e2e/api`** — builds the real binary, starts it as a host process,
+  pairs through the documented `devmon-agent device pair-code` path, and drives
+  every route over pinned mTLS.
+- **`internal/e2e/incontainer`** — builds the image and runs the agent as a
+  container, which is the only way to exercise self-identification through
+  `/proc/self/mountinfo` and the self-exclusion guarantee.
+
+```bash
+make e2e             # both groups, ~5-10 min against a local Engine
+make e2e-container   # the in-container group alone
+make e2e-endurance   # the 30-minute stream and the retention budget
+make e2e-lint        # go vet -tags e2e, plus golangci-lint when installed
+make e2e-clean       # remove containers a crashed run left behind
+```
+
+Every container the suite creates is removed by the cleanup that created it,
+addressed by ID — so two runs on one host never disturb each other. `e2e-clean`
+exists for the case where a run died hard enough to skip its own cleanups, and
+is deliberately manual: it matches on the shared `com.devmon.e2e` label, which
+cannot distinguish a dead run's leftovers from a live run's containers. Run it
+only when no e2e run is in flight.
+
+Every file carries `//go:build e2e`, so nothing here compiles into `make build`,
+`make test`, `make lint`, or `make cover`, and the suite adds no module
+dependency — `go.mod` is unchanged by it.
+
+Four environment variables tune the harness. **They are not agent
+configuration**: the harness reads them and never passes them to the agent,
+whose own environment is built explicitly from each test case.
+
+| Variable | Effect |
+|---|---|
+| `DEVMON_E2E_REQUIRE=1` | An unreachable Engine becomes a hard failure instead of a skip. CI sets it. |
+| `DEVMON_E2E_ENDURANCE=1` | Runs the 30-minute stream and the retention test, which otherwise skip. |
+| `DEVMON_E2E_DOCKER_HOST` | Engine endpoint for the suite, when it is not the default socket. |
+| `DEVMON_E2E_KEEP=1` | Keeps fixture containers and state directories after a failure, and prints their paths. |
+
+Without an Engine, every test **skips** with a reason naming the endpoint —
+visibly, in `go test` output — rather than passing quietly.
+
+**On Windows, run these from a WSL2 shell.** The agent accepts only `unix://`
+and `tcp://` Docker endpoints, so Docker Desktop's default
+`npipe:////./pipe/docker_engine` cannot be given to it at all, and the
+in-container group depends on Linux bind-mount ownership semantics. A
+Windows-native run skips with exactly that explanation.
+
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs the same gates on GitHub Actions, scaled to the
@@ -611,9 +667,10 @@ branch a pull request targets:
 | `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
 | `image` | PRs into `main` only | `docker build` of the release image |
 | `gosec` | PRs into `main` only | `gosec ./...` |
+| `e2e` | PRs into `main` only | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
 
 `dev` is the integration branch, so a PR into it gets fast feedback from `test`
-alone; the full release bar applies on the way into `main`. The three
+alone; the full release bar applies on the way into `main`. The four
 `main`-only jobs are gated on `github.base_ref` and are skipped, not queued, on
 a `dev` PR.
 
