@@ -74,9 +74,14 @@ func TestAuditRowPerMutatingRequest(t *testing.T) {
 		t.Fatalf("step 2, kill under default policy: status = %d, want %d; body = %s", status, http.StatusForbidden, raw)
 	}
 
-	status, _, raw = d.Do(t, http.MethodDelete, "/v1/containers/"+unknownTarget, nil)
+	// Step 3 has to use an operation `default` PERMITS, or it produces a
+	// second denied_policy row instead of the not_found one the sequence is
+	// asserting: the policy gate runs before the Engine lookup, so a delete
+	// under `default` is 403 whether or not the target exists. Restart is
+	// permitted under `default`, so it is what reaches the lookup.
+	status, _, raw = d.Do(t, http.MethodPost, "/v1/containers/"+unknownTarget+"/restart", nil)
 	if status != http.StatusNotFound {
-		t.Fatalf("step 3, delete of an unknown container: status = %d, want %d; body = %s", status, http.StatusNotFound, raw)
+		t.Fatalf("step 3, restart of an unknown container: status = %d, want %d; body = %s", status, http.StatusNotFound, raw)
 	}
 
 	rows := harness.ListAudit(t, a, auditListLimit)
@@ -84,14 +89,14 @@ func TestAuditRowPerMutatingRequest(t *testing.T) {
 		t.Fatalf("audit list holds %d rows, want exactly 3: %+v", len(rows), rows)
 	}
 
-	// Newest first: the delete lands last and is listed first.
+	// Newest first: the unknown-container restart lands last and is listed first.
 	wantInNewestFirstOrder := []struct {
 		step      string
 		operation string
 		target    string
 		outcome   string
 	}{
-		{"delete of an unknown container", "delete", unknownTarget, "not_found"},
+		{"restart of an unknown container", "restart", unknownTarget, "not_found"},
 		{"kill under default policy", "kill", id, "denied_policy"},
 		{"restart", "restart", id, "success"},
 	}
@@ -316,8 +321,15 @@ func TestAuditDetailCarriesNoEngineText(t *testing.T) {
 	if status, _, raw := d.Do(t, http.MethodPost, "/v1/containers/"+id+"/kill", nil); status != http.StatusForbidden {
 		t.Fatalf("kill under default policy (denied_policy case): status = %d, want %d; body = %s", status, http.StatusForbidden, raw)
 	}
-	if status, _, raw := d.Do(t, http.MethodDelete, "/v1/containers/"+unknownTarget, nil); status != http.StatusNotFound {
-		t.Fatalf("delete of an unknown container (not_found case): status = %d, want %d; body = %s", status, http.StatusNotFound, raw)
+	// The not_found row has to come from an operation the policy PERMITS: the
+	// policy gate runs before the Engine is ever consulted, so under `default`
+	// a delete of an unknown container is 403 denied_policy and never reaches
+	// the lookup that would make it 404. Restart is permitted under `default`
+	// (contract_policy_test.go's matrix), so it is the route that can actually
+	// produce not_found without moving this agent to `full` mode — which would
+	// in turn destroy the denied_policy row the kill above depends on.
+	if status, _, raw := d.Do(t, http.MethodPost, "/v1/containers/"+unknownTarget+"/restart", nil); status != http.StatusNotFound {
+		t.Fatalf("restart of an unknown container (not_found case): status = %d, want %d; body = %s", status, http.StatusNotFound, raw)
 	}
 
 	proxy.Sever(t)
