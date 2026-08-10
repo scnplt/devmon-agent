@@ -72,6 +72,27 @@ func TestConfigFaultsReportedTogether(t *testing.T) {
 			t.Errorf("stderr does not name DEVMON_PUBLIC_ADDR; stderr = %s", stderr)
 		}
 	})
+
+	// A zero DEVMON_RATE_GUARDED_PER_SEC is a configuration fault, not "no
+	// limit": internal/config's minRatePerX floor is 1 (hardening-and-oss-
+	// release.plan.md, Task 2's gotcha) precisely so no value can disable the
+	// limiter, and this proves that floor from the outside.
+	t.Run("zero DEVMON_RATE_GUARDED_PER_SEC is a configuration fault", func(t *testing.T) {
+		t.Parallel()
+
+		a := harness.StartAgent(t, harness.AgentOptions{
+			Env:           map[string]string{"DEVMON_RATE_GUARDED_PER_SEC": "0"},
+			ExpectFailure: true,
+		})
+
+		exitCode, stderr := a.Wait(t)
+		if exitCode != 2 {
+			t.Errorf("exit code = %d, want 2 (config fault)", exitCode)
+		}
+		if !strings.Contains(stderr, "DEVMON_RATE_GUARDED_PER_SEC") {
+			t.Errorf("stderr does not name DEVMON_RATE_GUARDED_PER_SEC; stderr = %s", stderr)
+		}
+	})
 }
 
 // TestStartupFailsWhenEngineUnreachable asserts an agent pointed at a Docker
