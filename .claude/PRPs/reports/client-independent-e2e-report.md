@@ -137,7 +137,7 @@ checklist. It also means the concurrency item in the checklist above passed the 
 time **by timing luck**: both runs were launched in the same instant, so each swept
 before either had created anything.
 
-Fixed in `PLACEHOLDER` by deleting the implicit sweep entirely. Every container is now removed
+Fixed in `d4b216b` by deleting the implicit sweep entirely. Every container is now removed
 by the `t.Cleanup` that created it, addressed by ID — stricter than a label filter and
 structurally incapable of reaching another run's container. Recovery after a hard crash
 is `make e2e-clean`, deliberately explicit, because a label-based pass cannot tell a
