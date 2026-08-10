@@ -51,6 +51,9 @@ func TestLoadDefaults(t *testing.T) {
 		{"LogMaxTotalMB", cfg.LogMaxTotalMB, defaultLogMaxTotalMB},
 		{"AuditMaxAge", cfg.AuditMaxAge, 365 * 24 * time.Hour},
 		{"AuditMaxRows", cfg.AuditMaxRows, defaultAuditMaxRows},
+		{"RateStatusPerMin", cfg.RateStatusPerMin, defaultRateStatusPerMin},
+		{"RatePairPerMin", cfg.RatePairPerMin, defaultRatePairPerMin},
+		{"RateGuardedPerSec", cfg.RateGuardedPerSec, defaultRateGuardedPerSec},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -187,6 +190,25 @@ func TestLoadOverrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "rate limit overrides",
+			env: map[string]string{
+				envRateStatusPerMin:  "60",
+				envRatePairPerMin:    "10",
+				envRateGuardedPerSec: "40",
+			},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.RateStatusPerMin != 60 {
+					t.Errorf("RateStatusPerMin = %d, want 60", cfg.RateStatusPerMin)
+				}
+				if cfg.RatePairPerMin != 10 {
+					t.Errorf("RatePairPerMin = %d, want 10", cfg.RatePairPerMin)
+				}
+				if cfg.RateGuardedPerSec != 40 {
+					t.Errorf("RateGuardedPerSec = %d, want 40", cfg.RateGuardedPerSec)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -257,6 +279,15 @@ func TestLoadRejections(t *testing.T) {
 			env:     map[string]string{envSelfContainerID: "0123456789zz"},
 			wantKey: envSelfContainerID,
 		},
+		{"non-integer status rate", map[string]string{envRateStatusPerMin: "many"}, envRateStatusPerMin},
+		{"zero status rate", map[string]string{envRateStatusPerMin: "0"}, envRateStatusPerMin},
+		{"negative status rate", map[string]string{envRateStatusPerMin: "-1"}, envRateStatusPerMin},
+		{"non-integer pair rate", map[string]string{envRatePairPerMin: "many"}, envRatePairPerMin},
+		{"zero pair rate", map[string]string{envRatePairPerMin: "0"}, envRatePairPerMin},
+		{"negative pair rate", map[string]string{envRatePairPerMin: "-1"}, envRatePairPerMin},
+		{"non-integer guarded rate", map[string]string{envRateGuardedPerSec: "many"}, envRateGuardedPerSec},
+		{"zero guarded rate", map[string]string{envRateGuardedPerSec: "0"}, envRateGuardedPerSec},
+		{"negative guarded rate", map[string]string{envRateGuardedPerSec: "-1"}, envRateGuardedPerSec},
 	}
 
 	for _, tt := range tests {
@@ -327,6 +358,36 @@ func TestLoadAggregatesEveryProblem(t *testing.T) {
 		t.Fatalf("Problems = %#v, want 3", vErr.Problems)
 	}
 	for _, key := range []string{envPolicyMode, envLogMaxAgeDays, envLogLevel} {
+		if !strings.Contains(vErr.Error(), key) {
+			t.Errorf("aggregated error does not name %s:\n%s", key, vErr.Error())
+		}
+	}
+}
+
+func TestLoadAggregatesRateLimitProblems(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — three simultaneous rate faults, as an operator would produce by
+	// copying a stale env file with the wrong shell quoting.
+	env := map[string]string{
+		envPublicAddr:        "vps.example.com",
+		envRateStatusPerMin:  "0",
+		envRatePairPerMin:    "-1",
+		envRateGuardedPerSec: "many",
+	}
+
+	// Act
+	_, err := Load(fakeEnv(env))
+
+	// Assert
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("Load() error = %v, want *ValidationError", err)
+	}
+	if len(vErr.Problems) != 3 {
+		t.Fatalf("Problems = %#v, want 3", vErr.Problems)
+	}
+	for _, key := range []string{envRateStatusPerMin, envRatePairPerMin, envRateGuardedPerSec} {
 		if !strings.Contains(vErr.Error(), key) {
 			t.Errorf("aggregated error does not name %s:\n%s", key, vErr.Error())
 		}
