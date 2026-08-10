@@ -161,8 +161,20 @@ func TestMissingCertsDirIsLoudNotSilent(t *testing.T) {
 		t.Errorf("stderr does not explain which half is missing; stderr = %s", stderr)
 	}
 
-	if _, err := os.Stat(certsDir); !os.IsNotExist(err) {
-		t.Errorf("certs dir exists after the failed restart (err = %v); the CA must not be silently regenerated", err)
+	// The claim is that no NEW CA was minted — not that the directory is
+	// absent. The agent recreates the state directory's subdirectories
+	// (cmd/devmon-agent/main.go's prepareStateDir) before it ever reaches the
+	// identity check, so an EMPTY certs/ after a refused start is expected and
+	// harmless. What must not exist is CA material inside it: that would be
+	// the silent new identity every paired device would trust without knowing
+	// it changed. Asserting the directory's absence instead would fail against
+	// correct behaviour, which is why this checks the contents.
+	entries, err := os.ReadDir(certsDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read %s after the failed restart: %v", certsDir, err)
+	}
+	for _, e := range entries {
+		t.Errorf("certs dir holds %q after the failed restart; the CA must not be silently regenerated", e.Name())
 	}
 }
 

@@ -162,10 +162,24 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 func (p *Proxy) Sever(t *testing.T) {
 	t.Helper()
 
+	if err := p.sever(); err != nil {
+		t.Logf("proxy: close listener: %v", err)
+	}
+}
+
+// sever is the whole teardown, shared by Sever and shutdown. Closing the
+// listener alone is NOT enough: an idle keep-alive connection the agent is
+// holding open to the Engine leaves its io.Copy pair parked in a read that
+// never returns, and the p.wg.Wait below then blocks forever. Closing every
+// tracked connection is what unblocks those copies, so both callers must do
+// it — an earlier version had shutdown close only the listener, and a single
+// live connection at cleanup time deadlocked the whole test binary until the
+// -timeout fired.
+func (p *Proxy) sever() error {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return
+		return nil
 	}
 	p.closed = true
 	ln := p.ln
@@ -175,15 +189,15 @@ func (p *Proxy) Sever(t *testing.T) {
 	}
 	p.mu.Unlock()
 
+	var lnErr error
 	if ln != nil {
-		if err := ln.Close(); err != nil {
-			t.Logf("proxy: close listener: %v", err)
-		}
+		lnErr = ln.Close()
 	}
 	for _, c := range conns {
 		_ = c.Close()
 	}
 	p.wg.Wait()
+	return lnErr
 }
 
 // Restore reopens the listener on the exact port Sever closed, so the agent
@@ -206,19 +220,7 @@ func (p *Proxy) Restore(t *testing.T) {
 // itself may have already finished, and a background failure here would have
 // nowhere useful to report.
 func (p *Proxy) shutdown() {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return
-	}
-	p.closed = true
-	ln := p.ln
-	p.mu.Unlock()
-
-	if ln != nil {
-		_ = ln.Close()
-	}
-	p.wg.Wait()
+	_ = p.sever()
 }
 
 // parseEngineHost turns an internal/config-shaped DEVMON_DOCKER_HOST value
