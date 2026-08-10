@@ -66,7 +66,12 @@ func TestStateSurvivesCrashRestart(t *testing.T) {
 	}
 
 	// The pre-kill device certificate must still work: same CA, same device
-	// table, no restart-induced re-pair.
+	// table, no restart-induced re-pair. Only the ADDRESS moves — the Engine
+	// hands the restarted container a fresh ephemeral host port — so the
+	// device is re-pointed while keeping its pinned CA and its certificate,
+	// which is what the claim under test is about. A re-pair here would make
+	// the assertion vacuous; RebindToURL deliberately cannot do that.
+	device = harness.RebindToURL(device, c.BaseURL)
 	if status, obj := device.JSON(t, http.MethodGet, "/v1/containers"); status != http.StatusOK {
 		t.Errorf("post-restart GET /v1/containers with the pre-kill device certificate: status = %d, want %d; body = %v", status, http.StatusOK, obj)
 	}

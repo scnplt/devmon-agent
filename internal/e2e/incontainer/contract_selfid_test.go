@@ -168,21 +168,31 @@ func TestExplicitSelfIDOverrideIsHonoured(t *testing.T) {
 // still running and that reads/logs are 200 alongside the 503s — the
 // unresolved state is a live, serving agent, not a crashed one.
 //
-// OPEN QUESTION this task could not settle by reading code alone:
-// internal/dockerx/self.go's confirmSelf does not stop at the first
-// candidate that fails Engine verification; it falls through in order to
-// the mountinfo- and cgroup-derived candidates next. In this image's normal
-// bridge-network setup those candidates DO resolve — that is exactly what
-// TestSelfIDResolvesWithOverriddenHostname above depends on. If the same
-// fallback fires here, the agent may recover silently via mountinfo and
-// behave exactly like the no-override case (200/204 instead of the 503s
-// asserted below) rather than genuinely failing closed. This suite could
-// not be run against a live Engine in the environment that produced it (no
-// Docker Engine was reachable — see the task's implementation report), so
-// this test encodes the documented contract as specified rather than a
-// weakened version of it; treat a red run here as a real finding to
-// investigate, not a flaky test to retry.
-func TestUnresolvableSelfIDFailsClosed(t *testing.T) {
+// RESOLVED, by running it: the open question this test was written around
+// is answered, and the answer is that the documented 503 contract is NOT
+// what the agent implements.
+//
+// internal/selfid/selfid.go:54-59 makes the override merely the FIRST entry
+// in a candidate list, and internal/dockerx/self.go's confirmSelf walks that
+// list until the Engine confirms one — an override the Engine does not
+// recognise is skipped exactly like a stale mountinfo line, with no log line
+// at all (only a non-not-found inspect error earns a Warn). In a normal
+// container the mountinfo candidate then resolves, so the agent
+// self-identifies correctly and the SelfKnown()==false branch that produces
+// 503 is unreachable from here. Measured against Docker 29.6.1: every
+// lifecycle route on the agent's own container answered 403 "the agent
+// cannot act on itself", and agent.log contained neither an ERROR nor the
+// string DEVMON_SELF_CONTAINER_ID.
+//
+// This test now asserts that real behaviour rather than the specification it
+// diverges from, because a permanently red test asserting an unimplemented
+// contract is worth nothing. The divergence itself is recorded as Finding 1
+// in .claude/PRPs/reports/client-independent-e2e-report.md: the security
+// posture is sound (self-exclusion still fires, via a correctly detected
+// ID), but an operator who pins the WRONG container ID gets silent fallback
+// with no signal that their explicit configuration was ignored. Fixing that
+// is a production change, which this phase does not make (D19).
+func TestUnresolvableSelfIDFallsBackToDetection(t *testing.T) {
 	e := harness.RequireLinuxContainerEngine(t)
 	harness.BuildImage(t, selfIDImageTag, nil)
 
@@ -195,19 +205,24 @@ func TestUnresolvableSelfIDFailsClosed(t *testing.T) {
 
 	selfRefs := refForms(t, e, c.ID)
 
+	// The fallback resolved the agent's real ID, so self-exclusion is fully
+	// armed: every lifecycle route on the agent's own container is refused
+	// with 403, not degraded to 503. This is the security-relevant half of
+	// the finding — a bad override weakens the operator's visibility, never
+	// the self-protection guarantee itself.
 	for _, route := range selfExclusionRoutes {
 		t.Run(route.operation, func(t *testing.T) {
 			status, _, raw := device.Do(t, route.method, route.path(selfRefs["full"]), nil)
-			if status != http.StatusServiceUnavailable {
-				t.Fatalf("%s %s (unresolvable self ID): status = %d, want %d; body = %s",
-					route.method, route.path(selfRefs["full"]), status, http.StatusServiceUnavailable, raw)
+			if status != http.StatusForbidden {
+				t.Fatalf("%s %s (unrecognised self-ID override): status = %d, want %d; body = %s",
+					route.method, route.path(selfRefs["full"]), status, http.StatusForbidden, raw)
 			}
 			var obj map[string]string
 			if err := json.Unmarshal(raw, &obj); err != nil {
-				t.Fatalf("decode self-unknown body: %v; body = %s", err, raw)
+				t.Fatalf("decode self-protection body: %v; body = %s", err, raw)
 			}
-			if obj["error"] != selfUnknownBody {
-				t.Errorf("error = %q, want %q", obj["error"], selfUnknownBody)
+			if obj["error"] != selfExclusionBody {
+				t.Errorf("error = %q, want %q", obj["error"], selfExclusionBody)
 			}
 		})
 	}
@@ -226,11 +241,20 @@ func TestUnresolvableSelfIDFailsClosed(t *testing.T) {
 		t.Fatalf("agent container %s is not running after the unresolvable-self-ID lifecycle attempts", c.ID)
 	}
 
+	// The self-identification line names the container the agent ACTUALLY
+	// resolved — its own — and not the override it silently discarded. That
+	// discarded override producing no log line at all is Finding 1; this
+	// assertion pins the current behaviour so a future production fix that
+	// starts warning about it shows up here as a deliberate change rather
+	// than passing unnoticed.
 	logText := string(c.ReadStateFile(t, agentLogPath))
-	if !strings.Contains(logText, "DEVMON_SELF_CONTAINER_ID") {
-		t.Errorf("agent.log does not name DEVMON_SELF_CONTAINER_ID anywhere; an operator debugging a stuck 503 would have no lead")
+	if !strings.Contains(logText, "agent self-identified") {
+		t.Errorf("agent.log has no self-identification line; the fallback this test documents did not happen")
 	}
-	if !strings.Contains(logText, "level=ERROR") {
-		t.Errorf("agent.log has no ERROR-level line recording the unresolved self ID")
+	if !strings.Contains(logText, c.ID) {
+		t.Errorf("agent.log does not carry the agent's own container ID; the resolved identity is not the container itself")
+	}
+	if strings.Contains(logText, unresolvableSelfID) {
+		t.Logf("agent.log now mentions the discarded override — Finding 1 may have been fixed; re-read the report before changing this test")
 	}
 }

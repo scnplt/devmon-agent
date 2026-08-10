@@ -433,11 +433,18 @@ func (c *ContainerAgent) ReadStateFile(t *testing.T, path string) []byte {
 // Restart asks the Engine to stop and start the container again, in place —
 // unlike an image upgrade rehearsal, which must recreate the container
 // against the same bind mount instead (see internal/e2e/incontainer).
+// The container keeps its ID and its bind mount, but NOT its published host
+// port: the port was requested as "0", and the Engine allocates an ephemeral
+// one at every start, so a restarted container comes back on a different one
+// (measured: 32770 before, 32771 after). BaseURL is therefore re-read here,
+// and a Device paired before the restart is still pointed at the old port —
+// callers must re-point it with RebindToURL(device, c.BaseURL).
 func (c *ContainerAgent) Restart(t *testing.T) {
 	t.Helper()
 	if _, err := c.engine.ContainerRestart(context.Background(), c.ID, client.ContainerRestartOptions{}); err != nil {
 		t.Fatalf("restart agent container %s: %v", c.ID, err)
 	}
+	c.BaseURL = fmt.Sprintf("https://127.0.0.1:%d", publishedPort(t, c.engine, c.ID))
 	waitContainerReady(t, c)
 }
 
