@@ -124,6 +124,30 @@ about production behaviour are recorded below rather than fixed.
 | 4 | `ContainerAgent.Restart` kept a stale `BaseURL` | The published host port is requested as `"0"`, so the Engine assigns a fresh ephemeral port at every start — measured 32770 → 32771. The restarted agent was unreachable at the old address | `df9ab01` |
 | 5 | `TestStreamResumeRepeatsAtMostOneLine` could not fail | Found by running its own recorded falsification — see below | `1982d71` |
 
+### Defect 6 — found by the PR review, not by a run
+
+`internal/e2e/api/main_test.go`, `internal/e2e/incontainer/main_test.go` and
+`harness.SweepOrphans` all listed containers on the `com.devmon.e2e` label alone and
+force-removed everything returned. The per-run label was written onto every fixture
+and onto the agent container, and never read. Two concurrent runs therefore destroyed
+each other's containers — including a *running agent container*, mid-test.
+
+It contradicted D11, `harness/doc.go`'s own stated refusal, and the plan's edge-case
+checklist. It also means the concurrency item in the checklist above passed the first
+time **by timing luck**: both runs were launched in the same instant, so each swept
+before either had created anything.
+
+Fixed in `PLACEHOLDER` by deleting the implicit sweep entirely. Every container is now removed
+by the `t.Cleanup` that created it, addressed by ID — stricter than a label filter and
+structurally incapable of reaching another run's container. Recovery after a hard crash
+is `make e2e-clean`, deliberately explicit, because a label-based pass cannot tell a
+dead run's leftovers from a live run's fixtures. `harness/doc.go` was corrected to
+describe what the code does rather than what it had claimed.
+
+Re-verified with a **45-second stagger** — the case the original check never exercised
+and the old code would have failed: both in-container runs green (186.7s and 156.6s,
+overlapping), zero leftover containers.
+
 ### Finding 1 (production behaviour, not fixed here)
 
 **An unrecognised `DEVMON_SELF_CONTAINER_ID` is silently ignored.**
@@ -174,7 +198,10 @@ inversion fails with `resume replayed the backlog: ... 4 lines BEHIND the cursor
 - [x] Run from WSL2; both groups run rather than skip
 - [x] Windows-native skips with the WSL2 sentence and exits 0 — `Windows-native running is not supported; run from WSL2 (make e2e from a WSL shell), or set DEVMON_E2E_DOCKER_HOST to a reachable tcp:// endpoint`
 - [x] `DEVMON_E2E_REQUIRE=1` turns the same condition into a hard failure (exit 1), message suffixed `(required by DEVMON_E2E_REQUIRE=1)`
-- [x] Two concurrent runs on one host — both 58 passed, 0 failed, neither disturbed the other's fixtures
+- [x] Two concurrent runs on one host — first attempt (simultaneous start) passed only by
+      timing luck and the PR review caught it; see Defect 6. Re-verified after the fix with a
+      **45-second stagger**, which the old code would have failed: both runs green (186.7s,
+      156.6s), neither disturbed the other
 - [x] `docker ps -a --filter label=com.devmon.e2e` is empty after a full run
 - [x] Full `-v` output swept for credential material: **0** PEM blocks, **0** pairing-code-shaped strings, **0** occurrences of "pairing code"
 - [x] Every falsification in the table above performed and reverted

@@ -30,13 +30,6 @@ import (
 // (contract_selfexclusion_test.go).
 const selfIDImageTag = "devmon-agent:e2e-selfid"
 
-// selfUnknownBody is the exact error body internal/httpapi/reads.go serves
-// for dockerx.ErrSelfUnknown. Declared locally rather than imported (D4),
-// for the same reason contract_selfexclusion_test.go declares
-// selfExclusionBody: the suite must notice a wording change, which it
-// cannot do if it shares the constant with the server that produces it.
-const selfUnknownBody = "agent cannot identify its own container"
-
 // unresolvableSelfID is a well-formed 64-character hex string chosen from a
 // fixed, readable pattern (not crypto/rand) so a failing assertion is
 // reproducible, and picked with no plausible chance of colliding with a

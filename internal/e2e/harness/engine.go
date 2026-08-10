@@ -211,32 +211,3 @@ func removeFixture(t *testing.T, cli *client.Client, id string) {
 		t.Logf("remove fixture container %s: %v", id, err)
 	}
 }
-
-// SweepOrphans removes every container labelled LabelSuite=1, regardless of
-// which run created it. It is meant for a group's TestMain, cleaning up after
-// a previous run that crashed before its own t.Cleanup ran. The filter is the
-// only thing that makes this safe to run against a developer's real Engine
-// (D11): nothing without the label is ever listed, let alone removed.
-func SweepOrphans(t *testing.T, cli *client.Client) {
-	t.Helper()
-	if os.Getenv(envKeep) == "1" {
-		return
-	}
-
-	ctx := context.Background()
-	filters := client.Filters{}.Add("label", LabelSuite+"=1")
-	result, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
-	if err != nil {
-		t.Logf("list orphaned e2e fixture containers: %v", err)
-		return
-	}
-
-	for _, item := range result.Items {
-		if _, err := cli.ContainerRemove(ctx, item.ID, client.ContainerRemoveOptions{
-			Force:         true,
-			RemoveVolumes: true,
-		}); err != nil {
-			t.Logf("remove orphaned fixture container %s: %v", item.ID, err)
-		}
-	}
-}

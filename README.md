@@ -622,7 +622,15 @@ make e2e             # both groups, ~5-10 min against a local Engine
 make e2e-container   # the in-container group alone
 make e2e-endurance   # the 30-minute stream and the retention budget
 make e2e-lint        # go vet -tags e2e, plus golangci-lint when installed
+make e2e-clean       # remove containers a crashed run left behind
 ```
+
+Every container the suite creates is removed by the cleanup that created it,
+addressed by ID — so two runs on one host never disturb each other. `e2e-clean`
+exists for the case where a run died hard enough to skip its own cleanups, and
+is deliberately manual: it matches on the shared `com.devmon.e2e` label, which
+cannot distinguish a dead run's leftovers from a live run's containers. Run it
+only when no e2e run is in flight.
 
 Every file carries `//go:build e2e`, so nothing here compiles into `make build`,
 `make test`, `make lint`, or `make cover`, and the suite adds no module
