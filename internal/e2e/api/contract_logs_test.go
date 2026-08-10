@@ -305,14 +305,15 @@ func TestStreamSurvivesAbruptConnectionLoss(t *testing.T) {
 // asserting zero repeats would fail against correct behaviour — and nothing
 // between the boundary and the reconnect may be missing.
 //
-// Falsifiability: this assertion is deliberately NOT "no repeats". Omitting
-// the ?since= parameter entirely (reconnecting plain) would make the second
-// stream restart from the server's default backlog (defaultStreamTail=100
-// lines back) and repeat many lines, not at most one — turning the
-// at-most-one assertion below red. That inversion was not run in this
-// environment (no Engine was reachable, D6); it is recorded here as the
-// falsification a future run against a real host should perform once before
-// trusting this test.
+// Falsifiability: this assertion is deliberately NOT "no repeats". The
+// recorded inversion — omitting ?since= so the second stream reconnects
+// plain — WAS run against a real Engine, and the original version of this
+// test stayed GREEN through it, because the fixture had written only ~5
+// lines and the server's default backlog therefore replayed from line 0,
+// which slipped past both the repeat check and the gap check. The assertion
+// now bounds the first resumed line from BELOW as well, so a backlog replay
+// is a failure; re-running the inversion turns it red as it always should
+// have.
 func TestStreamResumeRepeatsAtMostOneLine(t *testing.T) {
 	t.Parallel()
 	engine := harness.RequireEngine(t)
@@ -346,26 +347,40 @@ func TestStreamResumeRepeatsAtMostOneLine(t *testing.T) {
 	resumedFrames := collectFrames(t, second, 3, 10*time.Second)
 
 	resumedLine0 := decodeLogLine(t, resumedFrames[0].Data)
-	repeatedOnce := resumedFrames[0].ID == boundary.ID && resumedLine0.Line == boundaryLine.Line
-
-	if repeatedOnce {
-		if len(resumedFrames) > 1 {
-			resumedLine1 := decodeLogLine(t, resumedFrames[1].Data)
-			if resumedLine1.Line == boundaryLine.Line {
-				t.Errorf("boundary line %q repeated twice after resume (frames 0 and 1), want at most once", boundaryLine.Line)
-			}
-		}
-		return
-	}
-
-	// Did not repeat: it must not have skipped ahead of the boundary either.
 	resumedIdx, err := lineIndex(resumedLine0.Line)
 	if err != nil {
 		t.Fatalf("parse resumed line index: %v", err)
 	}
+
+	// The whole contract in one bound: the first resumed line is either the
+	// boundary itself (repeated exactly once — the at-least-once delivery the
+	// contract permits) or the line immediately after it (no repeat).
+	// Anything higher is a gap; anything LOWER is the server replaying its
+	// default backlog, which is what a client that forgot ?since= would get.
+	//
+	// That lower bound is what makes the cursor load-bearing, and it was
+	// added because the recorded falsification was run and did NOT go red:
+	// with the cursor omitted, the second stream replayed from
+	// defaultStreamTail (100 lines back) — but this fixture had only written
+	// ~5 lines, so the replay started at line 0, which the original
+	// "repeated? else did it skip ahead?" shape waved through on both
+	// branches. A test whose inversion stays green asserts nothing, so the
+	// assertion was tightened rather than the inversion excused.
+	if resumedIdx < boundaryIdx {
+		t.Errorf("resume replayed the backlog: boundary was %q, first line after resume was %q (%d lines BEHIND the cursor) — ?since= was not honoured",
+			boundaryLine.Line, resumedLine0.Line, boundaryIdx-resumedIdx)
+	}
 	if resumedIdx > boundaryIdx+1 {
 		t.Errorf("resume skipped lines: boundary was %q, first line after resume was %q (gap of %d)",
 			boundaryLine.Line, resumedLine0.Line, resumedIdx-boundaryIdx-1)
+	}
+
+	// Repeated the boundary: it may do so exactly once, never twice.
+	if resumedIdx == boundaryIdx && len(resumedFrames) > 1 {
+		resumedLine1 := decodeLogLine(t, resumedFrames[1].Data)
+		if resumedLine1.Line == boundaryLine.Line {
+			t.Errorf("boundary line %q repeated twice after resume (frames 0 and 1), want at most once", boundaryLine.Line)
+		}
 	}
 }
 
