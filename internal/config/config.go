@@ -34,6 +34,10 @@ const (
 	envAuditMaxAgeDays = "DEVMON_AUDIT_MAX_AGE_DAYS"
 	envAuditMaxRows    = "DEVMON_AUDIT_MAX_ROWS"
 	envSelfContainerID = "DEVMON_SELF_CONTAINER_ID"
+
+	envRateStatusPerMin  = "DEVMON_RATE_STATUS_PER_MIN"
+	envRatePairPerMin    = "DEVMON_RATE_PAIR_PER_MIN"
+	envRateGuardedPerSec = "DEVMON_RATE_GUARDED_PER_SEC"
 )
 
 // Defaults. DEVMON_PUBLIC_ADDR deliberately has none — a server certificate with
@@ -48,6 +52,10 @@ const (
 	defaultLogMaxTotalMB   = 64
 	defaultAuditMaxAgeDays = 365
 	defaultAuditMaxRows    = 100000
+
+	defaultRateStatusPerMin  = 30
+	defaultRatePairPerMin    = 5
+	defaultRateGuardedPerSec = 20
 )
 
 // Validation bounds.
@@ -63,6 +71,13 @@ const (
 
 	minDays         = 1
 	minAuditMaxRows = 1000
+
+	// minRatePerX is the floor for every rate-limit knob. It is 1, not 0: a
+	// value of 0 would read as "no requests permitted", which bricks the agent
+	// in a way that looks like a network fault from the client side, and there
+	// must be no value that disables the limiter — an operator who wants no
+	// ceiling raises the number instead.
+	minRatePerX = 1
 
 	maxDNSLabelLen = 63
 	maxDNSNameLen  = 253
@@ -91,6 +106,10 @@ type Config struct {
 	LogMaxTotalMB int
 	AuditMaxAge   time.Duration
 	AuditMaxRows  int
+
+	RateStatusPerMin  int
+	RatePairPerMin    int
+	RateGuardedPerSec int
 
 	// SelfContainerID is an operator-supplied override for the agent's own
 	// container ID, used when the agent cannot detect it automatically. Empty
@@ -146,6 +165,10 @@ func Load(getenv func(string) string) (Config, error) {
 		LogMaxTotalMB: l.boundedInt(envLogMaxTotalMB, defaultLogMaxTotalMB, minLogMaxTotalMB),
 		AuditMaxAge:   l.days(envAuditMaxAgeDays, defaultAuditMaxAgeDays),
 		AuditMaxRows:  l.boundedInt(envAuditMaxRows, defaultAuditMaxRows, minAuditMaxRows),
+
+		RateStatusPerMin:  l.boundedInt(envRateStatusPerMin, defaultRateStatusPerMin, minRatePerX),
+		RatePairPerMin:    l.boundedInt(envRatePairPerMin, defaultRatePairPerMin, minRatePerX),
+		RateGuardedPerSec: l.boundedInt(envRateGuardedPerSec, defaultRateGuardedPerSec, minRatePerX),
 
 		SelfContainerID: l.selfContainerID(),
 	}
