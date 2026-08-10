@@ -209,7 +209,7 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 | 3 | Read operations | Container/image/network/volume list and inspect | complete | with 4 | 2 | [read-operations.plan.md](../plans/completed/read-operations.plan.md) · [report](../reports/read-operations-report.md) |
 | 4 | Logs & live streaming | Historical logs plus a resilient live stream channel | awaiting device validation | with 3 | 2 | [logs-and-live-streaming.plan.md](../plans/completed/logs-and-live-streaming.plan.md) · [report](../reports/logs-and-live-streaming-report.md) |
 | 5 | Lifecycle, policy & audit | start/restart/stop/kill/delete, server-side mode enforcement, agent self-exclusion, audit logging | awaiting host validation | - | 3 | [lifecycle-policy-and-audit.plan.md](../plans/completed/lifecycle-policy-and-audit.plan.md) · [report](../reports/lifecycle-policy-and-audit-report.md) |
-| 6 | Client-independent end-to-end suite | Executable contract tests against a real Engine — host-binary harness plus an in-container group covering self-exclusion and self-identification | awaiting a green run on a real Engine | - | 4, 5 | [client-independent-e2e.plan.md](../plans/client-independent-e2e.plan.md) |
+| 6 | Client-independent end-to-end suite | Executable contract tests against a real Engine — host-binary harness plus an in-container group covering self-exclusion and self-identification | awaiting a green run on a real Engine | - | 4, 5 | [client-independent-e2e.plan.md](../plans/client-independent-e2e.plan.md) · [report](../reports/client-independent-e2e-report.md) |
 | 7 | Hardening & OSS release | Rate limiting, security review, automated installer, threat-model docs, AGPL-3.0 release | pending | - | 6 | - |
 
 ### Phase Details
