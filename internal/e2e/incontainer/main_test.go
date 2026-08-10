@@ -17,75 +17,26 @@
 package incontainer
 
 import (
-	"context"
-	"fmt"
 	"net/http"
-	"os"
 	"testing"
 	"time"
-
-	"github.com/moby/moby/client"
 
 	"github.com/scnplt/devmon-agent/internal/e2e/harness"
 )
 
-// imageTag is the tag this package's TestMain builds once, reused by every
+// imageTag is the tag TestContainerSmoke builds once, reused by every
 // test in the package. Tasks that need a second, differently-built image
 // (the upgrade rehearsal) build their own tag rather than reusing this one.
 const imageTag = "devmon-agent:e2e-incontainer"
 
-// TestMain sweeps any container a previous, possibly crashed run of this
-// package left behind, then runs the suite. It intentionally does not decide
-// "no Engine, no docker CLI, skip everything" itself: that decision belongs
-// to each test through harness.RequireLinuxContainerEngine (D5, D6),
-// because only a *testing.T can turn a missing prerequisite into either a
-// skip or a hard failure under DEVMON_E2E_REQUIRE=1. TestMain has no
-// *testing.T to give it, so the sweep here is best-effort and silent when
-// the Engine is absent — the same shape internal/e2e/api's TestMain uses.
-func TestMain(m *testing.M) {
-	sweepOrphansBeforeRun()
-	os.Exit(m.Run())
-}
-
-// sweepOrphansBeforeRun removes every container carrying the suite's label
-// (harness.LabelSuite), regardless of which run created it — the same
-// filter harness.SweepOrphans uses, reimplemented here without a *testing.T
-// because TestMain has none to give it. Nothing without that label is ever
-// listed, let alone removed (D11); a container this package did not create
-// is never touched.
-func sweepOrphansBeforeRun() {
-	host, skipReason := harness.EngineHost()
-	if skipReason != "" {
-		return // no Engine reachable here; every test skips for itself (D5)
-	}
-
-	cli, err := client.New(client.WithHost(host))
-	if err != nil {
-		return
-	}
-	defer func() { _ = cli.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := cli.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true}); err != nil {
-		return
-	}
-
-	filters := client.Filters{}.Add("label", harness.LabelSuite+"=1")
-	result, err := cli.ContainerList(context.Background(), client.ContainerListOptions{All: true, Filters: filters})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "e2e/incontainer: list orphaned fixture containers: %v\n", err)
-		return
-	}
-	for _, item := range result.Items {
-		if _, err := cli.ContainerRemove(context.Background(), item.ID, client.ContainerRemoveOptions{
-			Force:         true,
-			RemoveVolumes: true,
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "e2e/incontainer: remove orphaned fixture container %s: %v\n", item.ID, err)
-		}
-	}
-}
+// There is deliberately no TestMain here, and no startup sweep. An implicit
+// "remove every container carrying the suite label" pass cannot tell a
+// crashed previous run's leftovers from a CONCURRENT run's live containers,
+// so it would force-remove the latter - and in this package that includes
+// another run's running AGENT container, which carries the same label
+// (harness/image.go). Every container is removed by the t.Cleanup that
+// created it, by ID; cleaning up after a run that crashed hard enough to
+// skip its own cleanups is an explicit operator action, `make e2e-clean`.
 
 // TestContainerSmoke is this task's own falsifiability check as well as the
 // group's acceptance test: it proves the whole chain the later,

@@ -28,7 +28,7 @@ COVER_PKGS := ./internal/...
 # cached PASS from before a change is a false green.
 E2E_PKGS := ./internal/e2e/...
 
-.PHONY: all build test test-race cover lint sec image fmt clean e2e e2e-container e2e-endurance e2e-lint
+.PHONY: all build test test-race cover lint sec image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
 
 all: build
 
@@ -81,6 +81,19 @@ e2e-endurance:
 # go vet and golangci-lint do not, which is the only reason this target exists.
 # Do not fold `--build-tags e2e` into `lint`: it would pull the e2e packages into
 # every ordinary lint run and slow the fast dev-PR path for no benefit.
+# Removes containers a run that crashed hard enough to skip its own t.Cleanup
+# left behind. Deliberately an EXPLICIT operator action and never automatic:
+# the label matches every run's containers, so an implicit version could not
+# tell a dead run's leftovers from a concurrent run's live agent container.
+# Run it only when no e2e run is in flight.
+e2e-clean:
+	@ids=$$(docker ps -aq --filter label=com.devmon.e2e); \
+	if [ -n "$$ids" ]; then \
+		echo "$$ids" | xargs docker rm -f; \
+	else \
+		echo "no com.devmon.e2e containers to remove"; \
+	fi
+
 e2e-lint:
 	go vet -tags e2e ./...
 	@command -v golangci-lint >/dev/null 2>&1 \

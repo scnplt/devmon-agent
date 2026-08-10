@@ -13,10 +13,16 @@
 //
 // Three things it deliberately refuses to do:
 //
-//  1. It never touches a container it did not create. Every fixture carries
-//     the com.devmon.e2e label plus a per-run label, and cleanup filters on
-//     both. The suite runs on a developer's own Engine, next to their own
-//     containers (D11 of the phase plan).
+//  1. It never touches a container it did not create. Every container the
+//     harness starts is removed by the t.Cleanup that created it, addressed
+//     by its own ID — which is stricter than any label filter and, unlike a
+//     label filter, cannot reach a container belonging to a concurrent run.
+//     Fixtures still carry the com.devmon.e2e label plus a per-run label, so
+//     a human can find and clean up after a run that crashed hard enough to
+//     skip its cleanups; `make e2e-clean` is that operation, and it is
+//     deliberately explicit. No code path in this package removes containers
+//     by label, because such a pass cannot distinguish a dead run's
+//     leftovers from a live run's fixtures (D11 of the phase plan).
 //
 //  2. It never passes the ambient environment to the agent under test. The
 //     child process's environment is built from the test case alone, so a
