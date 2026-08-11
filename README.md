@@ -367,6 +367,12 @@ happens if `certs/` is lost.
 
 ## API
 
+The machine-readable form of everything below is
+[docs/openapi.yaml](docs/openapi.yaml) — OpenAPI 3.1, covering every route,
+payload, and failure body. Generate a client from it rather than hand-writing
+one, and diff it between releases to see what changed. This section keeps the
+reasoning; the spec keeps the shapes.
+
 | Route | Auth | Purpose |
 |---|---|---|
 | `GET /v1/status` | none | `api_version`, `agent_version`, `policy_mode`, `server_time`, `ca_fingerprint` |
