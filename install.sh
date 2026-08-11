@@ -232,8 +232,12 @@ done
 # seconds later with the operator already looking somewhere else.
 # ---------------------------------------------------------------------------
 
-is_nonempty() {
-	[ -n "$1" ]
+# is_safe_name gates the device name, which reaches a `docker compose exec`
+# argument. It is passed as a single quoted word, so this is defence in depth
+# rather than the only thing standing between the value and a shell.
+is_safe_name() {
+	[ -n "$1" ] || return 1
+	! has_unsafe_chars "$1"
 }
 
 is_positive_int() {
@@ -248,11 +252,28 @@ is_valid_port() {
 	[ "$1" -le "$MAX_PORT" ]
 }
 
+# has_unsafe_chars rejects any character outside an allowlist of what a
+# hostname, an IP, or a filesystem path can legitimately contain. It is an
+# allowlist rather than a blocklist because every value this script accepts is
+# interpolated into the generated compose file and into docker invocations.
+#
+# The type-specific validators below already reject what an operator would
+# plausibly mistype. What this catches is a value arriving from an environment
+# variable during an automated install: a `"` would otherwise close the YAML
+# scalar and let the caller append compose keys of their own — `privileged:
+# true`, or a bind mount of `/` — to a file this script then hands to `docker
+# compose up -d`. The agent already holds the Docker socket, so that is a host
+# compromise rather than a malformed config file.
+has_unsafe_chars() {
+	[ -n "$(printf '%s' "$1" | tr -d 'A-Za-z0-9._:/-')" ]
+}
+
 is_absolute_path() {
 	case "$1" in
-	/*) return 0 ;;
+	/*) ;;
+	*) return 1 ;;
 	esac
-	return 1
+	! has_unsafe_chars "$1"
 }
 
 is_valid_policy_mode() {
@@ -270,7 +291,7 @@ is_valid_san() {
 	case "$1" in
 	'' | *:* | */*) return 1 ;;
 	esac
-	return 0
+	! has_unsafe_chars "$1"
 }
 
 # is_valid_public_addr accepts a comma-separated list where every entry passes
@@ -656,7 +677,7 @@ prompt LOG_MAX_TOTAL_MB 'Operational log budget (MB)' "$DEFAULT_LOG_MAX_TOTAL_MB
 prompt AUDIT_MAX_AGE_DAYS 'Audit retention (days)' "$DEFAULT_AUDIT_MAX_AGE_DAYS" is_positive_int
 prompt AUDIT_MAX_ROWS 'Audit row ceiling' "$DEFAULT_AUDIT_MAX_ROWS" is_positive_int
 prompt INSTALL_DIR 'Directory to write compose.yaml into' "$PWD" is_absolute_path
-prompt DEVICE_NAME 'Name for the first paired device' "$DEFAULT_DEVICE_NAME" is_nonempty
+prompt DEVICE_NAME 'Name for the first paired device' "$DEFAULT_DEVICE_NAME" is_safe_name
 
 # The agent enforces this too, and rejects the pair at startup with exit 2.
 # Catching it here means the operator finds out before anything is written.
