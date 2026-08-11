@@ -32,7 +32,7 @@ We'll know we're right when **an operator can complete a full pair → inspect �
 - **Metrics, dashboards, alerting, historical retention** — this is a control plane, not a monitoring stack.
 - **Persisting the logs of the containers being managed** — Docker's own log driver owns those, and they disappear when a container is removed. Mirroring them into agent storage means continuous ingestion, disk budgeting, and retention policy: a separate product surface. Only the agent's own logs and audit log are persisted.
 - **A managed/hosted service** — self-hosted only.
-- **The Android application itself** — a separate project; this PRD covers only the server-side agent and the contract it exposes.
+- **The client application itself** — a separate project; this PRD covers only the server-side agent and the contract it exposes.
 
 ## Success Metrics
 
@@ -103,7 +103,7 @@ When **something breaks on my server and I only have my phone**, I want to **see
 | Must | Operation policy fixed at container startup, expressed as named modes | A production host and a test host want different powers. Binding the policy to the agent's startup configuration means a compromised or misused phone cannot escalate beyond what the operator granted — the policy can only be changed with host access. Named modes are chosen over per-operation lists because an operator must be able to state a host's posture in one word. |
 | Must | Safe default policy: destructive operations denied unless explicitly enabled | The operator who reads no documentation gets the conservative behavior. Anyone who wants to delete containers from a phone has to say so deliberately. |
 | Must | Agent advertises its policy and API version to connected clients | The app must disable what the host forbids instead of offering buttons that fail, and must detect an incompatible agent before the user hits an error. |
-| Must | Versioned API contract | The Android app ships independently; unversioned drift will break users. |
+| Must | Versioned API contract | The client app ships independently; unversioned drift will break users. |
 | Must | Proactive device certificate renewal over the authenticated channel | Renewal must happen while the existing certificate is still valid — once it expires there is no authenticated channel left to renew it on. Silent to the user by design. |
 | Must | Unauthenticated status endpoint (informational only) | When a client cannot complete a mutually authenticated handshake, it must still be able to distinguish "my credential expired" from "this server's identity changed", because those need opposite user guidance. It exposes version, CA fingerprint, server time, and policy — never host data, and never credentials. |
 | Must | Distribution as a container image with an **automated installer**, covering the state mount, policy mode, and retention limits | Installation is the first thing every user meets and the moment every durable decision is made at once. A hand-assembled command line is where operators will omit the state mount and later lose every pairing. |
@@ -124,14 +124,14 @@ When **something breaks on my server and I only have my phone**, I want to **see
 
 ### MVP Scope
 
-The minimum that tests the hypothesis: an agent that installs as a container on a VPS, pairs with an Android device once, and from then on serves that device — and any additional paired device — the full read set (containers, images, networks, volumes: list and inspect), container logs including live streaming, and the full container lifecycle set (start, restart, stop, kill, delete), with every mutating call recorded in an audit log. Anything that does not serve the pair → inspect → read logs → act loop is not MVP.
+The minimum that tests the hypothesis: an agent that installs as a container on a VPS, pairs with a client device once, and from then on serves that device — and any additional paired device — the full read set (containers, images, networks, volumes: list and inspect), container logs including live streaming, and the full container lifecycle set (start, restart, stop, kill, delete), with every mutating call recorded in an audit log. Anything that does not serve the pair → inspect → read logs → act loop is not MVP.
 
 ### User Flow
 
 **Critical path — first use:**
 1. Operator runs the agent container on the host and opens its port (their responsibility).
 2. Agent generates its identity on first start and displays a short-lived pairing code/QR in its console output.
-3. Operator adds the server in the Android app and supplies the pairing code.
+3. Operator adds the server in the client app and supplies the pairing code.
 4. Agent verifies the code, issues that device its own credential, and records it as a paired device.
 5. App lists the host's containers.
 
@@ -189,7 +189,7 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 | A device that stays offline past its certificate expiry cannot renew and requires host access to recover | M | Renewal window set to a fraction of certificate lifetime so ordinary use always renews in time; expiry period long enough to tolerate a normally-used device being idle; the unauthenticated endpoint explains the situation instead of showing a bare failure |
 | Future email notifications leak security-relevant information, or are misused to deliver pairing credentials | M | Notifications only, never credentials; treat as a post-MVP feature with its own review |
 | Internet-exposed port attracts automated scanning and abuse | H | Rate limiting; reject non-authenticated connections cheaply; document VPN as the recommended hardening step |
-| Android app and agent version drift breaks users | M | Versioned API contract from the first release |
+| Client app and agent version drift breaks users | M | Versioned API contract from the first release |
 
 ---
 
@@ -240,9 +240,9 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 - **Success signal**: Every permitted lifecycle operation succeeds against a real container and produces a correct, attributed audit entry; an agent started with a restrictive mode refuses forbidden operations regardless of what the client sends; the agent itself resists deletion even in the most permissive mode; the client is told what is available rather than discovering it through failures.
 
 **Phase 6: Client-independent end-to-end suite**
-- **Goal**: Turn the manual validation checklists of Phases 1-5 into an executable, client-independent contract suite, so the API is proven against a real Docker Engine without an Android device — and so any future client, mobile or web, has a machine-checkable definition of what the agent promises.
+- **Goal**: Turn the manual validation checklists of Phases 1-5 into an executable, client-independent contract suite, so the API is proven against a real Docker Engine without a client device — and so any future client, mobile or web, has a machine-checkable definition of what the agent promises.
 - **Scope**: A build-tagged Go test package that starts the real binary against a real Engine, completes pairing over the host-side command path, and drives every endpoint over mTLS: pairing and revocation, the full read set, historical logs plus live streaming with resume across an abrupt connection loss, the five lifecycle routes, all three policy modes, and the audit rows each call produces. Plus a second group that builds the image and runs the agent as a container, which is the only way to exercise self-identification through mountinfo and the self-exclusion guarantee. Long-running endurance is part of the suite but excluded from the default run.
-- **Success signal**: Every item on the Phase 4 and Phase 5 manual checklists — including the headline metric, the agent surviving a delete attempt in the most permissive mode — passes unattended in one command against a real Engine, with no phone and no emulator involved. Anything genuinely untestable without a client device is explicitly named as belonging to the Android app's own suite rather than left as an unticked box here.
+- **Success signal**: Every item on the Phase 4 and Phase 5 manual checklists — including the headline metric, the agent surviving a delete attempt in the most permissive mode — passes unattended in one command against a real Engine, with no phone and no emulator involved. Anything genuinely untestable without a client device is explicitly named as belonging to the client app's own suite rather than left as an unticked box here.
 
 **Phase 7: Hardening & OSS release**
 - **Goal**: Safe to point at the public internet and to publish.

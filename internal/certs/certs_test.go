@@ -64,7 +64,7 @@ func TestGenerateServerCert(t *testing.T) {
 		t.Error("SerialNumber is zero, want random entropy")
 	}
 
-	// The key must be PKCS#8 — the portable form for the Android client.
+	// The key must be PKCS#8 — the portable form across client platforms.
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil || keyBlock.Type != pemTypePrivateKey {
 		t.Fatalf("key PEM block = %v, want %s", keyBlock, pemTypePrivateKey)

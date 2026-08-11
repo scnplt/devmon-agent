@@ -25,7 +25,7 @@ import (
 // depends on and can be asserted without a radio: the stream tears down
 // cleanly after an RST (D15), and ?since=<last id> resumes with at most one
 // repeated line, never a gap. The client half — actually performing a
-// network handover — is named as belonging to the Android app's own suite
+// network handover — is named as belonging to the client app's own suite
 // (the phase plan's Coverage Map).
 //
 // It also covers the historical log route's bounds (?tail=, ?since=) and the
