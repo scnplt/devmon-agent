@@ -24,7 +24,7 @@ jobs:
     name: publish image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The git tag is vX.Y.Z; the image tag is X.Y.Z. README.md, the compose
       # example, and install.sh all name the unprefixed form, so stripping the
@@ -41,7 +41,7 @@ jobs:
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -51,13 +51,13 @@ jobs:
       # share of self-hosted VPS and home-lab targets are ARM, and the build is
       # CGO_ENABLED=0 pure Go onto distroless/static, so cross-compiling costs
       # nothing beyond this setup step.
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
       # The same three build args the `image` job in ci.yml passes, so a
       # published binary reports its version the way a CI-built one does.
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
