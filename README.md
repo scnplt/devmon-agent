@@ -4,7 +4,7 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so an
 Android client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.1.0 — the full surface.** The agent is its own certificate
+**Status: 0.1.1 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -18,7 +18,7 @@ an audit table that outlives the operational log. The listening port is rate
 limited in two tiers, and an executable contract suite runs the real binary
 against a real Docker Engine.
 
-License: [AGPL-3.0-only](LICENSE).
+License: [AGPL-3.0-only](LICENSE). Changes by version: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -68,7 +68,7 @@ docker run -d --name devmon-agent \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.1.0
+  ghcr.io/scnplt/devmon-agent:0.1.1
 ```
 
 See `compose.example.yaml` for the equivalent Compose file and a reference for
@@ -78,7 +78,7 @@ Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.1.0","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.1.1","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 
@@ -726,6 +726,13 @@ whose own environment is built explicitly from each test case.
 
 Without an Engine, every test **skips** with a reason naming the endpoint —
 visibly, in `go test` output — rather than passing quietly.
+
+Every `make e2e*` target runs with `-v`, and that is load-bearing rather than
+cosmetic: `go test` prints a skip and its reason **only** under `-v`. Without
+it, a package whose tests all skipped reports a bare `ok`, indistinguishable
+from one that ran and passed them — a green run would silently imply coverage
+it does not have. The output is long; the alternative is a log that cannot tell
+you which of the reasons below fired.
 
 `TestContainerListReportsHealth` additionally needs Engine 29+ / API v1.52: the
 `ContainerSummary.Health` field the list projection reads was only added at
