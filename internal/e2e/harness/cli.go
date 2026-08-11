@@ -66,13 +66,39 @@ func MintPairingCode(t *testing.T, a *Agent, name string) string {
 	return ""
 }
 
-// ListDevices runs `device list` and parses its tabwriter table.
+// ListDevices runs `device list` on the host against a and parses its
+// tabwriter table. a's state directory must be readable by the host test
+// user — a state directory written by a containerised agent (UID 65532,
+// files at 0600) is not; use ListDevicesInContainer for that case.
 func ListDevices(t *testing.T, a *Agent) []DeviceRow {
 	t.Helper()
+	return parseDeviceRows(t, runCLI(t, a, "device", "list"))
+}
 
-	out := runCLI(t, a, "device", "list")
+// RevokeDevice runs `device revoke <id>` against a.
+func RevokeDevice(t *testing.T, a *Agent, id string) {
+	t.Helper()
+	runCLI(t, a, "device", "revoke", id)
+}
+
+// ListAudit runs `audit list --limit <limit>` on the host against a and
+// parses its tabwriter table. Same host-readability caveat as ListDevices;
+// use ListAuditInContainer for a containerised agent's state directory.
+// Columns are split on runs of two-or-more spaces, not single spaces:
+// DETAIL can be empty, and DEVICE contains "id (name)" with a single space
+// inside it.
+func ListAudit(t *testing.T, a *Agent, limit int) []AuditRow {
+	t.Helper()
+	return parseAuditRows(t, runCLI(t, a, "audit", "list", "--limit", strconv.Itoa(limit)))
+}
+
+// parseDeviceRows parses `device list`'s tabwriter table into DeviceRow
+// values. Shared by the host-side (ListDevices) and in-container
+// (ListDevicesInContainer) call sites so their assertions never drift apart.
+func parseDeviceRows(t *testing.T, out string) []DeviceRow {
+	t.Helper()
+
 	rows := parseTable(t, out, 5)
-
 	result := make([]DeviceRow, 0, len(rows))
 	for _, f := range rows {
 		result = append(result, DeviceRow{
@@ -86,22 +112,13 @@ func ListDevices(t *testing.T, a *Agent) []DeviceRow {
 	return result
 }
 
-// RevokeDevice runs `device revoke <id>` against a.
-func RevokeDevice(t *testing.T, a *Agent, id string) {
-	t.Helper()
-	runCLI(t, a, "device", "revoke", id)
-}
-
-// ListAudit runs `audit list --limit <limit>` and parses its tabwriter table.
-// Columns are split on runs of two-or-more spaces, not single spaces:
-// DETAIL can be empty, and DEVICE contains "id (name)" with a single space
-// inside it.
-func ListAudit(t *testing.T, a *Agent, limit int) []AuditRow {
+// parseAuditRows parses `audit list`'s tabwriter table into AuditRow values.
+// Shared by the host-side (ListAudit) and in-container (ListAuditInContainer)
+// call sites so their assertions never drift apart.
+func parseAuditRows(t *testing.T, out string) []AuditRow {
 	t.Helper()
 
-	out := runCLI(t, a, "audit", "list", "--limit", strconv.Itoa(limit))
 	rows := parseTable(t, out, 6)
-
 	result := make([]AuditRow, 0, len(rows))
 	for _, f := range rows {
 		result = append(result, AuditRow{

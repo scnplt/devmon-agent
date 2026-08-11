@@ -165,6 +165,16 @@ type ContainerAgent struct {
 // TEST-ONLY widening of a directory StartAgent (well, here, RunAgentContainer)
 // deletes at cleanup; it is exactly the mistake the README warns real
 // operators against, done here on purpose and only here.
+//
+// GOTCHA (native Linux Engine only): the pre-start 0o777 above only covers
+// the directory itself. Everything the agent creates UNDERNEATH it while
+// running — logs/ (0700) and its log files (0600), both owned by UID 65532 —
+// is still narrow, and on a native Linux Engine those ownerships are real on
+// the host filesystem. When opts.StateDir == "" this function's stateDir is
+// a t.TempDir(), and Go's own t.TempDir() cleanup then fails to RemoveAll a
+// tree the host test user cannot traverse or delete. See
+// widenStateDirForCleanup for how the fix works and why it is a container,
+// not a host-side chmod.
 func RunAgentContainer(t *testing.T, e *client.Client, opts ContainerAgentOptions) *ContainerAgent {
 	t.Helper()
 	ctx := context.Background()
@@ -182,6 +192,11 @@ func RunAgentContainer(t *testing.T, e *client.Client, opts ContainerAgentOption
 	if err := os.Chmod(stateDir, 0o777); err != nil {
 		t.Fatalf("chmod state dir %s: %v", stateDir, err)
 	}
+	// Registered AFTER t.TempDir()'s own cleanup (above, when opts.StateDir ==
+	// ""): t.Cleanup funcs run LIFO, so this one runs BEFORE t.TempDir()'s
+	// RemoveAll gets a chance to trip over files it cannot delete. See the
+	// GOTCHA above and widenStateDirForCleanup's doc comment.
+	t.Cleanup(func() { widenStateDirForCleanup(t, e, stateDir) })
 
 	socketPath := dockerSocketPathOrFail(t)
 	binds := []string{
@@ -236,6 +251,79 @@ func RunAgentContainer(t *testing.T, e *client.Client, opts ContainerAgentOption
 	}
 	waitContainerReady(t, c)
 	return c
+}
+
+// widenStateDirForCleanup makes everything the agent created under stateDir
+// host-removable, by running a throwaway root container that chmods the
+// whole bind-mounted tree from the inside.
+//
+// The host test user cannot do this itself: the agent runs as UID 65532 and
+// creates logs/ (0700) and its log files (0600) under stateDir
+// (internal/logging/logging.go); on a native Linux Engine those ownerships
+// are real on the host filesystem, and a user can never chmod or remove
+// files it does not own, no matter what mode the PARENT directory carries.
+// Docker Desktop hides this entirely — it presents the bind mount through
+// its own VM, where the host user appears to own everything the container
+// wrote regardless of the in-container UID — which is why this asymmetry
+// only surfaces on a native Linux Engine such as the CI runner's.
+//
+// This is a cleanup helper, called from a t.Cleanup: failure is reported
+// with t.Logf, never t.Fatalf, so a permission problem here can never fail
+// the test it is cleaning up after.
+func widenStateDirForCleanup(t *testing.T, e *client.Client, stateDir string) {
+	t.Helper()
+
+	if os.Getenv(envKeep) == "1" {
+		t.Logf("%s=1: leaving %s ownership as-is for inspection", envKeep, stateDir)
+		return
+	}
+
+	ctx := context.Background()
+	if _, err := e.ImageInspect(ctx, defaultFixtureImage); err != nil {
+		rc, pullErr := e.ImagePull(ctx, defaultFixtureImage, client.ImagePullOptions{})
+		if pullErr != nil {
+			t.Logf("widen state dir %s: pull %s: %v", stateDir, defaultFixtureImage, pullErr)
+			return
+		}
+		waitErr := rc.Wait(ctx)
+		_ = rc.Close()
+		if waitErr != nil {
+			t.Logf("widen state dir %s: pull %s: %v", stateDir, defaultFixtureImage, waitErr)
+			return
+		}
+	}
+
+	name := fmt.Sprintf("devmon-e2e-widen-%s-%d", runID, time.Now().UnixNano())
+	created, err := e.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Name: name,
+		Config: &container.Config{
+			Image:  defaultFixtureImage,
+			Cmd:    []string{"chmod", "-R", "a+rwX", "/s"},
+			Labels: map[string]string{LabelSuite: "1", LabelRun: runID},
+		},
+		HostConfig: &container.HostConfig{
+			Binds: []string{stateDir + ":/s"},
+		},
+	})
+	if err != nil {
+		t.Logf("widen state dir %s: create widening container: %v", stateDir, err)
+		return
+	}
+	defer removeFixture(t, e, created.ID)
+
+	if _, err := e.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		t.Logf("widen state dir %s: start widening container: %v", stateDir, err)
+		return
+	}
+
+	wait := e.ContainerWait(ctx, created.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	select {
+	case <-wait.Result:
+	case err := <-wait.Error:
+		t.Logf("widen state dir %s: wait for widening container: %v", stateDir, err)
+	case <-time.After(10 * time.Second):
+		t.Logf("widen state dir %s: widening container did not finish within 10s", stateDir)
+	}
 }
 
 // containerAgentEnv builds the DEVMON_* set for one containerised agent,
@@ -501,6 +589,45 @@ func MintPairingCodeInContainer(t *testing.T, c *ContainerAgent, name string) st
 	}
 	t.Fatalf("device pair-code (in container): did not find a %q line in %d lines of output", pairingCodePrefix, len(lines))
 	return ""
+}
+
+// devmonAgentBinPath is the path the shipped image installs the devmon-agent
+// binary at (Dockerfile); every in-container Exec of a `device`/`audit`
+// subcommand runs it from here.
+const devmonAgentBinPath = "/usr/local/bin/devmon-agent"
+
+// ListDevicesInContainer runs `device list` INSIDE the agent container via
+// Exec and parses it with the same parseDeviceRows helper ListDevices uses
+// on the host, so the two paths' assertions cannot drift apart.
+//
+// This exists because devmon.db is 0600, owned by UID 65532
+// (internal/state/store.go) — on a native Linux Engine the host test process
+// cannot open it directly, unlike Docker Desktop, which presents the bind
+// mount through its own VM where the host user appears to own everything.
+// Running the CLI where the file was written, inside the container, is the
+// same fix MintPairingCodeInContainer already applies to pairing.
+func ListDevicesInContainer(t *testing.T, c *ContainerAgent) []DeviceRow {
+	t.Helper()
+
+	out, exitCode := c.Exec(t, devmonAgentBinPath, "device", "list")
+	if exitCode != 0 {
+		t.Fatalf("device list (in container): exit code %d", exitCode)
+	}
+	return parseDeviceRows(t, out)
+}
+
+// ListAuditInContainer runs `audit list --limit <limit>` INSIDE the agent
+// container via Exec and parses it with the same parseAuditRows helper
+// ListAudit uses on the host. Same rationale as ListDevicesInContainer:
+// devmon.db is unreadable by the host test process on a native Linux Engine.
+func ListAuditInContainer(t *testing.T, c *ContainerAgent, limit int) []AuditRow {
+	t.Helper()
+
+	out, exitCode := c.Exec(t, devmonAgentBinPath, "audit", "list", "--limit", strconv.Itoa(limit))
+	if exitCode != 0 {
+		t.Fatalf("audit list (in container): exit code %d", exitCode)
+	}
+	return parseAuditRows(t, out)
 }
 
 // PairDeviceInContainer performs the same documented pairing sequence
