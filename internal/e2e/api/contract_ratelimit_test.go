@@ -7,6 +7,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,8 +47,13 @@ func assertRateLimitedBody(t *testing.T, hdr http.Header, raw []byte) {
 		t.Errorf("Retry-After = %d, want >= 1", retryAfter)
 	}
 
+	// writeJSON (internal/httpapi/respond.go) encodes every response body with
+	// json.Encoder, which always appends a trailing newline — true of every
+	// error response this API serves, not a quirk of the 429. Trim it before
+	// the exact-match comparison so the assertion still pins the body to
+	// exactly this terse message and nothing else.
 	const wantBody = `{"error":"rate limit exceeded"}`
-	if got := string(raw); got != wantBody {
+	if got := strings.TrimSpace(string(raw)); got != wantBody {
 		t.Errorf("429 body = %s, want %s", got, wantBody)
 	}
 }
@@ -209,11 +215,20 @@ func TestRateLimitGuardedTierRecoversAfterRetryAfter(t *testing.T) {
 }
 
 // TestRateLimitedRequestsWriteNoAuditRow is D7 in action: a device that
-// trips the guarded tier on a mutating route must leave no audit row for the
-// throttled attempts, only for the requests that actually reached the
-// Engine. withDeviceLimit sits before withAudit precisely so a device cannot
-// use throttled retries to push real history out of a size-bounded audit
-// table (internal/httpapi/ratelimit.go).
+// trips the guarded tier must leave no audit row for the throttled attempt,
+// only for the requests that actually reached the Engine. withDeviceLimit
+// sits before withAudit precisely so a device cannot use throttled retries
+// to push real history out of a size-bounded audit table
+// (internal/httpapi/ratelimit.go).
+//
+// The guarded tier is one bucket per device, shared across every guarded
+// route (D6), not one bucket per route. So this test drains it with fast
+// GET /v1/containers calls rather than with the mutating route itself: a
+// real restart against Engine 29 routinely takes longer than the 1/sec
+// refill interval, so a loop of restarts alone never outpaces the refill
+// and the bucket never empties — that was the original defect here. Reads
+// are milliseconds and reliably outrun a 1/sec refill, so they can drain the
+// same shared bucket that the restart call will then find empty.
 func TestRateLimitedRequestsWriteNoAuditRow(t *testing.T) {
 	t.Parallel()
 	engine := harness.RequireEngine(t)
@@ -227,33 +242,46 @@ func TestRateLimitedRequestsWriteNoAuditRow(t *testing.T) {
 	id := harness.StartFixture(t, engine, harness.FixtureOptions{NameSuffix: "ratelimit-audit"})
 	waitContainerRunning(t, engine, id)
 
-	successCount := 0
+	// One known-good restart first, while the bucket still has its burst
+	// token, so there is a baseline audit row count to compare the throttled
+	// attempt against.
+	status, _, raw := d.Do(t, http.MethodPost, "/v1/containers/"+id+"/restart", nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("baseline POST .../restart = %d, want %d; body = %s", status, http.StatusNoContent, raw)
+	}
+	rowsBefore := harness.ListAudit(t, a, auditListLimit)
+
+	// Drain the device's shared guarded-tier bucket with cheap reads, which
+	// outrun the 1/sec refill; the mutating call below reuses the same
+	// bucket (maxRateLimitIterations bounds this loop like every other in
+	// this file).
 	got429 := false
 	for i := 0; i < maxRateLimitIterations; i++ {
-		status, _, raw := d.Do(t, http.MethodPost, "/v1/containers/"+id+"/restart", nil)
-		switch status {
-		case http.StatusNoContent:
-			successCount++
-		case http.StatusTooManyRequests:
+		status, _, raw := d.Do(t, http.MethodGet, "/v1/containers", nil)
+		if status == http.StatusTooManyRequests {
 			got429 = true
-		default:
-			t.Fatalf("POST .../restart = %d, want %d or %d; body = %s",
-				status, http.StatusNoContent, http.StatusTooManyRequests, raw)
-		}
-		if got429 {
 			break
+		}
+		if status != http.StatusOK {
+			t.Fatalf("GET /v1/containers = %d, want %d or %d; body = %s",
+				status, http.StatusOK, http.StatusTooManyRequests, raw)
 		}
 	}
 	if !got429 {
-		t.Fatalf("restart never answered 429 within %d iterations (guarded tier = 1/sec)", maxRateLimitIterations)
-	}
-	if successCount == 0 {
-		t.Fatalf("no restart succeeded before the limiter tripped; nothing to compare the audit table against")
+		t.Fatalf("draining GET /v1/containers never answered 429 within %d iterations (guarded tier = 1/sec)", maxRateLimitIterations)
 	}
 
-	rows := harness.ListAudit(t, a, auditListLimit)
-	if len(rows) != successCount {
-		t.Fatalf("audit list holds %d rows, want exactly %d (one per restart that actually executed, none for the throttled 429s): %+v",
-			len(rows), successCount, rows)
+	// The bucket is now empty and shared across routes, so the very next
+	// guarded call — this time the mutating one — must be throttled too.
+	status, _, raw = d.Do(t, http.MethodPost, "/v1/containers/"+id+"/restart", nil)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("POST .../restart immediately after draining the shared bucket = %d, want %d; body = %s",
+			status, http.StatusTooManyRequests, raw)
+	}
+
+	rowsAfter := harness.ListAudit(t, a, auditListLimit)
+	if len(rowsAfter) != len(rowsBefore) {
+		t.Fatalf("audit list holds %d rows after the throttled restart, want %d (unchanged: the throttled restart must write nothing): %+v",
+			len(rowsAfter), len(rowsBefore), rowsAfter)
 	}
 }
