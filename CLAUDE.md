@@ -1,6 +1,6 @@
 # devmon-agent
 
-Go agent that exposes a narrow, mTLS-authenticated Docker control API so an Android
+Go agent that exposes a narrow, mTLS-authenticated Docker control API so a paired
 client can inspect and restart containers without SSH and without exposing the Docker socket.
 
 - Module: `github.com/scnplt/devmon-agent`

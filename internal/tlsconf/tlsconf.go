@@ -34,7 +34,7 @@ func Build(cert tls.Certificate, clientCAs *x509.CertPool) *tls.Config {
 
 		// Both peers are ours, so there is nothing to negotiate down to. TLS 1.3
 		// removes the entire downgrade and cipher-negotiation surface, and
-		// Android has supported it since API 29.
+		// every current client TLS stack supports it.
 		//
 		// CipherSuites is deliberately unset: it is ignored for TLS 1.3.
 		MinVersion: tls.VersionTLS13,
