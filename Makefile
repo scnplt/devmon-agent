@@ -6,6 +6,10 @@ VERSION    ?= dev
 COMMIT     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# Kept in step with the same-named variable in .github/workflows/ci.yml, so a
+# local `make vuln` and the CI gate run the same scanner.
+GOVULNCHECK_VERSION ?= v1.6.0
+
 # Stamped into internal/version at link time. Defined once here so it is never retyped.
 LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Version=$(VERSION) \
@@ -40,7 +44,7 @@ E2E_PKGS := ./internal/e2e/...
 # failures.
 E2E_TESTFLAGS := -race -count=1 -v
 
-.PHONY: all build test test-race cover lint sec shellcheck image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
+.PHONY: all build test test-race cover lint sec vuln shellcheck image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
 
 all: build
 
@@ -72,6 +76,12 @@ lint:
 
 sec:
 	gosec ./...
+
+# The dependency and toolchain half of the security bar, next to gosec's
+# own-code half. Run from the module cache rather than installed, so a local run
+# needs no setup step; CI pins the version in its env block instead.
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 # install.sh is the one shipped artifact no Go gate covers, and it runs on an
 # operator's host with sudo. -s sh, not the default, because the script is
