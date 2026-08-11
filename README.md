@@ -727,6 +727,13 @@ whose own environment is built explicitly from each test case.
 Without an Engine, every test **skips** with a reason naming the endpoint —
 visibly, in `go test` output — rather than passing quietly.
 
+`TestContainerListReportsHealth` additionally needs Engine 29+ / API v1.52: the
+`ContainerSummary.Health` field the list projection reads was only added at
+that version, so on an older Engine (even a reachable, healthy one) the test
+skips with that reason instead of failing, and `DEVMON_E2E_REQUIRE=1` does not
+override that skip — it is a genuine Engine capability floor, not a missing
+Engine.
+
 **On Windows, run these from a WSL2 shell.** The agent accepts only `unix://`
 and `tcp://` Docker endpoints, so Docker Desktop's default
 `npipe:////./pipe/docker_engine` cannot be given to it at all, and the
