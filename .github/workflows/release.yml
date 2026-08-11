@@ -1,0 +1,79 @@
+name: Release
+
+# Tag-driven, and deliberately a separate workflow rather than a job in ci.yml.
+# This is the only workflow in the repository holding `packages: write`, and a
+# workflow with that permission triggered on `pull_request` would expose a
+# registry credential to every fork PR. Keeping the trigger tag-only is the
+# isolation.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Least privilege, stated per workflow: read the source, write the package,
+# nothing else.
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    name: publish image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The git tag is vX.Y.Z; the image tag is X.Y.Z. README.md, the compose
+      # example, and install.sh all name the unprefixed form, so stripping the
+      # leading v here is what keeps them true.
+      - name: Derive version and build time
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ] || [ "$version" = "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME is not of the form vX.Y.Z" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # buildx is what makes the arm64 half of the manifest possible. A large
+      # share of self-hosted VPS and home-lab targets are ARM, and the build is
+      # CGO_ENABLED=0 pure Go onto distroless/static, so cross-compiling costs
+      # nothing beyond this setup step.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # The same three build args the `image` job in ci.yml passes, so a
+      # published binary reports its version the way a CI-built one does.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest
+
+      # Proves both architectures actually landed in the manifest, rather than
+      # trusting that buildx was configured correctly.
+      - name: Verify the manifest
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          VERSION: ${{ steps.meta.outputs.version }}
