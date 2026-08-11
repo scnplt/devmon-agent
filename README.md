@@ -1,7 +1,7 @@
 # devmon-agent
 
-A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so an
-Android client can inspect and restart containers without SSH and without
+A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
+paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
 **Status: 0.1.1 — the full surface.** The agent is its own certificate
@@ -557,7 +557,7 @@ single `UPDATE`, and the next request the revoked device makes is already
 rejected.
 
 TLS 1.3 is the floor. Both peers are ours, so there is nothing to negotiate down
-to, and Android has supported it since API 29.
+to, and every current client TLS stack supports it.
 
 ---
 
@@ -583,7 +583,7 @@ a lost code is minted again rather than recovered.
 
 ### 2. Redeem it
 
-The Android app does this. To do it by hand:
+The client app does this. To do it by hand:
 
 ```bash
 openssl ecparam -name prime256v1 -genkey -noout -out device.key
