@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package policy defines the agent's named permission tiers.
 //
 // The tier is fixed by the operator at startup via DEVMON_POLICY_MODE and is

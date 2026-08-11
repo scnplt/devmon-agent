@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //go:build e2e
 
 package incontainer
@@ -165,26 +167,25 @@ func TestExplicitSelfIDOverrideIsHonoured(t *testing.T) {
 // is answered, and the answer is that the documented 503 contract is NOT
 // what the agent implements.
 //
-// internal/selfid/selfid.go:54-59 makes the override merely the FIRST entry
+// internal/selfid/selfid.go:53-59 makes the override merely the FIRST entry
 // in a candidate list, and internal/dockerx/self.go's confirmSelf walks that
 // list until the Engine confirms one — an override the Engine does not
-// recognise is skipped exactly like a stale mountinfo line, with no log line
-// at all (only a non-not-found inspect error earns a Warn). In a normal
+// recognise is skipped exactly like a stale mountinfo line. In a normal
 // container the mountinfo candidate then resolves, so the agent
 // self-identifies correctly and the SelfKnown()==false branch that produces
 // 503 is unreachable from here. Measured against Docker 29.6.1: every
 // lifecycle route on the agent's own container answered 403 "the agent
-// cannot act on itself", and agent.log contained neither an ERROR nor the
-// string DEVMON_SELF_CONTAINER_ID.
+// cannot act on itself".
 //
 // This test now asserts that real behaviour rather than the specification it
 // diverges from, because a permanently red test asserting an unimplemented
 // contract is worth nothing. The divergence itself is recorded as Finding 1
 // in .claude/PRPs/reports/client-independent-e2e-report.md: the security
 // posture is sound (self-exclusion still fires, via a correctly detected
-// ID), but an operator who pins the WRONG container ID gets silent fallback
-// with no signal that their explicit configuration was ignored. Fixing that
-// is a production change, which this phase does not make (D19).
+// ID). What was lost — operator visibility into the discarded override — is
+// now fixed (Phase 7): confirmSelf logs a Warn naming the discarded override
+// the moment the Engine fails to confirm it, so this test now asserts that
+// warning appears rather than merely noting its absence.
 func TestUnresolvableSelfIDFallsBackToDetection(t *testing.T) {
 	e := harness.RequireLinuxContainerEngine(t)
 	harness.BuildImage(t, selfIDImageTag, nil)
@@ -235,11 +236,7 @@ func TestUnresolvableSelfIDFallsBackToDetection(t *testing.T) {
 	}
 
 	// The self-identification line names the container the agent ACTUALLY
-	// resolved — its own — and not the override it silently discarded. That
-	// discarded override producing no log line at all is Finding 1; this
-	// assertion pins the current behaviour so a future production fix that
-	// starts warning about it shows up here as a deliberate change rather
-	// than passing unnoticed.
+	// resolved — its own — not the override it discarded.
 	logText := string(c.ReadStateFile(t, agentLogPath))
 	if !strings.Contains(logText, "agent self-identified") {
 		t.Errorf("agent.log has no self-identification line; the fallback this test documents did not happen")
@@ -247,7 +244,15 @@ func TestUnresolvableSelfIDFallsBackToDetection(t *testing.T) {
 	if !strings.Contains(logText, c.ID) {
 		t.Errorf("agent.log does not carry the agent's own container ID; the resolved identity is not the container itself")
 	}
-	if strings.Contains(logText, unresolvableSelfID) {
-		t.Logf("agent.log now mentions the discarded override — Finding 1 may have been fixed; re-read the report before changing this test")
+
+	// Finding 1's fix: the discarded override is no longer silent. The agent
+	// must log both the warning naming it as discarded and the override
+	// value itself, or an operator who pins the wrong container ID still
+	// gets no signal that their explicit configuration was thrown away.
+	if !strings.Contains(logText, "discarding DEVMON_SELF_CONTAINER_ID") {
+		t.Errorf("agent.log does not contain the discard warning for the unrecognised override")
+	}
+	if !strings.Contains(logText, unresolvableSelfID) {
+		t.Errorf("agent.log does not name the discarded override %s", unresolvableSelfID)
 	}
 }

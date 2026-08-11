@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //go:build e2e
 
 // Package harness runs the real devmon-agent against a real Docker Engine.
