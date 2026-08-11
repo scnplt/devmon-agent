@@ -9,7 +9,7 @@ import (
 	"github.com/scnplt/devmon-agent/internal/version"
 )
 
-// APIVersion is the contract version the Android app negotiates against. The app
+// APIVersion is the contract version the client app negotiates against. The app
 // ships independently of the agent, so it must be able to detect an incompatible
 // agent before the user hits an error rather than after.
 const APIVersion = "v1"

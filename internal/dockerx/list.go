@@ -20,8 +20,8 @@ func truncate[T any](items []T) ([]T, bool) {
 }
 
 // defaultLabels returns m unchanged, or a non-nil empty map when m is nil. A
-// nil map marshals to JSON null rather than {}, which would force the Android
-// client to handle both a map and a null for the same field.
+// nil map marshals to JSON null rather than {}, which would force the client
+// to handle both a map and a null for the same field.
 func defaultLabels(m map[string]string) map[string]string {
 	if m == nil {
 		return map[string]string{}
