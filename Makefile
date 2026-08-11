@@ -28,7 +28,7 @@ COVER_PKGS := ./internal/...
 # cached PASS from before a change is a false green.
 E2E_PKGS := ./internal/e2e/...
 
-.PHONY: all build test test-race cover lint sec image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
+.PHONY: all build test test-race cover lint sec shellcheck image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
 
 all: build
 
@@ -60,6 +60,12 @@ lint:
 
 sec:
 	gosec ./...
+
+# install.sh is the one shipped artifact no Go gate covers, and it runs on an
+# operator's host with sudo. -s sh, not the default, because the script is
+# POSIX sh: shellcheck would otherwise let a bashism through that dash rejects.
+shellcheck:
+	shellcheck -s sh install.sh
 
 # -race instruments the test binary only; the agent binary it builds and runs as
 # a child process is still built with CGO_ENABLED=0, matching the shipped
