@@ -23,10 +23,22 @@ COVER_PKGS := ./internal/...
 
 # The end-to-end suite needs a real Docker Engine and is excluded from every
 # default target by the `e2e` build tag, so `go build ./...`, `go vet ./...` and
-# `go test ./internal/...` never compile or run a line of it. -count=1 defeats
-# the test cache: e2e results depend entirely on state outside the module, so a
-# cached PASS from before a change is a false green.
+# `go test ./internal/...` never compile or run a line of it.
 E2E_PKGS := ./internal/e2e/...
+
+# -count=1 defeats the test cache: e2e results depend entirely on state outside
+# the module, so a cached PASS from before a change is a false green.
+#
+# -v is here for one reason: `go test` prints a test's SKIP and its reason only
+# under -v. Without it, a package whose tests all skipped reports a bare `ok`,
+# indistinguishable in the log from one that ran and passed them — so a green
+# run silently implies coverage it may not have. This suite skips for real and
+# specific reasons (no Engine reachable, a group that needs a Linux Engine, an
+# Engine too old for the field under test), and each has to be readable rather
+# than inferred. It is the argument DEVMON_E2E_REQUIRE=1 already makes one
+# level up, applied to the skips that flag deliberately does not convert into
+# failures.
+E2E_TESTFLAGS := -race -count=1 -v
 
 .PHONY: all build test test-race cover lint sec shellcheck image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
 
@@ -72,16 +84,16 @@ shellcheck:
 # artifact. Requires a Linux Engine over unix:// or tcp:// — on Windows, run
 # these from a WSL2 shell.
 e2e:
-	CGO_ENABLED=1 go test -tags e2e $(E2E_PKGS) -race -count=1 -timeout 15m
+	CGO_ENABLED=1 go test -tags e2e $(E2E_PKGS) $(E2E_TESTFLAGS) -timeout 15m
 
 e2e-container:
-	CGO_ENABLED=1 go test -tags e2e ./internal/e2e/incontainer/... -race -count=1 -timeout 15m
+	CGO_ENABLED=1 go test -tags e2e ./internal/e2e/incontainer/... $(E2E_TESTFLAGS) -timeout 15m
 
 # The 30-minute stream and the retention budget. Both are compiled by every e2e
 # run and skip unless DEVMON_E2E_ENDURANCE=1, which this target sets along with
 # the longer timeout they need room inside.
 e2e-endurance:
-	DEVMON_E2E_ENDURANCE=1 CGO_ENABLED=1 go test -tags e2e ./internal/e2e/api/... -race -count=1 -timeout 45m
+	DEVMON_E2E_ENDURANCE=1 CGO_ENABLED=1 go test -tags e2e ./internal/e2e/api/... $(E2E_TESTFLAGS) -timeout 45m
 
 # `make lint` already covers the e2e files with gofmt, which ignores build tags.
 # go vet and golangci-lint do not, which is the only reason this target exists.
