@@ -370,9 +370,18 @@ func TestContainerListAllParameter(t *testing.T) {
 // healthcheck eventually surfaces health: "unhealthy" in the list projection.
 // Docker needs a few checks before it reports the container unhealthy, so
 // this polls with a deadline rather than sleeping a fixed duration.
+//
+// Requires Engine 29+ / API v1.52: per the vendored swagger spec,
+// ContainerSummary.Health was added in API v1.52 — before that version the
+// list projection (/containers/json) never sends the field at all, so an
+// older Engine would leave "health" perpetually absent no matter how the
+// fixture container behaves. That is a genuine Engine capability floor, not
+// a bug in the projection, so the test skips below that version rather than
+// failing.
 func TestContainerListReportsHealth(t *testing.T) {
 	t.Parallel()
 	engine := harness.RequireEngine(t)
+	harness.RequireEngineAPIAtLeast(t, engine, "1.52")
 	_, d := readReadyAgent(t, "reads-health")
 
 	id := harness.StartFixture(t, engine, harness.FixtureOptions{

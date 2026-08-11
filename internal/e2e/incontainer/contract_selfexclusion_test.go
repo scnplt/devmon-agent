@@ -378,14 +378,13 @@ func TestAuditRecordsSelfRefusals(t *testing.T) {
 		}
 	}
 
-	// The CLI's DEVMON_STATE_DIR requirement is all runCLI reads off the
-	// *harness.Agent it is given (internal/e2e/harness/cli.go); the agent
-	// container's state directory is the same host path RunAgentContainer
-	// bind-mounted in, so a minimal Agent value carrying just that field lets
-	// this test reuse harness.ListAudit verbatim instead of duplicating the
-	// CLI subprocess and tabwriter-parsing logic here.
-	target := &harness.Agent{StateDir: c.StateDir}
-	rows := harness.ListAudit(t, target, len(refFormOrder)+5)
+	// audit list runs INSIDE the container: devmon.db is 0600, owned by
+	// UID 65532 (internal/state/store.go), and the host test user cannot
+	// open it directly on a native Linux Engine (image.go's
+	// ListAuditInContainer doc comment). It shares the same table-parsing
+	// helper the host-side harness.ListAudit uses, so the assertions below
+	// cannot drift from the host-side path.
+	rows := harness.ListAuditInContainer(t, c, len(refFormOrder)+5)
 
 	found := 0
 	for _, form := range refFormOrder {

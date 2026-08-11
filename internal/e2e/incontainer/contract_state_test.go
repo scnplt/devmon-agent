@@ -78,7 +78,11 @@ func TestStateSurvivesCrashRestart(t *testing.T) {
 		t.Errorf("post-restart GET /v1/containers with the pre-kill device certificate: status = %d, want %d; body = %v", status, http.StatusOK, obj)
 	}
 
-	rows := harness.ListDevices(t, &harness.Agent{StateDir: c.StateDir})
+	// device list runs INSIDE the container: devmon.db is 0600, owned by
+	// UID 65532 (internal/state/store.go), and the host test user cannot
+	// open it directly on a native Linux Engine (image.go's
+	// ListDevicesInContainer doc comment).
+	rows := harness.ListDevicesInContainer(t, c)
 	found := false
 	for _, row := range rows {
 		if row.ID == device.ID {
