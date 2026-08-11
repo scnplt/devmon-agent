@@ -1,5 +1,9 @@
 # Reference configuration for devmon-agent.
 #
+# ./install.sh writes a working compose file for you and resolves both of the
+# prerequisites below from the host itself. This file is for operators who
+# would rather assemble it by hand, and as a reference for every knob.
+#
 # Two host prerequisites first — both will otherwise look like agent bugs, and
 # both are consequences of the container running as nonroot (UID 65532):
 #
@@ -14,8 +18,8 @@
 #
 #        stat -c '%g' /var/run/docker.sock
 #
-#      999 is right on Debian and Ubuntu and wrong elsewhere. The Phase 6
-#      installer resolves this automatically.
+#      999 is right on Debian and Ubuntu and wrong elsewhere. install.sh
+#      resolves it with `stat` rather than assuming it.
 
 services:
   devmon-agent:
@@ -52,3 +56,16 @@ services:
 
       DEVMON_LOG_MAX_AGE_DAYS: "1"
       DEVMON_LOG_MAX_TOTAL_MB: "64"
+
+      # Rate limits, shown at their defaults. The two pre-authentication tiers
+      # are per client IP and are counted per minute; the authenticated tier is
+      # per paired device and is counted per second, so a phone roaming across
+      # mobile IPs mid-incident is not throttled for the handover.
+      #
+      # Raise them if a busy host or a chatty client trips them. The minimum is
+      # 1: there is deliberately no value that turns a limiter off, because a
+      # 0 would read as "no requests permitted" and brick the agent in a way
+      # that looks like a network fault.
+      # DEVMON_RATE_STATUS_PER_MIN: "30"
+      # DEVMON_RATE_PAIR_PER_MIN: "5"
+      # DEVMON_RATE_GUARDED_PER_SEC: "20"

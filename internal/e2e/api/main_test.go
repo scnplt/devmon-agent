@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //go:build e2e
 
 // Package api is the host-binary group: it builds and runs the real

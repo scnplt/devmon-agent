@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package httpapi
 
 import (
@@ -17,9 +19,9 @@ import (
 // certificate. Every value here is a security decision, not a tunable.
 const (
 	// maxPairBodyBytes bounds the pairing request body. This route has no
-	// client certificate to gate it and there is no rate limiting until
-	// Phase 6, so an unbounded JSON body is a trivial memory-exhaustion
-	// vector.
+	// client certificate to gate it, so an unbounded JSON body would be a
+	// trivial memory-exhaustion vector even with the rate limiter in front
+	// of it (see ratelimit.go).
 	maxPairBodyBytes = 8 << 10
 
 	// msgPairFailed is the terse rejection served for every reason a pairing

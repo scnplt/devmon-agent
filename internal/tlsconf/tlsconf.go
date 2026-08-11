@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package tlsconf builds the TLS configuration for the agent's single
 // listening port.
 package tlsconf

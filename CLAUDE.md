@@ -68,9 +68,6 @@ the phase began, and each commit is small enough to review on its own.
 
 ## Commands
 
-Nothing is implemented yet — `go.mod` is created by Task 1 of the current plan, so these
-commands only become runnable after that.
-
 ```bash
 make build                                          # -> bin/devmon-agent
 go build ./...
@@ -83,12 +80,13 @@ gofmt -l .                                          # must print nothing
 go vet ./...
 golangci-lint run ./...
 gosec ./...                                         # must be clean
+make shellcheck                                     # shellcheck -s sh install.sh
 
 docker build -t devmon-agent:dev .
 ```
 
-There is no dev server. The agent runs as a container; see `compose.example.yaml` once
-Task 11 lands.
+There is no dev server. The agent runs as a container: `./install.sh` sets one up from
+scratch, and `compose.example.yaml` is the by-hand reference.
 
 ## Repo-specific notes
 

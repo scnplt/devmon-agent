@@ -210,7 +210,7 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 | 4 | Logs & live streaming | Historical logs plus a resilient live stream channel | complete | with 3 | 2 | [logs-and-live-streaming.plan.md](../plans/completed/logs-and-live-streaming.plan.md) · [report](../reports/logs-and-live-streaming-report.md) |
 | 5 | Lifecycle, policy & audit | start/restart/stop/kill/delete, server-side mode enforcement, agent self-exclusion, audit logging | complete | - | 3 | [lifecycle-policy-and-audit.plan.md](../plans/completed/lifecycle-policy-and-audit.plan.md) · [report](../reports/lifecycle-policy-and-audit-report.md) |
 | 6 | Client-independent end-to-end suite | Executable contract tests against a real Engine — host-binary harness plus an in-container group covering self-exclusion and self-identification | complete | - | 4, 5 | [client-independent-e2e.plan.md](../plans/completed/client-independent-e2e.plan.md) · [report](../reports/client-independent-e2e-report.md) |
-| 7 | Hardening & OSS release | Rate limiting, security review, automated installer, threat-model docs, AGPL-3.0 release | pending | - | 6 | - |
+| 7 | Hardening & OSS release | Rate limiting, security review, automated installer, threat-model docs, AGPL-3.0 release | complete | - | 6 | [hardening-and-oss-release.plan.md](../plans/completed/hardening-and-oss-release.plan.md) · [report](../reports/hardening-and-oss-release-report.md) |
 
 ### Phase Details
 

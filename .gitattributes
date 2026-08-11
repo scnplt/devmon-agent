@@ -1,0 +1,11 @@
+# Shell scripts must check out with LF everywhere. A CRLF working copy on a
+# Windows clone produces `bad interpreter: /bin/sh^M` the moment the script is
+# run on Linux — which is the only place install.sh is ever run.
+*.sh text eol=lf
+
+# Go tooling is line-ending sensitive in the same direction: gofmt normalizes
+# to LF, so a CRLF working copy makes `gofmt -l .` report the entire tree as
+# unformatted and buries real drift in the noise.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf

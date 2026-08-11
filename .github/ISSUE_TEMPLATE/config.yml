@@ -1,0 +1,18 @@
+# Blank issues are disabled so a security report cannot be filed as one by
+# accident. A public issue describing a live path into someone's host is a
+# disclosure, not a bug report.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/scnplt/devmon-agent/security/advisories/new
+    about: >-
+      Never open a public issue for a security problem. This agent holds a
+      Docker socket, so a vulnerability is a host compromise. Report it
+      privately through GitHub Security Advisories — see SECURITY.md.
+
+  - name: Question or idea
+    url: https://github.com/scnplt/devmon-agent/discussions
+    about: >-
+      For usage questions and feature ideas. Bug reports belong in an issue;
+      start here if you are not sure it is a bug.

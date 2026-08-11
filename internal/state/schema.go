@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package state
 
 // currentSchemaVersion is the schema this build understands. A store reporting a

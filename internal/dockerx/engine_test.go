@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dockerx
 
 // This file exercises the eight Engine-calling wrapper methods (List/Inspect

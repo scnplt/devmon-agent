@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dockerx
 
 // Response DTOs for the read operations (Phase 3).
@@ -162,8 +164,8 @@ type NetworkEndpoint struct {
 // for. That makes it the one field in the codebase that may legitimately carry
 // a secret, and the reason D16 forbids writing it to the agent's own log.
 type LogLine struct {
-	Timestamp string `json:"ts"`                  // RFC3339Nano; "" if the Engine emitted no parsable prefix
-	Stream    string `json:"stream"`              // "stdout" or "stderr"
+	Timestamp string `json:"ts"`     // RFC3339Nano; "" if the Engine emitted no parsable prefix
+	Stream    string `json:"stream"` // "stdout" or "stderr"
 	Line      string `json:"line"`
 	Truncated bool   `json:"truncated,omitempty"` // set when the line exceeded maxLogLineBytes
 }

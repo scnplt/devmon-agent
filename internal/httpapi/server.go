@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package httpapi serves the agent's HTTPS API on its single listening port.
 package httpapi
 
@@ -10,9 +12,12 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/scnplt/devmon-agent/internal/certs"
 	"github.com/scnplt/devmon-agent/internal/config"
 	"github.com/scnplt/devmon-agent/internal/policy"
+	"github.com/scnplt/devmon-agent/internal/ratelimit"
 	"github.com/scnplt/devmon-agent/internal/state"
 )
 
@@ -57,7 +62,28 @@ type Server struct {
 	// handler: a nil channel blocks forever on send and never succeeds on a
 	// non-blocking select, which would answer every stream request with 503.
 	streams chan struct{}
-	http    *http.Server
+
+	// unauthGlobal is the shared, unkeyed backstop bucket every
+	// pre-authentication request checks first (D8).
+	unauthGlobal *rate.Limiter
+
+	// statusLimits and pairLimits key one bucket per client IP for the two
+	// unauthenticated routes; statusLimit and pairLimit are their
+	// configured per-second rates, kept alongside the registries because
+	// *ratelimit.Registry does not expose the rate it was built with and
+	// withIPLimit needs it to compute Retry-After.
+	statusLimits *ratelimit.Registry
+	statusLimit  rate.Limit
+	pairLimits   *ratelimit.Registry
+	pairLimit    rate.Limit
+
+	// deviceLimits keys one bucket per device ID for every guarded route
+	// (D6); deviceLimit is its configured per-second rate, for the same
+	// reason statusLimit and pairLimit are kept.
+	deviceLimits *ratelimit.Registry
+	deviceLimit  rate.Limit
+
+	http *http.Server
 }
 
 // NewServer wires the API. tlsCfg carries the server certificate, so the
@@ -71,6 +97,36 @@ type Server struct {
 // instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: make(chan struct{}, maxConcurrentStreams)}
+
+	s.unauthGlobal = rate.NewLimiter(rate.Limit(unauthGlobalPerSec), unauthGlobalBurst)
+
+	// floorRatePerX floors a config value at its package default when it is
+	// below 1. config.Load's own minRatePerX bound means it can never
+	// produce such a value; this exists solely so a zero-value
+	// config.Config — the shape cmd/devmon-agent/main.go's and this
+	// package's own tests build — never yields a limiter that admits
+	// nothing.
+	floorRatePerX := func(v, def int) int {
+		if v < 1 {
+			return def
+		}
+		return v
+	}
+
+	statusPerMin := floorRatePerX(cfg.RateStatusPerMin, defaultRateStatusPerMin)
+	pairPerMin := floorRatePerX(cfg.RatePairPerMin, defaultRatePairPerMin)
+	guardedPerSec := floorRatePerX(cfg.RateGuardedPerSec, defaultRateGuardedPerSec)
+
+	// Burst equals the whole per-minute count on the pre-auth tiers, so a
+	// client that legitimately checks status a few times in a row is not
+	// throttled for behaving normally.
+	s.statusLimit = rate.Limit(statusPerMin) / secondsPerMinute
+	s.statusLimits = ratelimit.NewRegistry(s.statusLimit, statusPerMin, rateLimitMaxKeys)
+	s.pairLimit = rate.Limit(pairPerMin) / secondsPerMinute
+	s.pairLimits = ratelimit.NewRegistry(s.pairLimit, pairPerMin, rateLimitMaxKeys)
+
+	s.deviceLimit = rate.Limit(guardedPerSec)
+	s.deviceLimits = ratelimit.NewRegistry(s.deviceLimit, guardedPerSec*guardedBurstMultiplier, rateLimitMaxKeys)
 
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -95,21 +151,29 @@ func (s *Server) routes() http.Handler {
 
 	// The Go 1.22+ method pattern matters. Registering "/v1/status" alone would
 	// also match POST, DELETE, and everything else.
-	mux.HandleFunc("GET /v1/status", s.handleStatus)
+	//
+	// Rate-limit order (the Rate-Limiting Contract): the global unauthenticated
+	// backstop runs first, then the route's own per-IP tier.
+	mux.Handle("GET /v1/status",
+		s.withGlobalUnauthLimit(s.withIPLimit(s.statusLimits, s.statusLimit, "status", http.HandlerFunc(s.handleStatus))))
 
 	// Unauthenticated by design (D2): the device has no certificate yet, so
 	// the pairing code itself is what authenticates this one call.
-	mux.HandleFunc("POST /v1/pair", s.handlePair)
+	mux.Handle("POST /v1/pair",
+		s.withGlobalUnauthLimit(s.withIPLimit(s.pairLimits, s.pairLimit, "pair", http.HandlerFunc(s.handlePair))))
 
 	// Guarded: both act on the calling device's own identity, resolved by
 	// requireDevice from its client certificate — never from the request.
-	mux.Handle("POST /v1/device/renew", s.requireDevice(http.HandlerFunc(s.handleRenew)))
-	mux.Handle("DELETE /v1/device/self", s.requireDevice(http.HandlerFunc(s.handleUnpairSelf)))
+	// withDeviceLimit sits immediately inside requireDevice, before anything
+	// else, exactly as it does for the read/logs/mutate helpers below.
+	mux.Handle("POST /v1/device/renew", s.requireDevice(s.withDeviceLimit(http.HandlerFunc(s.handleRenew))))
+	mux.Handle("DELETE /v1/device/self", s.requireDevice(s.withDeviceLimit(http.HandlerFunc(s.handleUnpairSelf))))
 
-	// Read operations. Every one is guarded twice: requireDevice proves who is
-	// calling, requireOp proves the host's startup policy permits it.
+	// Read operations. Every one is guarded three times: requireDevice proves
+	// who is calling, withDeviceLimit bounds how often, requireOp proves the
+	// host's startup policy permits it.
 	read := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.requireOp(policy.OpRead, h)))
+		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpRead, h))))
 	}
 	read("GET /v1/containers", s.handleListContainers)
 	read("GET /v1/containers/{id}", s.handleInspectContainer)
@@ -120,19 +184,21 @@ func (s *Server) routes() http.Handler {
 	read("GET /v1/volumes", s.handleListVolumes)
 	read("GET /v1/volumes/{name}", s.handleInspectVolume)
 
-	// Log routes. Same double guard as the read routes, with policy.OpLogs —
+	// Log routes. Same triple guard as the read routes, with policy.OpLogs —
 	// which, like OpRead, every mode permits (see internal/policy/mode.go).
 	logs := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.requireOp(policy.OpLogs, h)))
+		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpLogs, h))))
 	}
 	logs("GET /v1/containers/{id}/logs", s.handleContainerLogs)
 	logs("GET /v1/containers/{id}/logs/stream", s.handleStreamContainerLogs)
 
-	// Mutating operations. Three guards, and the order is load-bearing (D15):
-	// requireDevice proves who is calling, withAudit records the attempt whatever
-	// happens to it, requireOp proves the host's startup policy permits it.
+	// Mutating operations. Four guards, and the order is load-bearing (D7,
+	// D15): requireDevice proves who is calling, withDeviceLimit bounds how
+	// often before anything is recorded, withAudit records the attempt
+	// whatever happens to it, requireOp proves the host's startup policy
+	// permits it.
 	mutate := func(pattern string, op policy.Operation, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withAudit(op, s.requireOp(op, h))))
+		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.withAudit(op, s.requireOp(op, h)))))
 	}
 	mutate("POST /v1/containers/{id}/start", policy.OpStart, s.handleStartContainer)
 	mutate("POST /v1/containers/{id}/restart", policy.OpRestart, s.handleRestartContainer)

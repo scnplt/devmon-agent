@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //go:build e2e
 
 // Package incontainer is the image group: it builds the shipped
