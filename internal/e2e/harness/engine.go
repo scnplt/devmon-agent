@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,83 @@ func skipOrFail(t *testing.T, reason string) {
 		t.Fatalf("%s (required by %s=1)", reason, envRequire)
 	}
 	t.Skip(reason)
+}
+
+// RequireEngineAPIAtLeast skips the calling test when cli's negotiated
+// Docker Engine API version is older than minVersion (a "major.minor"
+// string, e.g. "1.52"). Comparison is numeric on the major and minor
+// components, never a string comparison — "1.5" would otherwise sort after
+// "1.48".
+//
+// cli must come from RequireEngine, called first by the caller (see
+// RequireLinuxContainerEngine for the same composition pattern). This
+// function never dials its own connection and never decides "no Engine
+// answered" — that decision, and its DEVMON_E2E_REQUIRE=1 hard-failure path,
+// belongs entirely to RequireEngine/skipOrFail. If cli is nil, the caller has
+// already been skipped or failed by RequireEngine and this is a no-op.
+//
+// A Ping error here — on an Engine that already answered RequireEngine's own
+// ping moments earlier — is not a capability gap, so it is routed through
+// skipOrFail, not t.Skipf: DEVMON_E2E_REQUIRE=1 should still turn "Engine
+// stopped answering" into a hard failure.
+//
+// Only the actual version comparison — and an unparseable version string —
+// calls t.Skipf DIRECTLY, never skipOrFail: DEVMON_E2E_REQUIRE=1 exists to
+// turn "no Engine answered" into a hard failure so a silently-passing suite
+// cannot flip a PRD row (D5). An Engine that DID answer but predates the API
+// version carrying the field under test is not a missing Engine — it is a
+// genuine capability gap in the Engine itself, and no amount of
+// DEVMON_E2E_REQUIRE=1 can make an old Engine speak a field it never sends.
+// Forcing that case to a hard failure would make CI red on Engine versions
+// the project never claimed to support, for a reason unrelated to the code
+// under test.
+func RequireEngineAPIAtLeast(t *testing.T, cli *client.Client, minVersion string) {
+	t.Helper()
+
+	if cli == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	result, err := cli.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
+	if err != nil {
+		skipOrFail(t, fmt.Sprintf("Docker Engine did not answer a ping: %v", err))
+		return
+	}
+
+	gotMajor, gotMinor, err := parseAPIVersion(result.APIVersion)
+	if err != nil {
+		t.Skipf("Docker Engine reported an unparseable API version %q: %v", result.APIVersion, err)
+		return
+	}
+	wantMajor, wantMinor, err := parseAPIVersion(minVersion)
+	if err != nil {
+		t.Fatalf("RequireEngineAPIAtLeast: minVersion %q: %v", minVersion, err)
+	}
+
+	if gotMajor < wantMajor || (gotMajor == wantMajor && gotMinor < wantMinor) {
+		t.Skipf("Docker Engine API version %s is older than the %s this test needs", result.APIVersion, minVersion)
+	}
+}
+
+// parseAPIVersion splits a "major.minor" Docker API version string into its
+// numeric components, so callers compare versions numerically rather than
+// lexicographically ("1.5" < "1.48" as strings, but not as versions).
+func parseAPIVersion(version string) (major, minor int, err error) {
+	parts := strings.SplitN(version, ".", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("expected a \"major.minor\" version, got %q", version)
+	}
+	major, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse major version from %q: %w", version, err)
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse minor version from %q: %w", version, err)
+	}
+	return major, minor, nil
 }
 
 // FixtureOptions describes one throwaway container the suite creates against
