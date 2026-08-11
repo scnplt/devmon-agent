@@ -1,0 +1,1306 @@
+# The machine-readable form of the contract described in README.md § API.
+#
+# The client ships independently of the agent, so the contract between them has
+# to exist as something other than prose. This file is that: it generates client
+# types, and it diffs between releases, which is how a breaking change gets
+# noticed before a user finds it.
+#
+# README.md remains the place for the reasoning — why responses are projections,
+# why a resume is at-least-once, why the Engine's failures are 502 and not 500.
+# This file states the shapes; it does not repeat the arguments.
+#
+# Keep it true. Every schema here is a hand-maintained mirror of a Go type in
+# internal/dockerx/types.go or internal/httpapi, and nothing generates one from
+# the other. Adding a field to a projection means adding it here in the same
+# change — the *FieldCount tests guarding those types will tell you a field was
+# added, but nothing will tell you this file was forgotten.
+
+openapi: 3.1.1
+
+info:
+  title: devmon-agent
+  version: 0.1.1
+  summary: A narrow, mTLS-authenticated Docker control API.
+  description: |
+    One agent runs per Docker host. It is the sole holder of the Docker socket
+    and never proxies arbitrary Engine calls: the operations below are the
+    complete reachable surface, and read responses are allowlisted projections
+    rather than Engine payloads — a container's environment and a volume's
+    driver options never leave the host.
+
+    **Versioning.** The path prefix `/v1` is the contract version, and
+    `GET /v1/status` reports it as `api_version`. A client negotiates against
+    that field, not against `agent_version`, which moves with releases that do
+    not change this document.
+
+    **Authentication is mutual TLS.** The agent is its own certificate
+    authority; pairing is the act of issuing a device a certificate. Every route
+    except `GET /v1/status` and `POST /v1/pair` requires a client certificate
+    issued by that CA, and the calling device is resolved from the certificate —
+    never from a header, a body field, or a path parameter. A client pins the
+    agent's CA; no public root store knows it.
+
+    **What a client may do is bounded twice.** By the host's policy mode, fixed
+    at agent startup and advertised in `/v1/status`, which a client can never
+    widen; and by the agent's permanent exclusion of its own container from
+    every mutating route, in every mode.
+
+    Retention, policy, and rate limits are all startup configuration on the
+    host. There is deliberately no endpoint that changes any of them.
+  license:
+    name: AGPL-3.0-only
+    identifier: AGPL-3.0-only
+  contact:
+    name: devmon-agent
+    url: https://github.com/scnplt/devmon-agent
+
+externalDocs:
+  description: README — configuration, pairing, policy modes, and the reasoning behind each shape here
+  url: https://github.com/scnplt/devmon-agent#api
+
+servers:
+  - url: https://{host}:{port}
+    description: The agent's own listener. TLS terminates in the agent process; see README § Reaching it from outside for why nothing may terminate it in front.
+    variables:
+      host:
+        default: vps.example.com
+        description: An address covered by the server certificate's SANs, i.e. one of the DEVMON_PUBLIC_ADDR entries.
+      port:
+        default: "8443"
+        description: The published port, from DEVMON_LISTEN_ADDR.
+
+tags:
+  - name: status
+    description: The one unauthenticated route. It may inform, never issue.
+  - name: pairing
+    description: Exchanging a pairing code or an existing certificate for a client certificate.
+  - name: containers
+    description: Container reads.
+  - name: logs
+    description: Historical log retrieval and the live stream.
+  - name: lifecycle
+    description: Mutating container operations, bounded by the host's policy mode.
+  - name: images
+    description: Image reads.
+  - name: networks
+    description: Network reads.
+  - name: volumes
+    description: Volume reads.
+
+security:
+  - deviceCertificate: []
+
+paths:
+  /v1/status:
+    get:
+      tags: [status]
+      operationId: getStatus
+      summary: Agent version, policy mode, server time, and CA fingerprint
+      description: |
+        The only payload served without a client certificate, and a strict
+        allowlist of five fields. It carries no host, container, or credential
+        data, and it can never issue or renew anything.
+
+        Its purpose is diagnostic: an expired device certificate and a
+        regenerated server identity produce the same handshake failure but
+        demand opposite user guidance. Comparing `ca_fingerprint` against the
+        value recorded at install separates them, and `server_time` lets a
+        client tell a real expiry from its own clock being wrong.
+      security: []
+      responses:
+        "200":
+          description: OK
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+              description: Every response on this port is uncacheable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+              examples:
+                default:
+                  value:
+                    api_version: v1
+                    agent_version: 0.1.1
+                    policy_mode: default
+                    server_time: "2026-08-11T09:12:44Z"
+                    ca_fingerprint: a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/pair:
+    post:
+      tags: [pairing]
+      operationId: pairDevice
+      summary: Exchange a pairing code and a CSR for a client certificate
+      description: |
+        Reachable without a client certificate because a device that has none is
+        exactly what this route exists to serve: the operator-minted pairing
+        code is the credential for this one request. Codes are short-lived and
+        single-use, and are minted on the host with
+        `devmon-agent device pair-code --name <device>`.
+
+        The device generates its own keypair and sends only the CSR; the private
+        key never leaves it. The response carries the issued certificate and the
+        CA certificate to pin.
+
+        Every reason this call can fail — an unknown, expired, or already-spent
+        code, or a malformed CSR — answers an identical `401`. A caller must not
+        be able to tell which, or the route becomes an oracle for probing codes.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PairRequest" }
+      responses:
+        "201":
+          description: Paired. The device is now registered and its certificate is active.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PairResponse" }
+        "400": { $ref: "#/components/responses/MalformedBody" }
+        "401":
+          description: |
+            Pairing failed. Deliberately indistinguishable across every cause:
+            unknown, expired, or already-used code, or an unparsable CSR.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: pairing failed }
+        "413": { $ref: "#/components/responses/BodyTooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/device/renew:
+    post:
+      tags: [pairing]
+      operationId: renewDeviceCertificate
+      summary: Exchange a CSR for a fresh certificate for the calling device
+      description: |
+        Renewal is proactive and silent: a client renews well before expiry,
+        while its current certificate still authenticates it. Once a certificate
+        has expired there is no authenticated channel left to authorise its
+        replacement, so a client that waits has to be re-paired on the host.
+
+        The device identity comes from the client certificate alone, so this
+        route can only ever renew the caller's own. The previous certificate is
+        marked superseded but is neither deleted nor shortened — it keeps working
+        until its own `not_after`, so a lost response cannot strand a device.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenewRequest" }
+      responses:
+        "200":
+          description: Renewed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenewResponse" }
+        "400": { $ref: "#/components/responses/MalformedBody" }
+        "401":
+          description: |
+            No, unknown, expired, or revoked client certificate — or a malformed
+            CSR, which answers `{"error":"renewal failed"}`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                noCertificate: { value: { error: client certificate required } }
+                badCSR: { value: { error: renewal failed } }
+        "413": { $ref: "#/components/responses/BodyTooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/device/self:
+    delete:
+      tags: [pairing]
+      operationId: unpairSelf
+      summary: Revoke the calling device's own access
+      description: |
+        Permitted under every policy mode, including `read-only`: giving up your
+        own access is not a privileged act. It takes effect on the next request.
+
+        A device can only ever act on itself. There is no route for revoking
+        another device, because with no roles there is no administrator client —
+        any such capability would belong equally to a stolen phone. Revoking a
+        lost device is a host-side operation: `devmon-agent device revoke <id>`.
+      responses:
+        "204":
+          description: Unpaired. The certificate is no longer accepted.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/containers:
+    get:
+      tags: [containers]
+      operationId: listContainers
+      summary: List containers
+      parameters:
+        - name: all
+          in: query
+          required: false
+          description: |
+            Include stopped containers. Anything that does not parse as a
+            boolean is treated as `false` rather than rejected — a typo must not
+            fail a diagnostic request mid-incident.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContainerList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/containers/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+    get:
+      tags: [containers]
+      operationId: inspectContainer
+      summary: Inspect one container
+      description: |
+        The projection deliberately omits the container's environment. Redacting
+        a value would still disclose that a secret exists and what it is called;
+        omission is the only version of this that cannot leak.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContainerDetail" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+    delete:
+      tags: [lifecycle]
+      operationId: removeContainer
+      summary: Delete a stopped container
+      description: |
+        Requires policy mode `full`.
+
+        Delete never force-stops. A running container is a `409`, so removing
+        one is stop-then-delete: two deliberate operations leaving two audit
+        rows, rather than one tap that destroys a running service.
+      responses:
+        "204": { $ref: "#/components/responses/LifecycleAccepted" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/LifecycleForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The container is running. Stop it first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: container is running }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+        "503": { $ref: "#/components/responses/SelfUnknown" }
+
+  /v1/containers/{id}/start:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+    post:
+      tags: [lifecycle]
+      operationId: startContainer
+      summary: Start a stopped container
+      description: |
+        Requires policy mode `default` or `full`.
+
+        Starting a container that is already running is a `204`, not an error:
+        the goal is already met, and reporting a failure would invite a retry
+        that cannot help.
+      responses:
+        "204": { $ref: "#/components/responses/LifecycleAccepted" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/LifecycleForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+        "503": { $ref: "#/components/responses/SelfUnknown" }
+
+  /v1/containers/{id}/restart:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+    post:
+      tags: [lifecycle]
+      operationId: restartContainer
+      summary: Restart a container
+      description: Requires policy mode `default` or `full`.
+      responses:
+        "204": { $ref: "#/components/responses/LifecycleAccepted" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/LifecycleForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+        "503": { $ref: "#/components/responses/SelfUnknown" }
+
+  /v1/containers/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+    post:
+      tags: [lifecycle]
+      operationId: stopContainer
+      summary: Stop a running container
+      description: |
+        Requires policy mode `default` or `full`.
+
+        Stopping a container that is already stopped is a `204`, on the same
+        reasoning as start.
+      responses:
+        "204": { $ref: "#/components/responses/LifecycleAccepted" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/LifecycleForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+        "503": { $ref: "#/components/responses/SelfUnknown" }
+
+  /v1/containers/{id}/kill:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+    post:
+      tags: [lifecycle]
+      operationId: killContainer
+      summary: SIGKILL a running container
+      description: |
+        Requires policy mode `full`.
+
+        Always SIGKILL — there is no `?signal=` parameter, because the kill
+        button means "stop this now". A graceful stop is `POST .../stop`.
+      responses:
+        "204": { $ref: "#/components/responses/LifecycleAccepted" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/LifecycleForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+        "503": { $ref: "#/components/responses/SelfUnknown" }
+
+  /v1/containers/{id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+      - $ref: "#/components/parameters/Tail"
+      - $ref: "#/components/parameters/Since"
+    get:
+      tags: [logs]
+      operationId: getContainerLogs
+      summary: Recent log lines as JSON
+      description: |
+        Permitted in every policy mode. `tail` defaults to 200 here.
+
+        stdout and stderr are interleaved in the order the container wrote them:
+        the agent demultiplexes Docker's stream framing itself rather than
+        splitting the two, because that ordering is most of what a log is worth
+        during an incident.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogLineList" }
+        "400":
+          description: Malformed container reference, or an unparsable `since` timestamp.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                invalidRef: { value: { error: invalid object reference } }
+                invalidSince: { value: { error: invalid since timestamp } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/containers/{id}/logs/stream:
+    parameters:
+      - $ref: "#/components/parameters/ContainerId"
+      - $ref: "#/components/parameters/Tail"
+      - $ref: "#/components/parameters/Since"
+    get:
+      tags: [logs]
+      operationId: streamContainerLogs
+      summary: Live log stream (Server-Sent Events)
+      description: |
+        Permitted in every policy mode. `tail` defaults to 100 here, seeding the
+        backlog before the stream follows live output.
+
+        Each frame carries one line, with the timestamp lifted out of Docker's
+        wire format into its own field so a client never parses that format to
+        find its resume cursor:
+
+        ```
+        id: 2026-08-08T10:02:14.882Z
+        event: log
+        data: {"ts":"2026-08-08T10:02:14.882Z","stream":"stderr","line":"panic: nil map write"}
+        ```
+
+        **Resuming is at-least-once.** After a connection loss, reconnect with
+        `?since=<the last id seen>`. Docker's `since` filter is inclusive at its
+        granularity boundary, so a resume can repeat the last line or two;
+        dedupe on `(ts, line)`. A repeated line is cosmetic, a dropped one is a
+        diagnostic failure, and the trade goes that way round deliberately.
+
+        **A silent stream is still live.** A keepalive comment frame
+        (`: keepalive`) is written every 20 seconds, which is also how the agent
+        learns a client vanished without closing.
+
+        **Eight concurrent streams per agent**, after which this route answers
+        `503`. Each stream holds a goroutine, an Engine connection, and a socket
+        for its whole life.
+
+        Response headers are withheld until there is a first frame to send,
+        which is what keeps `404` and `502` available as ordinary JSON
+        responses. Once the stream has started, a later failure can only arrive
+        as a terminal `event: error` frame on a response that already said 200.
+      responses:
+        "200":
+          description: The stream. Ends when the client disconnects, the container's output ends, or a terminal error frame is sent.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+            X-Accel-Buffering:
+              schema: { type: string, const: "no" }
+              description: Disables response buffering on nginx-style proxies, which would otherwise hold the stream until it closed.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE frames. `event: log` carries a LogLine as its `data`, with
+                  the line's timestamp as the frame `id`. `event: error` carries
+                  an Error object and terminates the stream. Comment frames
+                  (`: keepalive`) carry no event and are ignored by any
+                  conforming SSE client.
+              examples:
+                stream:
+                  value: |
+                    id: 2026-08-08T10:02:14.882Z
+                    event: log
+                    data: {"ts":"2026-08-08T10:02:14.882Z","stream":"stderr","line":"panic: nil map write"}
+
+                    : keepalive
+
+                    id: 2026-08-08T10:02:44.001Z
+                    event: error
+                    data: {"error":"docker engine unavailable"}
+        "400":
+          description: Malformed container reference, or an unparsable `since` timestamp.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                invalidRef: { value: { error: invalid object reference } }
+                invalidSince: { value: { error: invalid since timestamp } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+        "503":
+          description: All eight live stream slots are in use. Unlike most rejections this one is actionable by the caller — close a log view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: too many concurrent log streams }
+
+  /v1/images:
+    get:
+      tags: [images]
+      operationId: listImages
+      summary: List images
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/images/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: |
+          Image ID as bare hex, or an untagged repository name.
+
+          The reference pattern excludes `:`, so a digest (`sha256:abc…`) and a
+          tagged reference (`nginx:1.27`) are both rejected with `400` rather
+          than forwarded. Strip the `sha256:` prefix from an ID taken out of a
+          list response, where it may appear.
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    get:
+      tags: [images]
+      operationId: inspectImage
+      summary: Inspect one image
+      description: |
+        The image's baked-in environment is not mapped, for the same reason a
+        container's is not.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageDetail" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/networks:
+    get:
+      tags: [networks]
+      operationId: listNetworks
+      summary: List networks
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworkList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/networks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Network ID or name, matching the same reference pattern every object route enforces.
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    get:
+      tags: [networks]
+      operationId: inspectNetwork
+      summary: Inspect one network, including its attached containers
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworkDetail" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/volumes:
+    get:
+      tags: [volumes]
+      operationId: listVolumes
+      summary: List volumes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VolumeList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+  /v1/volumes/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: |
+          Volume name. Volumes are named rather than IDed, which is why this
+          parameter is `name` and not `id`. Same reference pattern as every
+          other object route.
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    get:
+      tags: [volumes]
+      operationId: inspectVolume
+      summary: Inspect one volume
+      description: |
+        There is no separate detail shape for a volume: inspect returns the same
+        object a list entry carries.
+
+        Driver options are not mapped. For tmpfs and CIFS/NFS volumes they
+        routinely contain credentials.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Volume" }
+        "400": { $ref: "#/components/responses/InvalidRef" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
+components:
+  securitySchemes:
+    deviceCertificate:
+      type: mutualTLS
+      description: |
+        A client certificate issued by this agent's CA at pairing. The calling
+        device is resolved from the certificate on every request, against the
+        device registry — there is no in-memory cache, which is what makes
+        revocation take effect on the very next request rather than eventually.
+
+        TLS 1.3 is the floor. Both peers are ours, so there is nothing to
+        negotiate down to.
+
+  parameters:
+    ContainerId:
+      name: id
+      in: path
+      required: true
+      description: |
+        Container ID (full or short) or name, matching the reference pattern
+        every object route enforces — see the `pattern` below.
+
+        A reference is interpolated into the Engine's own request URL, so it is
+        validated at the boundary rather than trusted to two layers of framework
+        path handling. Anything outside the pattern is a `400` and never reaches
+        the Engine.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+
+    Tail:
+      name: tail
+      in: query
+      required: false
+      description: |
+        Number of lines to return. Bounded to 1…2000; a value that is absent,
+        unparsable, or out of range falls back to the route's default (200
+        historical, 100 for the stream) rather than failing the request.
+      schema: { type: integer, minimum: 1, maximum: 2000 }
+
+    Since:
+      name: since
+      in: query
+      required: false
+      description: |
+        Return only lines at or after this timestamp, RFC 3339 with nanosecond
+        precision. On the stream route this is the resume cursor: pass the `id`
+        of the last frame received.
+
+        Unlike `tail`, an unparsable value is a `400` rather than a silently
+        ignored preference — it reaches the Engine's own request URL, which
+        makes it a boundary input.
+      schema: { type: string, format: date-time }
+      example: "2026-08-08T10:02:14.882Z"
+
+  responses:
+    Unauthorized:
+      description: |
+        No client certificate, or one that is unknown, expired, or belongs to a
+        revoked device. The four cases are deliberately indistinguishable in the
+        response; the agent's own log records which it was.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: client certificate required }
+
+    NotFound:
+      description: |
+        No such object. Stated plainly rather than obscured: the caller is
+        already an authenticated device, so the anti-enumeration reasoning
+        behind `/v1/pair`'s uniform rejection does not apply here.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: not found }
+
+    InvalidRef:
+      description: The object reference failed validation. The request never reached the Engine.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: invalid object reference }
+
+    MalformedBody:
+      description: The request body did not decode as JSON.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: malformed request body }
+
+    BodyTooLarge:
+      description: The request body exceeded 8 KiB.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: request body too large }
+
+    RateLimited:
+      description: |
+        Rate limit exceeded. Three tiers share this response and the body never
+        says which was hit — that is operator information and goes to the log.
+
+        The unauthenticated routes are limited per source IP and by a global
+        backstop, because per-IP alone does not stop a distributed scan;
+        authenticated routes are limited per device, so one busy phone cannot
+        exhaust another's budget. `X-Forwarded-For` is deliberately never
+        consulted: honouring a client-supplied forwarding header would let any
+        caller mint a fresh limiter key per request.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+          description: Whole seconds, per RFC 9110 § 10.2.3.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: rate limit exceeded }
+
+    EngineUnavailable:
+      description: |
+        The Docker Engine is unreachable, timed out, or otherwise failing.
+
+        502 rather than 500 is deliberate: the Engine is an upstream dependency,
+        so its failures are gateway failures. That keeps 500 meaning "the agent
+        itself broke", which is a different page for whoever is on call.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: docker engine unavailable }
+
+    InternalError:
+      description: The agent itself failed. Details are in the agent's log, never in this body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: internal error }
+
+    LifecycleAccepted:
+      description: |
+        Done. No body, deliberately: every Engine lifecycle call returns before
+        the container has finished changing state — a restart returns before it
+        is healthy, a stop while the process is still unwinding — so any state
+        returned here would already be stale. Re-fetch
+        `GET /v1/containers/{id}` instead; it is one cheap request and always
+        true.
+
+    LifecycleForbidden:
+      description: |
+        Refused, for one of two unrelated reasons the body distinguishes.
+
+        Either the host's policy mode does not permit the operation — `kill` and
+        `delete` need `full`, the rest need `default` — which no client can
+        widen, since the mode is fixed at agent startup and advertised in
+        `/v1/status`.
+
+        Or the target is the agent's own container. That is a fixed rule rather
+        than a policy tier: stopping or deleting the agent from a client would
+        destroy the operator's only remote access. The agent stays visible in
+        listings with `protected: true`, so a client can grey the control out
+        rather than discovering this through a failure.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          examples:
+            policy: { value: { error: operation not permitted by host policy } }
+            self: { value: { error: the agent cannot act on itself } }
+
+    SelfUnknown:
+      description: |
+        The agent is running in a container but could not determine which one,
+        so it cannot enforce its own exclusion and every mutating route fails
+        closed. Resolvable on the host by setting `DEVMON_SELF_CONTAINER_ID`.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: agent cannot identify its own container }
+
+  schemas:
+    Error:
+      type: object
+      description: |
+        The single error shape for every failure on every route. Messages are
+        terse by design: the caller may be unauthenticated and on the open
+        internet, so error text never carries the state path, the Docker host, a
+        certificate subject, or the reason a credential was rejected.
+      required: [error]
+      properties:
+        error:
+          type: string
+          examples: [not found]
+
+    Status:
+      type: object
+      required: [api_version, agent_version, policy_mode, server_time, ca_fingerprint]
+      properties:
+        api_version:
+          type: string
+          description: The contract version, matching the path prefix. Negotiate against this, not `agent_version`.
+          examples: [v1]
+        agent_version:
+          type: string
+          description: The agent build's version. `dev` in an unstamped build.
+          examples: ["0.1.1"]
+        policy_mode:
+          $ref: "#/components/schemas/PolicyMode"
+        server_time:
+          type: string
+          format: date-time
+          description: The agent's current UTC time, RFC 3339. Lets a client tell a genuine certificate expiry from its own clock being wrong.
+        ca_fingerprint:
+          type: string
+          description: |
+            SHA-256 fingerprint of the agent's CA certificate, lowercase hex.
+            The pinning anchor: compare it against the value recorded at
+            install. A changed fingerprint means the identity changed, which is
+            a different problem from an expired credential and needs opposite
+            user guidance.
+          examples: [a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90]
+
+    PolicyMode:
+      type: string
+      enum: [read-only, default, full]
+      description: |
+        The host's permission tier, fixed at agent startup via
+        `DEVMON_POLICY_MODE` and immutable for the life of the process. Tiers
+        are strict supersets: `read-only` permits reads and logs, `default` adds
+        start/restart/stop, `full` adds kill/delete. `default` is what an
+        unconfigured agent runs — useful out of the box, incapable of destroying
+        anything.
+
+    PairRequest:
+      type: object
+      required: [pairing_code, csr_pem]
+      properties:
+        pairing_code:
+          type: string
+          description: A short-lived, single-use code minted on the host with `devmon-agent device pair-code --name <device>`.
+        csr_pem:
+          type: string
+          description: |
+            A PKCS#10 certificate signing request, PEM-encoded as a
+            `CERTIFICATE REQUEST` block. The device generates the keypair; the
+            private key never leaves it. The subject is not trusted — the agent
+            binds the certificate to the device ID it allocates.
+
+    PairResponse:
+      type: object
+      required: [device_id, certificate_pem, ca_certificate_pem, not_after]
+      properties:
+        device_id:
+          type: string
+          description: The agent's identifier for this device. It appears in `devmon-agent device list` and in every audit row this device produces.
+        certificate_pem:
+          type: string
+          description: The issued client certificate, PEM-encoded.
+        ca_certificate_pem:
+          type: string
+          description: |
+            The agent's CA certificate, PEM-encoded — the trust anchor for the
+            server certificate. Verify its fingerprint against the one recorded
+            at install before storing it; a CA read only from the server you are
+            about to trust proves nothing.
+        not_after:
+          type: string
+          format: date-time
+          description: Expiry of the issued certificate, RFC 3339. Renew well before this, while the certificate still authenticates the device.
+
+    RenewRequest:
+      type: object
+      required: [csr_pem]
+      properties:
+        csr_pem:
+          type: string
+          description: A PKCS#10 CSR, PEM-encoded. A fresh keypair is recommended but not required.
+
+    RenewResponse:
+      type: object
+      required: [certificate_pem, not_after]
+      properties:
+        certificate_pem:
+          type: string
+          description: The renewed client certificate, PEM-encoded. The CA is unchanged and is not repeated here.
+        not_after:
+          type: string
+          format: date-time
+
+    ListEnvelope:
+      type: object
+      description: |
+        Every list route returns an object rather than a bare JSON array. An
+        array cannot gain a field later without breaking every client, and
+        `truncated` needed somewhere to live from the first release.
+      required: [truncated]
+      properties:
+        truncated:
+          type: boolean
+          description: The result was cut short by an internal bound. A client showing a partial list should say so.
+
+    ContainerList:
+      allOf:
+        - $ref: "#/components/schemas/ListEnvelope"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/ContainerSummary" }
+
+    ImageList:
+      allOf:
+        - $ref: "#/components/schemas/ListEnvelope"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/ImageSummary" }
+
+    NetworkList:
+      allOf:
+        - $ref: "#/components/schemas/ListEnvelope"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/NetworkSummary" }
+
+    VolumeList:
+      allOf:
+        - $ref: "#/components/schemas/ListEnvelope"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/Volume" }
+
+    LogLineList:
+      allOf:
+        - $ref: "#/components/schemas/ListEnvelope"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/LogLine" }
+
+    Port:
+      type: object
+      required: [private_port, protocol]
+      properties:
+        ip:
+          type: string
+          description: Host interface the port is bound to. Absent when the Engine reports none.
+        private_port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+        public_port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          description: Absent when the port is exposed but not published.
+        protocol:
+          type: string
+          examples: [tcp, udp]
+
+    Mount:
+      type: object
+      required: [type, source, destination, read_write]
+      properties:
+        type:
+          type: string
+          examples: [bind, volume, tmpfs]
+        name:
+          type: string
+          description: The volume name, for `volume` mounts.
+        source:
+          type: string
+        destination:
+          type: string
+        read_write:
+          type: boolean
+
+    EndpointSummary:
+      type: object
+      description: A container's attachment to one network.
+      required: [network_name, network_id]
+      properties:
+        network_name: { type: string }
+        network_id: { type: string }
+        ip_address: { type: string }
+        gateway: { type: string }
+        mac_address: { type: string }
+        aliases:
+          type: array
+          items: { type: string }
+
+    ContainerSummary:
+      type: object
+      description: One entry of a container list. An allowlisted projection, never the Engine's payload.
+      required: [id, names, image, image_id, command, created_at, state, status, labels, ports, protected]
+      properties:
+        id: { type: string }
+        names:
+          type: array
+          items: { type: string }
+        image:
+          type: string
+          description: The image reference the container was created from.
+        image_id: { type: string }
+        command: { type: string }
+        created_at: { type: string, format: date-time }
+        state:
+          type: string
+          examples: [running, exited, created, paused, restarting, removing, dead]
+        status:
+          type: string
+          description: The Engine's human-readable status line.
+          examples: ["Up 4 hours (healthy)"]
+        health:
+          type: string
+          description: Absent when the container declares no healthcheck. Requires Engine 29+ / API v1.52.
+          examples: [healthy, unhealthy, starting]
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        ports:
+          type: array
+          items: { $ref: "#/components/schemas/Port" }
+        protected:
+          type: boolean
+          description: |
+            This is the agent's own container, and every mutating route will
+            refuse it in every policy mode. Always present, never omitted on
+            `false`: a client that could not tell "not protected" from "this
+            agent version does not report protection" would quietly offer a
+            delete button on the agent itself.
+
+    ContainerDetail:
+      type: object
+      description: |
+        The full projection of one container. No environment variables, at any
+        level, and no raw Engine payload.
+      required:
+        [id, name, image, created_at, state, running, paused, restarting, exit_code,
+         restart_count, platform, labels, command, args, mounts, networks, ports, protected]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        image: { type: string }
+        created_at: { type: string, format: date-time }
+        state:
+          type: string
+          examples: [running, exited]
+        running: { type: boolean }
+        paused: { type: boolean }
+        restarting: { type: boolean }
+        exit_code: { type: integer }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        health:
+          type: string
+          description: Absent when the container declares no healthcheck.
+        restart_count: { type: integer }
+        restart_policy:
+          type: string
+          examples: ["no", always, unless-stopped, on-failure]
+        platform:
+          type: string
+          examples: [linux]
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        command:
+          type: string
+          description: The entrypoint path the container is running.
+        args:
+          type: array
+          items: { type: string }
+        entrypoint:
+          type: array
+          items: { type: string }
+        working_dir: { type: string }
+        user: { type: string }
+        mounts:
+          type: array
+          items: { $ref: "#/components/schemas/Mount" }
+        networks:
+          type: array
+          items: { $ref: "#/components/schemas/EndpointSummary" }
+        ports:
+          type: array
+          items: { $ref: "#/components/schemas/Port" }
+        protected:
+          type: boolean
+          description: See ContainerSummary.protected.
+
+    ImageSummary:
+      type: object
+      required: [id, repo_tags, repo_digests, created_at, size, containers, labels]
+      properties:
+        id:
+          type: string
+          description: |
+            The Engine's image ID, carried through verbatim — which means it is
+            normally digest-prefixed (`sha256:…`). `GET /v1/images/{id}` rejects
+            a `:`, so strip the prefix before inspecting an image found here.
+          examples: ["sha256:a1b2c3d4e5f6…"]
+        parent_id: { type: string }
+        repo_tags:
+          type: array
+          items: { type: string }
+        repo_digests:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        size:
+          type: integer
+          format: int64
+          description: Bytes.
+        containers:
+          type: integer
+          format: int64
+          description: Containers using this image. `-1` means the Engine did not calculate it.
+        labels:
+          type: object
+          additionalProperties: { type: string }
+
+    ImageDetail:
+      type: object
+      description: The image's baked-in environment is deliberately not mapped.
+      required: [id, repo_tags, repo_digests, size, architecture, os]
+      properties:
+        id:
+          type: string
+          description: Digest-prefixed, as in ImageSummary.
+
+        repo_tags:
+          type: array
+          items: { type: string }
+        repo_digests:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        size:
+          type: integer
+          format: int64
+        architecture:
+          type: string
+          examples: [amd64, arm64]
+        os:
+          type: string
+          examples: [linux]
+        author: { type: string }
+        comment: { type: string }
+
+    NetworkSummary:
+      type: object
+      required: [id, name, driver, scope, created_at, internal, enable_ipv6, labels]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        driver:
+          type: string
+          examples: [bridge, host, overlay, macvlan, none]
+        scope:
+          type: string
+          examples: [local, swarm]
+        created_at: { type: string, format: date-time }
+        internal: { type: boolean }
+        enable_ipv6: { type: boolean }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+
+    NetworkEndpoint:
+      type: object
+      description: One container's attachment to an inspected network.
+      required: [container_id, name]
+      properties:
+        container_id: { type: string }
+        name: { type: string }
+        ipv4_address: { type: string }
+        ipv6_address: { type: string }
+
+    NetworkDetail:
+      allOf:
+        - $ref: "#/components/schemas/NetworkSummary"
+        - type: object
+          required: [containers]
+          properties:
+            containers:
+              type: array
+              items: { $ref: "#/components/schemas/NetworkEndpoint" }
+
+    Volume:
+      type: object
+      description: |
+        Both a list entry and an inspect response — there is no separate detail
+        shape. Driver options are not mapped: for tmpfs and CIFS/NFS volumes
+        they routinely carry credentials.
+      required: [name, driver, mountpoint, scope, labels]
+      properties:
+        name: { type: string }
+        driver:
+          type: string
+          examples: [local]
+        mountpoint: { type: string }
+        created_at: { type: string, format: date-time }
+        scope:
+          type: string
+          examples: [local]
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        size_bytes:
+          type: integer
+          format: int64
+          description: Present only when the Engine reported usage data for this volume.
+
+    LogLine:
+      type: object
+      description: |
+        One demultiplexed line of container output. Unlike every other schema
+        here this is not a projection of Engine metadata — `line` is whatever
+        the container printed, which is exactly what the operator asked for.
+        That makes it the one payload in this API that may legitimately carry a
+        secret, and the reason the agent never writes it to its own log and
+        never persists it anywhere.
+      required: [ts, stream, line]
+      properties:
+        ts:
+          type: string
+          description: |
+            RFC 3339 with nanosecond precision, or an empty string when the
+            Engine emitted no parsable timestamp prefix. Also the SSE frame `id`
+            on the stream route, and therefore the resume cursor.
+          examples: ["2026-08-08T10:02:14.882Z"]
+        stream:
+          type: string
+          enum: [stdout, stderr]
+          description: The two are interleaved in the order the container wrote them.
+        line: { type: string }
+        truncated:
+          type: boolean
+          description: |
+            The line exceeded 8 KiB and was cut. Absent when false. The cap
+            exists because one enormous line — a stack dump, a base64 payload —
+            would otherwise be accumulated whole in agent memory before any line
+            boundary arrived.
