@@ -727,6 +727,13 @@ whose own environment is built explicitly from each test case.
 Without an Engine, every test **skips** with a reason naming the endpoint —
 visibly, in `go test` output — rather than passing quietly.
 
+Every `make e2e*` target runs with `-v`, and that is load-bearing rather than
+cosmetic: `go test` prints a skip and its reason **only** under `-v`. Without
+it, a package whose tests all skipped reports a bare `ok`, indistinguishable
+from one that ran and passed them — a green run would silently imply coverage
+it does not have. The output is long; the alternative is a log that cannot tell
+you which of the reasons below fired.
+
 `TestContainerListReportsHealth` additionally needs Engine 29+ / API v1.52: the
 `ContainerSummary.Health` field the list projection reads was only added at
 that version, so on an older Engine (even a reachable, healthy one) the test
