@@ -100,6 +100,51 @@ fingerprint your phone shows during pairing against the one you recorded at
 install is what makes the pairing exchange safe over an untrusted network. If
 you only ever read it from the server you are about to trust, it proves nothing.
 
+### Reaching it from outside
+
+The documented deployment is **direct inbound TLS**: the device's connection
+terminates in the agent process. That is not a default to be overridden — three
+separate parts of the design read the TLS connection itself, so anything that
+terminates TLS in front of the agent breaks them.
+
+This rules out Cloudflare Tunnel's HTTP/HTTPS ingress, and every reverse proxy
+run in HTTP mode: nginx `proxy_pass`, Caddy, Traefik, an ALB. Not as a
+configuration problem — there is no setting on either side that recovers what
+the termination discarded.
+
+| What breaks | Why | What you see |
+|---|---|---|
+| Device authentication | The client certificate belongs to the device's TLS connection. The proxy opens its own connection to the agent, which carries no certificate. | `401 client certificate required` on every guarded route |
+| CA pinning | The app pins the agent's own CA. The proxy presents its certificate, not the agent's. | The app fails during the handshake, before any HTTP response |
+| Rate limiting | Both pre-authentication tiers key on the peer address, which is now the proxy's for every caller. `X-Forwarded-For` is deliberately never consulted — see [Rate limiting](#rate-limiting). | `GET /v1/status` and `POST /v1/pair` share one budget across all devices |
+
+Cloudflare Access mTLS does not bridge this. It verifies the certificate at the
+edge and forwards the result as a signed header; the agent authenticates from
+`r.TLS.PeerCertificates` and reads no such header.
+
+**What does work** is anything that moves bytes without terminating TLS:
+
+- A VPN or overlay network — WireGuard, Tailscale — with the agent bound to the
+  private interface and no published port. Simplest, and the agent is then not
+  on the public internet at all.
+- Cloudflare Zero Trust with `warp-routing`, where the tunnel carries the
+  private network rather than proxying HTTP, and the device joins over WARP.
+- TCP passthrough: nginx `stream`, HAProxy in `tcp` mode, or Cloudflare
+  Spectrum.
+
+Two things to get right on any of them. `DEVMON_PUBLIC_ADDR` must contain the
+address the device actually dials, because it becomes the server certificate's
+SAN — a private IP behind a VPN belongs there just as much as a public hostname.
+And passthrough still hides the caller's address: the guarded tier is unaffected
+because it keys on the device, but the status and pair tiers will see only the
+forwarding host, so size those limits for the whole fleet rather than one phone.
+
+Putting the agent behind an HTTPS proxy would mean replacing its authentication
+model, not configuring it. That is a deliberate trade: request signing survives
+a proxy, but a terminating proxy also reads every container name and log line in
+the clear, and can alter a response the device has no way to verify. See
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
 ---
 
 ## Configuration
@@ -246,6 +291,8 @@ asserted by a packet header. For the same reason `X-Forwarded-For` is never
 consulted: the documented deployment is direct inbound, and honouring a
 client-supplied forwarding header would let any caller mint a fresh limiter key
 per request, which is worse than no limiter because it looks like protection.
+What that costs you behind a forwarding host is
+[Reaching it from outside](#reaching-it-from-outside).
 
 Limits are startup configuration like everything else, so a client can never
 raise its own ceiling, and the values are advertised nowhere — telling a scanner
