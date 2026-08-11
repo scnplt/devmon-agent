@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package dockerx wraps the Docker Engine client.
 //
 // Phase 1 exposes only New and Close. No container, image, network, or volume

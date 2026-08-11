@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package httpapi serves the agent's HTTPS API on its single listening port.
 package httpapi
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package ratelimit bounds how often a caller may be served. It hands out one
 // token bucket per key behind a hard cap on how many keys it will hold, so
 // the registry itself cannot become an unbounded-memory attack surface. When

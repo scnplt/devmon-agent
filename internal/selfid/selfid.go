@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package selfid discovers, without contacting the Docker Engine, the
 // candidate container IDs the current process might be running as.
 //

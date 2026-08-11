@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package logging builds the agent's structured logger over a size- and
 // age-bounded file on the state mount, teed to stderr.
 //
