@@ -98,7 +98,7 @@ Coverage over `./internal/...` must stay at or above 80%. The e2e suite does
 not count toward that number — it asserts the wire contract, deliberately
 sharing no production code with what it tests.
 
-## Two things that catch everyone
+## Three things that catch everyone
 
 **1. The Docker SDK is `github.com/moby/moby/client`, not
 `github.com/docker/docker/client`.** The SDK split at Engine v29 and
@@ -112,7 +112,14 @@ c.Ping(ctx, client.PingOptions{NegotiateAPIVersion: true})
 
 Code written from memory will use the pre-v29 forms and will not compile.
 
-**2. Build with `CGO_ENABLED=0`.** `modernc.org/sqlite` is pure Go, which is
+**2. `docs/openapi.yaml` is hand-maintained.** Nothing generates it from the Go
+types and nothing checks it against them, so a change to a route, a status
+code, or a projection field is only half done until the spec carries it too.
+The `*FieldCount` tests will tell you a projection gained a field; they will
+not tell you this file was forgotten. Validate with
+`npx @redocly/cli lint docs/openapi.yaml`.
+
+**3. Build with `CGO_ENABLED=0`.** `modernc.org/sqlite` is pure Go, which is
 what keeps the binary static so it runs on `distroless/static`. Its
 `database/sql` driver name is `"sqlite"`, not `"sqlite3"`.
 
