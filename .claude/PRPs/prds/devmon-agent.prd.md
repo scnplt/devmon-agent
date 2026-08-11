@@ -204,12 +204,13 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | Secure foundation & persistence | Agent runs as a container, serves TLS, talks to the Docker socket, exposes a health/version check, and persists state and its own logs across restarts | in-progress | - | - | [secure-foundation-and-persistence.plan.md](../plans/secure-foundation-and-persistence.plan.md) |
-| 2 | Identity, pairing & revocation | Agent CA, pairing codes, per-device credentials, device registry, renewal, self-unpair, host-side device commands, missing-state handling | pending | - | 1 | - |
-| 3 | Read operations | Container/image/network/volume list and inspect | pending | with 4 | 2 | - |
-| 4 | Logs & live streaming | Historical logs plus a resilient live stream channel | pending | with 3 | 2 | - |
-| 5 | Lifecycle, policy & audit | start/restart/stop/kill/delete, server-side mode enforcement, agent self-exclusion, audit logging | pending | - | 3 | - |
-| 6 | Hardening & OSS release | Rate limiting, security review, automated installer, threat-model docs, AGPL-3.0 release | pending | - | 4, 5 | - |
+| 1 | Secure foundation & persistence | Agent runs as a container, serves TLS, talks to the Docker socket, exposes a health/version check, and persists state and its own logs across restarts | complete | - | - | [secure-foundation-and-persistence.plan.md](../plans/completed/secure-foundation-and-persistence.plan.md) · [report](../reports/secure-foundation-and-persistence-report.md) |
+| 2 | Identity, pairing & revocation | Agent CA, pairing codes, per-device credentials, device registry, renewal, self-unpair, host-side device commands, missing-state handling | complete | - | 1 | [identity-pairing-and-revocation.plan.md](../plans/completed/identity-pairing-and-revocation.plan.md) · [report](../reports/identity-pairing-and-revocation-report.md) |
+| 3 | Read operations | Container/image/network/volume list and inspect | complete | with 4 | 2 | [read-operations.plan.md](../plans/completed/read-operations.plan.md) · [report](../reports/read-operations-report.md) |
+| 4 | Logs & live streaming | Historical logs plus a resilient live stream channel | complete | with 3 | 2 | [logs-and-live-streaming.plan.md](../plans/completed/logs-and-live-streaming.plan.md) · [report](../reports/logs-and-live-streaming-report.md) |
+| 5 | Lifecycle, policy & audit | start/restart/stop/kill/delete, server-side mode enforcement, agent self-exclusion, audit logging | complete | - | 3 | [lifecycle-policy-and-audit.plan.md](../plans/completed/lifecycle-policy-and-audit.plan.md) · [report](../reports/lifecycle-policy-and-audit-report.md) |
+| 6 | Client-independent end-to-end suite | Executable contract tests against a real Engine — host-binary harness plus an in-container group covering self-exclusion and self-identification | complete | - | 4, 5 | [client-independent-e2e.plan.md](../plans/completed/client-independent-e2e.plan.md) · [report](../reports/client-independent-e2e-report.md) |
+| 7 | Hardening & OSS release | Rate limiting, security review, automated installer, threat-model docs, AGPL-3.0 release | complete | - | 6 | [hardening-and-oss-release.plan.md](../plans/completed/hardening-and-oss-release.plan.md) · [report](../reports/hardening-and-oss-release-report.md) |
 
 ### Phase Details
 
@@ -238,14 +239,19 @@ Every operation requested maps directly onto a well-documented Docker Engine API
 - **Scope**: start, restart, stop, kill, delete; server-side enforcement of the operation mode and of the agent's permanent self-exclusion; audit log entry per mutating call, attributed to the calling device, including calls refused by policy.
 - **Success signal**: Every permitted lifecycle operation succeeds against a real container and produces a correct, attributed audit entry; an agent started with a restrictive mode refuses forbidden operations regardless of what the client sends; the agent itself resists deletion even in the most permissive mode; the client is told what is available rather than discovering it through failures.
 
-**Phase 6: Hardening & OSS release**
+**Phase 6: Client-independent end-to-end suite**
+- **Goal**: Turn the manual validation checklists of Phases 1-5 into an executable, client-independent contract suite, so the API is proven against a real Docker Engine without an Android device — and so any future client, mobile or web, has a machine-checkable definition of what the agent promises.
+- **Scope**: A build-tagged Go test package that starts the real binary against a real Engine, completes pairing over the host-side command path, and drives every endpoint over mTLS: pairing and revocation, the full read set, historical logs plus live streaming with resume across an abrupt connection loss, the five lifecycle routes, all three policy modes, and the audit rows each call produces. Plus a second group that builds the image and runs the agent as a container, which is the only way to exercise self-identification through mountinfo and the self-exclusion guarantee. Long-running endurance is part of the suite but excluded from the default run.
+- **Success signal**: Every item on the Phase 4 and Phase 5 manual checklists — including the headline metric, the agent surviving a delete attempt in the most permissive mode — passes unattended in one command against a real Engine, with no phone and no emulator involved. Anything genuinely untestable without a client device is explicitly named as belonging to the Android app's own suite rather than left as an unticked box here.
+
+**Phase 7: Hardening & OSS release**
 - **Goal**: Safe to point at the public internet and to publish.
 - **Scope**: Rate limiting, security review against the risk table, the automated installer covering state mount / policy mode / retention, threat-model and backup documentation, AGPL-3.0 licensing and release.
 - **Success signal**: Security review passes with no unmitigated high-severity finding; a third party goes from nothing to a paired device using the installer alone, without hand-writing a `docker run` line.
 
 ### Parallelism Notes
 
-Phases 1 and 2 are strictly sequential — everything else depends on an authenticated channel existing. Once pairing works, **Phase 3 (read operations) and Phase 4 (logs/streaming) are independent**: they share no logic, since read operations are request/response and log streaming is a long-lived channel, so they can be built concurrently. Phase 5 depends on Phase 3 because acting on a container presupposes being able to identify and inspect it. Phase 6 is the release gate and depends on the full surface being complete.
+Phases 1 and 2 are strictly sequential — everything else depends on an authenticated channel existing. Once pairing works, **Phase 3 (read operations) and Phase 4 (logs/streaming) are independent**: they share no logic, since read operations are request/response and log streaming is a long-lived channel, so they can be built concurrently. Phase 5 depends on Phase 3 because acting on a container presupposes being able to identify and inspect it. Phase 6 needs the whole surface in place, since it validates that surface end to end; it also front-loads the regression net that Phase 7's hardening changes will be checked against. Phase 7 is the release gate and depends on that validation having run.
 
 ---
 

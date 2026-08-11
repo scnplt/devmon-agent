@@ -1,0 +1,131 @@
+name: Bug report
+description: Something the agent does that it should not, or does not do that it should.
+title: "bug: "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Before you write anything
+
+        **If this is a security vulnerability, stop and close this form.**
+        Report it privately through
+        [GitHub Security Advisories](https://github.com/scnplt/devmon-agent/security/advisories/new).
+        This agent holds a Docker socket, so a public report is a disclosure of
+        a live path into someone's host. See
+        [SECURITY.md](https://github.com/scnplt/devmon-agent/blob/main/SECURITY.md).
+
+        ## Never paste these into this issue
+
+        Everything you write here is public and permanent.
+
+        - Anything from `certs/` — `ca.key` is the agent's entire identity
+        - `devmon.db` — it holds the device registry
+        - A **pairing code**, even one that has expired
+        - **PEM blocks** of any kind
+        - Your real public hostname or IP, if you would rather not publish it
+
+        Redact them. Every report below is readable without them.
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: This is not a security vulnerability (those go to Security Advisories).
+          required: true
+        - label: I have redacted certificates, PEM blocks, pairing codes, and database contents from everything I pasted below.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Agent version
+      description: From `/v1/status`, or the image tag you are running.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: engine
+    attributes:
+      label: Docker Engine version
+      description: "`docker version --format '{{.Server.Version}}'`"
+      placeholder: "29.6.1"
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host OS and architecture
+      placeholder: "Debian 13, arm64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: policy_mode
+    attributes:
+      label: Policy mode
+      description: The value of DEVMON_POLICY_MODE.
+      options:
+        - read-only
+        - default
+        - full
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include the HTTP status and response body if a request was involved.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Requests rather than prose, where you can. Start from a clean state
+        directory if the bug reproduces that way — it usually narrows the cause
+        considerably.
+      placeholder: |
+        1. Start the agent with DEVMON_POLICY_MODE=default
+        2. Pair a device
+        3. GET /v1/containers
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >-
+        From `<state-dir>/logs/agent.log` or `docker compose logs`. Redact
+        first — see the warning at the top. This is rendered as a code block,
+        so no backticks are needed.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: >-
+        The DEVMON_* variables you set, with values you would rather not
+        publish replaced by a placeholder.
+      render: text
+    validations:
+      required: false

@@ -1,5 +1,11 @@
 # Coding Style
 
+## Language (CRITICAL)
+
+Write **everything in English**: code comments, doc comments, identifiers, log and error
+messages, markdown docs, commit messages, and PR text. The conversation language never
+changes the language of the artifact.
+
 ## Immutability (CRITICAL)
 
 ALWAYS create new objects, NEVER mutate existing ones:
