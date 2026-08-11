@@ -23,11 +23,14 @@ security review: `govulncheck`, run here for the first time, showed the module
 pinned to a Go standard library carrying two vulnerabilities reachable from this
 code — one of them on the CA key's own I/O path.
 
-**The code is complete and every gate that can run on this machine is green. The
-phase is not fully proven**: everything requiring a real Docker Engine, a clean
-Linux host, or a GHCR push is deferred and listed explicitly under
-[Outstanding](#outstanding). Most importantly, **`v0.1.0` has not been
-published**, so the image `install.sh` pulls does not exist yet.
+The manual checklist was then executed against a real Docker Engine 29.6.1 under
+WSL2. The full e2e suite is green, all three falsification steps behave as
+required, and `install.sh` takes a clean host to a printed pairing code. Doing
+so found **two more defects** (D4, D5), both fixed.
+
+**What remains is the release itself.** `v0.1.0` has not been published, so the
+image `install.sh` pulls does not exist yet — the documented install path works
+only because the image was built locally for the test.
 
 ---
 
@@ -88,9 +91,9 @@ chore explained under Deviations.
 | Internal documentation links | **All resolve** | Checked programmatically across `README.md` and `docs/` |
 | Workflow and issue-template YAML | **All parse** | `ci.yml`, `release.yml`, both templates |
 | `sh -n install.sh` | **Pass** | |
-| `shellcheck -s sh install.sh` | **Not run** | Not installed on this machine; the CI job is in place |
-| `make e2e` | **Not run** | Needs a Linux Engine via WSL2 |
-| `make e2e-endurance` | **Not run** | Same |
+| `shellcheck -s sh install.sh` | **Pass** | Failed first — see D4 |
+| `make e2e` | **Pass** | Failed first — see D5 |
+| `make e2e-endurance` | See §Outstanding | |
 
 **Environment proved against**: Go 1.26.5, Windows 11 (win32), Docker Engine
 29.6.1 reachable but not used for the suite from this shell. `make` is
@@ -135,6 +138,49 @@ a file that starts a container already holding the Docker socket.
 the script writes, verified against quote, backtick, `$(…)`, and embedded-newline
 payloads.
 
+### D4 — `shellcheck` would have failed CI (MEDIUM)
+
+Found by running the test plan under WSL2. `shellcheck` exits **1** on
+*info*-level findings, not only on errors, and `install.sh` carried two SC2016
+warnings about backticks inside single-quoted prose. The CI job added by this
+very phase would have failed on its first run.
+
+The earlier report of "shellcheck exit 0" was a measurement error: the output
+was piped to `tail`, so `$?` captured `tail`'s status rather than
+`shellcheck`'s.
+
+**Fixed in `b039cf7`.** The decorative backticks are now double quotes;
+`shellcheck -s sh install.sh` exits 0.
+
+The same commit fixed a second defect found while exercising `--dry-run`:
+`print_next_steps` ran unconditionally, so a dry run ended with "The agent is
+running and listening on port 8443" after having started nothing. A dry run
+that reports a running agent is worse than no dry run, because the operator
+believes it.
+
+### D5 — Two rate-limit contract tests were wrong (MEDIUM)
+
+The first real execution of the suite failed on two of the five new cases.
+Both were **test** defects; the production limiter was correct.
+
+`TestRateLimitStatusTierThrottles` compared the 429 body against a string with
+no trailing newline, but `writeJSON` encodes with `json.Encoder`, which always
+appends one — true of every error response this API serves.
+
+`TestRateLimitedRequestsWriteNoAuditRow` **could never trip the limiter it was
+asserting on.** With `DEVMON_RATE_GUARDED_PER_SEC=1` the bucket refills once a
+second, and a restart against a real Engine takes longer than that, so tokens
+refilled as fast as the loop spent them. It burned 212 seconds before failing.
+
+**Fixed in `9db4854`.** The body assertion trims and stays exact. The audit test
+now drains the shared per-device bucket with fast `GET /v1/containers` calls,
+then issues a single restart that finds it empty — same D7 property, 13 seconds
+instead of 212, and it actually exercises what it names.
+
+This is the clearest vindication of the plan's insistence on falsification: a
+test that cannot fail proves nothing, and one of these could not have passed for
+the right reason.
+
 ### D3 — Phase 6 Finding 1, carried over (LOW, as predicted)
 
 An unrecognised `DEVMON_SELF_CONTAINER_ID` was discarded with no log line at all.
@@ -162,33 +208,50 @@ its presence.
 
 ## Outstanding
 
-**Nothing below is optional for a real release.** Each item is deferred solely
-because it cannot run from this machine.
+The manual checklist was executed on 2026-08-11 against **Docker Engine 29.6.1
+under WSL2 (Ubuntu, Go 1.26.5)**. Results below; only the release itself is
+still outstanding.
 
-### Requires WSL2 and a Linux Docker Engine
+### Executed and passing
 
-- [ ] `make e2e` — the whole suite, including the five new rate-limit contract
-      cases. They are compile-verified (`go vet -tags e2e ./...`,
-      `go build -tags e2e`) but have **never executed**. The plan flags
-      `waitReady`'s status polling as a likely source of flakiness here; the
-      tests loop to the first 429 rather than counting requests, but that
-      mitigation is itself untested.
+- [x] **`make e2e`** — full suite green, `E2E_EXIT=0`: `api` 65.4s, `harness`
+      1.0s, `incontainer` 178.0s. All 76 pre-existing tests plus the five new
+      rate-limit cases. **Failed on the first run** — see D5.
+- [x] **Falsification 1** — raising `DEVMON_RATE_STATUS_PER_MIN` to 100000 turned
+      `TestRateLimitStatusTierThrottles` **red** ("never answered 429 within 20
+      iterations"), proving it fails when the limiter does not fire. Reverted.
+- [x] **Falsification 2** — removing `withDeviceLimit` from the `mutate` helper
+      only turned `TestRateLimitedRequestsWriteNoAuditRow` **red** ("restart …
+      = 204, want 429") while `TestRateLimitGuardedTierIsPerDevice`, which
+      drives a read route, stayed green. That asymmetry is the proof the audit
+      test binds to the mutating chain and not to the pre-auth tier. Reverted.
+- [x] **Falsification 3** — pointed `install.sh` at a state directory holding a
+      file: exited 1 with the refusal message, the seeded file untouched, no
+      compose file written, no container started.
+- [x] **`shellcheck -s sh install.sh`** — exit 0. **Failed first** — see D4.
+- [x] **`install.sh --dry-run`** — printed the compose file and created nothing:
+      no state directory, no `compose.yaml`, no container.
+- [x] **`install.sh` end to end on a clean host** — resolved the socket GID as
+      **1000** (a hardcoded 999 would have been wrong on this host, which is why
+      it is resolved), created the state directory `65532:65532` mode `700`,
+      wrote `compose.yaml`, started the agent, saw `/v1/status` in 2s, printed
+      the CA fingerprint and a pairing code. No hand-written `docker run`.
+      `/v1/status` then answered 200 with the matching fingerprint.
+- [x] **`/v1/status` throttles and recovers on a real host** — the first 429
+      arrived on request **#31**, exactly matching the burst of 30; the body was
+      `{"error":"rate limit exceeded"}` with `Retry-After: 2`
+      (= `ceil(1 / 0.5)` for 30/min); after honouring it, the next request
+      answered 200.
+- [x] **Two paired devices, one throttled** — covered by
+      `TestRateLimitGuardedTierIsPerDevice` against a real Engine.
+- [x] **A wrong `DEVMON_SELF_CONTAINER_ID` warns and self-exclusion still arms**
+      — covered by `TestUnresolvableSelfIDFallsBackToDetection` in the
+      `incontainer` group, which now asserts the warning.
+
+### Still outstanding
+
 - [ ] `make e2e-endurance` — the limiter must not throttle a 30-minute stream.
-- [ ] Falsification 1: raise `DEVMON_RATE_STATUS_PER_MIN` and confirm the
-      rate-limit test goes **red** rather than passing because no 429 arrives.
-- [ ] Falsification 2: remove `withDeviceLimit` from the `mutate` helper only and
-      confirm the per-device case goes red.
-- [ ] Sweep full `-v` e2e output for PEM blocks and pairing-code-shaped strings.
-
-### Requires a clean Linux host
-
-- [ ] `install.sh` end to end → a paired device with no hand-written `docker run`
-- [ ] `install.sh --dry-run` prints the compose file and executes nothing
-- [ ] Falsification 3: the installer refuses a non-empty existing state directory
-- [ ] A wrong `DEVMON_SELF_CONTAINER_ID` produces the Warn, with self-exclusion
-      still arming
-- [ ] `/v1/status` throttles and recovers on a real host, honouring `Retry-After`
-- [ ] Two paired devices: throttling one leaves the other served
+- [ ] Sweep a full `-v` e2e run for PEM blocks and pairing-code-shaped strings.
 
 ### Requires a tag push
 
@@ -217,11 +280,11 @@ because it cannot run from this machine.
 | `golang.org/x/time v0.15.0` the only added dependency; tidy a no-op | **Met** |
 | Phase 6 Finding 1 closed and its e2e test tightened | **Met** (run deferred) |
 | Security review written, every risk row given a verdict, no open high finding | **Met** |
-| `install.sh` takes a clean host to a paired device; shellcheck clean | **Unproven** — never run on a host; shellcheck deferred to CI |
+| `install.sh` takes a clean host to a paired device; shellcheck clean | **Met** — verified on a real host; shellcheck exits 0 after D4 |
 | `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, threat model, backup guide exist | **Met** |
 | Every `.go` file carries the SPDX identifier | **Met** — 111/111 |
 | `v0.1.0` published to GHCR for amd64 and arm64 | **Not met** — workflow in place, tag never pushed |
-| All 76 pre-existing e2e tests green, plus the new cases | **Unproven** — suite not run |
+| All 76 pre-existing e2e tests green, plus the new cases | **Met** — full suite green against Engine 29.6.1 |
 | Coverage ≥80% | **Met** — 84.5% |
 | README claims no phase state that is not true | **Met** |
 | PRD Phase 7 row → complete | **Met** |
