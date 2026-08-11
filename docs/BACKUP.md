@@ -84,7 +84,7 @@ splits a transaction across files. Stop first:
 
 ```bash
 docker stop devmon-agent
-sudo tar czf devmon-backup.tgz -C /var/lib/devmon
+sudo tar czf devmon-backup.tgz -C / var/lib/devmon
 docker start devmon-agent
 ```
 
