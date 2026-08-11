@@ -25,7 +25,7 @@ $DEVMON_STATE_DIR/                 bind mount — not a named volume        0700
     └── agent-….log.gz             rotated and compressed                 0600
 ```
 
-— [`README.md:191-206`](../README.md) (`## State directory`).
+— [`README.md:310-329`](../README.md) (`## State directory`).
 
 `logs/` is operational output, not identity, and does not need to survive a
 restore for the agent to run — but back it up anyway if you are diagnosing
@@ -54,7 +54,7 @@ In the README's own words, which this document does not restate differently:
 > the host and restart. The agent then creates a new CA, every paired device
 > is unpaired, and the fingerprint changes.
 >
-> — [`README.md:212-221`](../README.md)
+> — [`README.md:331-340`](../README.md)
 
 Concretely, that means:
 
@@ -84,11 +84,11 @@ splits a transaction across files. Stop first:
 
 ```bash
 docker stop devmon-agent
-sudo tar czf devmon-backup.tgz -C /var/lib/devmon
+sudo tar czf devmon-backup.tgz -C / var/lib/devmon
 docker start devmon-agent
 ```
 
-— [`README.md:229-236`](../README.md). This checkpoints the write-ahead log
+— [`README.md:346-355`](../README.md). This checkpoints the write-ahead log
 before the copy runs, so the archive holds a single consistent state rather
 than a snapshot mid-write.
 
@@ -135,7 +135,7 @@ the restored database is a readable, uncorrupted SQLite file at open —
 "Restore by extracting to the same path with the same ownership. The agent
 detects a truncated or corrupt `devmon.db` at startup and refuses to run
 rather than failing obscurely at the first query."
-([`README.md:238-240`](../README.md)).
+([`README.md:357-359`](../README.md)).
 
 ## If `certs/` is lost
 
