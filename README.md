@@ -4,7 +4,7 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
 paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.1.1 — the full surface.** The agent is its own certificate
+**Status: 0.1.2 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -68,7 +68,7 @@ docker run -d --name devmon-agent \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.1.1
+  ghcr.io/scnplt/devmon-agent:0.1.2
 ```
 
 See `compose.example.yaml` for the equivalent Compose file and a reference for
@@ -78,7 +78,7 @@ Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.1.1","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.1.2","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 

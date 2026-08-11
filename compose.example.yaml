@@ -23,7 +23,7 @@
 
 services:
   devmon-agent:
-    image: ghcr.io/scnplt/devmon-agent:0.1.1
+    image: ghcr.io/scnplt/devmon-agent:0.1.2
     restart: unless-stopped
 
     ports:
