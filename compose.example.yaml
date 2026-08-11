@@ -1,0 +1,71 @@
+# Reference configuration for devmon-agent.
+#
+# ./install.sh writes a working compose file for you and resolves both of the
+# prerequisites below from the host itself. This file is for operators who
+# would rather assemble it by hand, and as a reference for every knob.
+#
+# Two host prerequisites first — both will otherwise look like agent bugs, and
+# both are consequences of the container running as nonroot (UID 65532):
+#
+#   1. The state directory must be owned by that UID, or startup fails at
+#      MkdirAll with "permission denied":
+#
+#        sudo mkdir -p /var/lib/devmon
+#        sudo chown 65532:65532 /var/lib/devmon
+#
+#   2. group_add below must equal the host's docker group GID, or the startup
+#      ping fails with "permission denied" on the socket. Find it with:
+#
+#        stat -c '%g' /var/run/docker.sock
+#
+#      999 is right on Debian and Ubuntu and wrong elsewhere. install.sh
+#      resolves it with `stat` rather than assuming it.
+
+services:
+  devmon-agent:
+    image: ghcr.io/scnplt/devmon-agent:0.1.0
+    restart: unless-stopped
+
+    ports:
+      - "8443:8443"
+
+    volumes:
+      # A BIND MOUNT, deliberately — not a named volume. The operator can see,
+      # back up, and restore it, and `docker compose down -v` cannot destroy it.
+      # This directory holds the agent's identity: losing it unpairs every
+      # device from Phase 2 onward.
+      - /var/lib/devmon:/var/lib/devmon
+
+      # :ro does not prevent writes through the Docker API — the API is
+      # request/response over the socket — but it does prevent the socket file
+      # itself being replaced, and it states intent.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    group_add:
+      - "999"
+
+    environment:
+      # Required. The server certificate's SANs; comma-separated for several.
+      # There is no default: a certificate with no SAN matches nothing, and the
+      # failure would otherwise surface as an opaque TLS error on the phone.
+      DEVMON_PUBLIC_ADDR: vps.example.com
+
+      # read-only | default | full. Fixed at startup and immutable thereafter —
+      # a client can never widen what is granted here.
+      DEVMON_POLICY_MODE: default
+
+      DEVMON_LOG_MAX_AGE_DAYS: "1"
+      DEVMON_LOG_MAX_TOTAL_MB: "64"
+
+      # Rate limits, shown at their defaults. The two pre-authentication tiers
+      # are per client IP and are counted per minute; the authenticated tier is
+      # per paired device and is counted per second, so a phone roaming across
+      # mobile IPs mid-incident is not throttled for the handover.
+      #
+      # Raise them if a busy host or a chatty client trips them. The minimum is
+      # 1: there is deliberately no value that turns a limiter off, because a
+      # 0 would read as "no requests permitted" and brick the agent in a way
+      # that looks like a network fault.
+      # DEVMON_RATE_STATUS_PER_MIN: "30"
+      # DEVMON_RATE_PAIR_PER_MIN: "5"
+      # DEVMON_RATE_GUARDED_PER_SEC: "20"
