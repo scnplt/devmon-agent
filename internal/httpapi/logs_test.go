@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -17,6 +18,30 @@ import (
 	"github.com/scnplt/devmon-agent/internal/dockerx"
 	"github.com/scnplt/devmon-agent/internal/policy"
 )
+
+// flushFailingRecorder wraps httptest.ResponseRecorder to make one specific
+// Flush call fail, so a test can force sse.event's "flush sse frame: %w" or
+// "flush sse headers: %w" path without a real disconnected socket.
+// FlushError, not Flush, is the method http.ResponseController looks for
+// first (see net/http's ResponseController.Flush), so implementing that one
+// method is enough to make the whole flush chain return failErr on the
+// failOn'th call and nil on every other call.
+type flushFailingRecorder struct {
+	*httptest.ResponseRecorder
+	failOn     int
+	failErr    error
+	flushCount int
+}
+
+func (f *flushFailingRecorder) SetWriteDeadline(time.Time) error { return nil }
+
+func (f *flushFailingRecorder) FlushError() error {
+	f.flushCount++
+	if f.flushCount == f.failOn {
+		return f.failErr
+	}
+	return nil
+}
 
 // logRoutePaths lists the two log routes, for the tests that assert identical
 // behaviour across both (401, 405, nil-reader, leak checks).
@@ -315,6 +340,136 @@ func TestStreamErrorAfterFirstLine(t *testing.T) {
 	wantSuffix := fmt.Sprintf("event: error\ndata: {\"error\":%q}\n\n", msgEngineUnavailable)
 	if !strings.HasSuffix(body, wantSuffix) {
 		t.Errorf("body = %q, want it to end with %q", body, wantSuffix)
+	}
+}
+
+// TestStreamClientDisconnectLogsNothingAtError is issue #9's regression: a
+// client that disconnects mid-stream must not produce an ERROR line. The
+// agent failing to tell a departed client that it is gone is not an agent
+// fault, so no terminal frame should even be attempted. This asserts on the
+// captured log content, not merely "no panic" — the old behaviour never
+// panicked, it just logged ERROR on every ordinary disconnect.
+func TestStreamClientDisconnectLogsNothingAtError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — the fake cancels the request's own context before returning
+	// its error, exactly as net/http cancels it when the underlying
+	// connection closes (see isClientGone's doc comment), and the recorder's
+	// first Flush call fails with the disconnect text actually observed on
+	// this route, so the error path is exercised the way it happens for
+	// real rather than via a synthetic error value.
+	rec := &flushFailingRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		failOn:           1,
+		failErr:          errors.New("client disconnected"),
+	}
+	var cancelReq context.CancelFunc
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(_ context.Context, _ string, _ dockerx.LogOptions, emit func(dockerx.LogLine) error) error {
+			cancelReq()
+			return emit(dockerx.LogLine{Timestamp: "t1", Stream: "stdout", Line: "line before disconnect"})
+		},
+	}
+	log, buf := newCapturingLoggerAtLevel(slog.LevelDebug)
+	s, st := testServerWithDockerAndLogger(t, policy.ModeDefault, fd, log)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	cancelableCtx, cancel := context.WithCancel(req.Context())
+	cancelReq = cancel
+	req = req.WithContext(cancelableCtx)
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("agent log contains an ERROR line for an ordinary client disconnect: %s", buf.String())
+	}
+	if got := strings.Count(rec.Body.String(), "event: error"); got != 0 {
+		t.Errorf("body has %d terminal error frames, want 0: a disconnected client cannot receive one", got)
+	}
+}
+
+// TestStreamGenuineFailureStillSendsTerminalFrameWhenConnected pins the
+// unchanged half of issue #9's fix: a real Engine fault, with the client
+// still connected, must still produce the terminal event: error frame and
+// must not be swallowed as a false-positive "client gone".
+func TestStreamGenuineFailureStillSendsTerminalFrameWhenConnected(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(_ context.Context, _ string, _ dockerx.LogOptions, emit func(dockerx.LogLine) error) error {
+			if err := emit(dockerx.LogLine{Timestamp: "t1", Stream: "stdout", Line: "one line before the fault"}); err != nil {
+				return err
+			}
+			return errors.New("engine connection dropped")
+		},
+	}
+	log, buf := newCapturingLoggerAtLevel(slog.LevelDebug)
+	s, st := testServerWithDockerAndLogger(t, policy.ModeDefault, fd, log)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	body := rec.Body.String()
+	if got := strings.Count(body, "event: error\n"); got != 1 {
+		t.Errorf("body has %d event: error frames, want 1 for a genuine Engine fault; body: %q", got, body)
+	}
+	// The frame write itself succeeded (deadlineAwareRecorder never fails a
+	// flush), so nothing about the terminal frame should have been logged
+	// at any level.
+	if strings.Contains(buf.String(), "write terminal error frame") {
+		t.Errorf("agent log unexpectedly mentions the terminal frame for a successful send: %s", buf.String())
+	}
+}
+
+// TestStreamTerminalFrameClientGoneFailureLogsDebug is issue #9's second
+// arm: when the terminal frame IS attempted, because streamErr was a genuine
+// Engine fault, but the frame write itself then fails for a client-gone
+// reason, that failure logs at DEBUG rather than ERROR — the client vanished
+// one step later than in the first-arm case, but the argument is identical.
+func TestStreamTerminalFrameClientGoneFailureLogsDebug(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — flush #1 (SSE headers) and #2 (the "log" frame) succeed;
+	// flush #3, the terminal "error" frame, fails with the other disconnect
+	// string actually observed on this route. The request context is never
+	// canceled here, so this exercises isClientGone's string-match fallback
+	// arm specifically, independent of the context-cancellation arm covered
+	// by TestStreamClientDisconnectLogsNothingAtError.
+	rec := &flushFailingRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		failOn:           3,
+		failErr:          errors.New("http2: stream closed"),
+	}
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(_ context.Context, _ string, _ dockerx.LogOptions, emit func(dockerx.LogLine) error) error {
+			if err := emit(dockerx.LogLine{Timestamp: "t1", Stream: "stdout", Line: "one line before the fault"}); err != nil {
+				return err
+			}
+			return errors.New("engine connection dropped")
+		},
+	}
+	log, buf := newCapturingLoggerAtLevel(slog.LevelDebug)
+	s, st := testServerWithDockerAndLogger(t, policy.ModeDefault, fd, log)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	logged := buf.String()
+	if !strings.Contains(logged, "level=DEBUG") || !strings.Contains(logged, "write terminal error frame") {
+		t.Errorf("log = %q, want a DEBUG line mentioning the terminal frame write", logged)
+	}
+	if strings.Contains(logged, "level=ERROR") {
+		t.Errorf("log = %q, want no ERROR line: the terminal frame failed because the client was gone", logged)
 	}
 }
 

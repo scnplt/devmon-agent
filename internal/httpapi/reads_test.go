@@ -217,6 +217,15 @@ func newCapturingLogger() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
+// newCapturingLoggerAtLevel mirrors newCapturingLogger but with an explicit
+// minimum level, for the tests in logs_test.go that must observe a DEBUG
+// line — slog.NewTextHandler's default level is INFO, so the default helper
+// above would silently drop it and the test would prove nothing.
+func newCapturingLoggerAtLevel(level slog.Level) (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level})), &buf
+}
+
 // dockerRouteCase describes one of the eight read routes: how to make its
 // backing fakeDocker method fail, how to make it succeed, and how to verify
 // a successful body.
