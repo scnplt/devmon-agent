@@ -2,9 +2,10 @@ name: CI
 
 # Two bars, scaled to the target branch:
 #   PR -> dev  : `test` only, for fast feedback on the integration branch.
-#   PR -> main : `test` plus `lint`, `image`, `gosec` and `e2e` — the release bar.
+#   PR -> main : `test` plus `lint`, `image`, `shellcheck`, `gosec`, `govulncheck`
+#                and `e2e` — the release bar.
 # The main-only jobs are gated on `github.base_ref`, so they never queue on a dev PR.
-# Branch protection is per branch, so `dev` requires `test` and `main` requires all five.
+# Branch protection is per branch, so `dev` requires `test` and `main` requires all seven.
 
 on:
   pull_request:
@@ -23,6 +24,7 @@ env:
   # Pinned so an upstream release cannot turn a protected branch red overnight.
   GOLANGCI_LINT_VERSION: v2.12.2
   GOSEC_VERSION: v2.28.0
+  GOVULNCHECK_VERSION: v1.6.0
   COVERAGE_FLOOR: 80
 
 jobs:
@@ -149,6 +151,37 @@ jobs:
 
       - name: gosec
         run: gosec ./...
+
+  # gosec and govulncheck answer different questions and neither substitutes for
+  # the other: gosec looks for faults in the code written here, govulncheck for
+  # known vulnerabilities in the dependencies and the Go toolchain underneath it.
+  # The second question is the one no other gate asks, and it is not theoretical
+  # — its first manual run, during the Phase 7 security review, reported
+  # GO-2026-5856 in the toolchain and produced the Go 1.26.5 bump. That finding
+  # arrived because someone remembered to run it by hand; this job is what makes
+  # the next one arrive on its own.
+  #
+  # Installed from source and pinned, for the same supply-chain reason gosec is.
+  govulncheck:
+    name: govulncheck
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+
+      # Reachability analysis over the module. The e2e packages sit behind a
+      # build tag and are test-only, so they are deliberately out of scope: a
+      # vulnerability that only a test harness can reach does not ship.
+      - name: govulncheck
+        run: govulncheck ./...
 
   # The end-to-end suite runs the real binary — and the real image — against the
   # runner's own Docker Engine. It takes minutes, so it stays on the release bar

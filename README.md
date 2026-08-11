@@ -805,11 +805,12 @@ branch a pull request targets:
 | `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
 | `image` | PRs into `main` only | `docker build` of the release image |
 | `gosec` | PRs into `main` only | `gosec ./...` |
+| `govulncheck` | PRs into `main` only | `govulncheck ./...` — known vulnerabilities in the dependencies and the Go toolchain, which `gosec` does not look for |
 | `shellcheck` | PRs into `main` only | `shellcheck -s sh install.sh` |
 | `e2e` | PRs into `main` only | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
 
 `dev` is the integration branch, so a PR into it gets fast feedback from `test`
-alone; the full release bar applies on the way into `main`. The four
+alone; the full release bar applies on the way into `main`. The six
 `main`-only jobs are gated on `github.base_ref` and are skipped, not queued, on
 a `dev` PR.
 
