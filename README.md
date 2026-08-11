@@ -4,22 +4,48 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so an
 Android client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: Phase 3 — read operations.** The agent is its own certificate
+**Status: 0.1.0 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
-request. A paired client can list and inspect containers, images, networks and
-volumes. Nothing mutates state yet: logs and live streaming arrive in Phase 4,
-and lifecycle operations with audit logging in Phase 5.
+request.
 
-License: AGPL-3.0-only.
+A paired client can list and inspect containers, images, networks and volumes;
+read historical logs and follow a live stream; and start, restart, stop, kill
+and delete containers — as far as the host's startup policy mode permits, and
+never against the agent's own container. Every mutating attempt is recorded in
+an audit table that outlives the operational log. The listening port is rate
+limited in two tiers, and an executable contract suite runs the real binary
+against a real Docker Engine.
+
+License: [AGPL-3.0-only](LICENSE).
 
 ---
 
 ## Install
 
-Two host prerequisites first. Both will otherwise look like agent bugs, and both
-are consequences of the container running as `nonroot` (UID 65532):
+```bash
+git clone https://github.com/scnplt/devmon-agent.git
+cd devmon-agent
+./install.sh --public-addr vps.example.com
+```
+
+That resolves the docker socket GID from the host, creates and chowns the state
+directory, writes a `compose.yaml`, starts the agent, waits for it to answer,
+and prints the CA fingerprint and your first pairing code. Pass `--dry-run` to
+see the compose file and every command it would run without touching the host,
+and `--help` for the full flag list — every prompt is also settable by flag or
+environment variable, so it works unattended.
+
+The installer refuses to touch a state directory that already exists and is not
+empty. Upgrading an existing installation is `docker compose pull && docker
+compose up -d`.
+
+### Installing by hand
+
+Two host prerequisites, which `install.sh` exists to resolve for you. Both will
+otherwise look like agent bugs, and both are consequences of the container
+running as `nonroot` (UID 65532):
 
 ```bash
 # 1. The state directory must be owned by the container's UID, or startup fails
@@ -45,8 +71,8 @@ docker run -d --name devmon-agent \
   ghcr.io/scnplt/devmon-agent:0.1.0
 ```
 
-See `compose.example.yaml` for the equivalent Compose file. An automated
-installer that resolves the socket GID for you is Phase 6.
+See `compose.example.yaml` for the equivalent Compose file and a reference for
+every configuration knob.
 
 Verify it is up:
 
@@ -97,6 +123,9 @@ file, or signal that can widen what was granted here.
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
 | `DEVMON_AUDIT_MAX_AGE_DAYS` | int | `365` | ≥1, and ≥ `DEVMON_LOG_MAX_AGE_DAYS` |
 | `DEVMON_AUDIT_MAX_ROWS` | int | `100000` | ≥1000 |
+| `DEVMON_RATE_STATUS_PER_MIN` | int | `30` | ≥1 |
+| `DEVMON_RATE_PAIR_PER_MIN` | int | `5` | ≥1 |
+| `DEVMON_RATE_GUARDED_PER_SEC` | int | `20` | ≥1 |
 
 `DEVMON_PUBLIC_ADDR` has no default on purpose: a server certificate with no
 subject alternative name matches nothing, and the failure would otherwise
@@ -186,6 +215,49 @@ debug output.
 Log growth is bounded by whichever of age or total size is hit first, so the
 agent cannot be the reason a small VPS runs out of disk.
 
+### Rate limiting
+
+The listening port is rate limited in two tiers, so it survives being scanned.
+
+| Tier | Applies to | Keyed by | Default |
+|---|---|---|---|
+| Status | `GET /v1/status` | client IP | 30 / minute |
+| Pair | `POST /v1/pair` | client IP | 5 / minute |
+| Guarded | every route behind a client certificate | **device ID** | 20 / second |
+
+The two pre-authentication tiers share a global backstop, because per-IP limits
+alone do not stop a distributed scan. Over the limit, the agent answers:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 2
+
+{"error":"rate limit exceeded"}
+```
+
+`Retry-After` is always an integer number of seconds. Which tier a caller hit is
+operator information: it goes to the log, never the response.
+
+**The authenticated tier keys on the device, not the IP.** A phone roams across
+mobile IPs mid-incident, and keying that tier by address would throttle exactly
+the network handover this product exists to work through. A device ID is the
+stronger identifier anyway — it is proven by a client certificate rather than
+asserted by a packet header. For the same reason `X-Forwarded-For` is never
+consulted: the documented deployment is direct inbound, and honouring a
+client-supplied forwarding header would let any caller mint a fresh limiter key
+per request, which is worse than no limiter because it looks like protection.
+
+Limits are startup configuration like everything else, so a client can never
+raise its own ceiling, and the values are advertised nowhere — telling a scanner
+exactly how fast it may go unnoticed would defeat the point. The minimum is `1`,
+not `0`: there is deliberately no value that turns a limiter off. An operator who
+wants a higher ceiling raises the number.
+
+Connection establishment, body size, and open streams are bounded separately —
+by the OS accept queue and `ReadHeaderTimeout`, by per-route body caps, and by a
+concurrent-stream ceiling. A connection limiter belongs in front of the process,
+in `iptables` or a VPN; see [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
 ---
 
 ## State directory
@@ -238,6 +310,11 @@ docker start devmon-agent
 Restore by extracting to the same path with the same ownership. The agent
 detects a truncated or corrupt `devmon.db` at startup and refuses to run rather
 than failing obscurely at the first query.
+
+**The backup is itself a credential.** It contains `ca.key`, so whoever holds it
+can mint a device certificate for your agent. Store it as you would a private
+key. [docs/BACKUP.md](docs/BACKUP.md) covers restore, ownership, and what
+happens if `certs/` is lost.
 
 ---
 
@@ -667,6 +744,7 @@ branch a pull request targets:
 | `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
 | `image` | PRs into `main` only | `docker build` of the release image |
 | `gosec` | PRs into `main` only | `gosec ./...` |
+| `shellcheck` | PRs into `main` only | `shellcheck -s sh install.sh` |
 | `e2e` | PRs into `main` only | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
 
 `dev` is the integration branch, so a PR into it gets fast feedback from `test`
@@ -691,3 +769,33 @@ Two things that will bite anyone writing code here from memory:
   name is `"sqlite"`, not `"sqlite3"`.
 
 Never log key material, pairing codes, or PEM bytes, at any level.
+
+Contributing guidelines, the branching model, and the full gate list are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Security
+
+This agent holds a Docker socket. Anything that can drive its API can reach
+root-equivalent power over the host, so a vulnerability here is a host
+compromise rather than a container-management bug.
+
+- **Reporting**: [SECURITY.md](SECURITY.md). Never open a public issue for a
+  security problem — use GitHub Security Advisories.
+- **What is and is not defended**: [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md),
+  including the risks that are accepted rather than fixed.
+- **Backup and restore**: [docs/BACKUP.md](docs/BACKUP.md).
+
+---
+
+## License
+
+Copyright (C) 2026 Sertan Canpolat.
+
+Licensed under the GNU Affero General Public License v3.0 only
+(`AGPL-3.0-only`). The full text is in [LICENSE](LICENSE), and every source
+file carries the SPDX identifier.
+
+The AGPL's network clause is deliberate: if you run a modified version of this
+agent as a service for others, they are entitled to its source.
