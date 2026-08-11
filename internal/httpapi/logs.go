@@ -189,11 +189,33 @@ func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// A stream that failed because the client went away has nothing left to
+	// deliver and no one left to deliver it to: attempting the terminal
+	// frame below would just be a second write failing for the same reason
+	// the first one did, and logging that at ERROR would report, at the
+	// agent's highest severity, that it could not tell a client something
+	// the client is no longer there to hear (issue #9). See isClientGone's
+	// doc comment for exactly what "gone" is checked against — a genuine
+	// Engine fault with the client still connected falls through unchanged.
+	if isClientGone(ctx, streamErr) {
+		return
+	}
+
 	// Headers are already committed: the only way left to signal failure is
 	// a terminal event frame. D16 forbids logging the ref alongside the
 	// container's own output — this path never touches LogLine.Line, only
 	// the error.
 	if err := sse.event("", sseEventError, errorBody{Error: msgEngineUnavailable}); err != nil {
-		s.log.Error("stream container logs: write terminal error frame", slog.Any("err", err))
+		// streamErr above was a genuine Engine fault, not a disconnect — so
+		// this write was worth attempting. But the client can still have
+		// vanished in the gap between the Engine dying and this frame going
+		// out, and a failure for THAT reason is the same "no one to hear
+		// this" case one step later: DEBUG, not ERROR. Any other failure to
+		// send the frame is a distinct fault of its own and stays at ERROR.
+		if isClientGone(ctx, err) {
+			s.log.Debug("stream container logs: write terminal error frame", slog.Any("err", err))
+		} else {
+			s.log.Error("stream container logs: write terminal error frame", slog.Any("err", err))
+		}
 	}
 }
