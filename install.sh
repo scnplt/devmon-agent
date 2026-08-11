@@ -376,7 +376,7 @@ preflight() {
 	info '  docker: found'
 
 	docker info >/dev/null 2>&1 ||
-		die 'the Docker daemon did not answer `docker info`. Start it, or add this user to the docker group, and try again.'
+		die 'the Docker daemon did not answer "docker info". Start it, or add this user to the docker group, and try again.'
 	info '  docker daemon: responding'
 
 	if docker compose version >/dev/null 2>&1; then
@@ -384,7 +384,7 @@ preflight() {
 	elif command -v docker-compose >/dev/null 2>&1; then
 		COMPOSE_CMD='docker-compose'
 	else
-		die 'neither `docker compose` nor `docker-compose` is available. Install the Compose plugin: https://docs.docker.com/compose/install/'
+		die 'neither "docker compose" nor "docker-compose" is available. Install the Compose plugin: https://docs.docker.com/compose/install/'
 	fi
 	info "  compose: $COMPOSE_CMD"
 }
@@ -632,6 +632,19 @@ print_pairing_code() {
 }
 
 print_next_steps() {
+	if [ "$DRY_RUN" = 'yes' ]; then
+		step 'Dry run complete'
+		cat <<EOF
+
+  Nothing on this host was created, changed, or started. The compose file
+  above is what a real run would write to $COMPOSE_PATH.
+
+  Re-run without --dry-run to install.
+
+EOF
+		return 0
+	fi
+
 	step 'Done'
 	cat <<EOF
 
