@@ -93,7 +93,8 @@ chore explained under Deviations.
 | `sh -n install.sh` | **Pass** | |
 | `shellcheck -s sh install.sh` | **Pass** | Failed first — see D4 |
 | `make e2e` | **Pass** | Failed first — see D5 |
-| `make e2e-endurance` | See §Outstanding | |
+| `make e2e-endurance` | **Pass** | 1875s; the 30-minute stream is not throttled |
+| Leak sweep of `-v` e2e output | **Pass** | No PEM, key, or pairing-code-shaped string |
 
 **Environment proved against**: Go 1.26.5, Windows 11 (win32), Docker Engine
 29.6.1 reachable but not used for the suite from this shell. `make` is
@@ -248,10 +249,30 @@ still outstanding.
       — covered by `TestUnresolvableSelfIDFallsBackToDetection` in the
       `incontainer` group, which now asserts the warning.
 
+- [x] **`make e2e-endurance`** — green, `ENDURANCE_EXIT=0`, 1875s (31m 15s). The
+      limiter did not throttle the 30-minute stream, which is the property at
+      risk: a stream spends exactly one guarded token at request time and none
+      thereafter.
+- [x] **Leak sweep of a full `-v` run** (642 lines, all three packages green):
+      zero `-----BEGIN` blocks, zero `PRIVATE KEY` markers, zero `ca.key`
+      references, zero pairing-code-shaped tokens (`[A-Z0-9]{20,}`). The eight
+      `PairingCode` matches are Go **test names**
+      (`TestPairingCodeIsSingleUse`, `TestUnknownAndMalformedPairingCodesAreIndistinguishable`);
+      the 64-character hex strings are Docker container and image IDs in
+      subtest names, which are identifiers rather than secrets.
+
 ### Still outstanding
 
-- [ ] `make e2e-endurance` — the limiter must not throttle a 30-minute stream.
-- [ ] Sweep a full `-v` e2e run for PEM blocks and pairing-code-shaped strings.
+Only the release itself:
+
+- [ ] Tag `v0.1.0` after this reaches `main`, and confirm the published manifest
+      carries amd64 and arm64.
+- [ ] A fresh `docker compose pull` of the published tag starts and answers
+      `/v1/status`.
+
+The installer was proved against an image built and tagged locally as
+`ghcr.io/scnplt/devmon-agent:0.1.0`, so its logic is verified; what is unproven
+is only that the *published* image exists and runs.
 
 ### Requires a tag push
 
