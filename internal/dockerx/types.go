@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package dockerx
 
 // Response DTOs for the read operations (Phase 3).

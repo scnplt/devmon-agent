@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package state owns the agent's durable store: the device registry, the audit
 // trail, and the schema version that gates upgrades.
 //

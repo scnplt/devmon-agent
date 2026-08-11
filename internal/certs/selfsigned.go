@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package certs owns the agent's TLS material on disk: generating a server
 // certificate on first start, reusing it afterwards, and reporting when the
 // configured addresses have drifted away from what it covers.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Package config parses and validates the agent's entire startup surface.
 //
 // Every knob is an environment variable read exactly once, at start, and

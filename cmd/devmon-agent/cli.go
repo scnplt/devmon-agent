@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // Host-side `device` subcommands (D8 in the Phase 2 plan). The image is
 // distroless/static:nonroot — there is no shell and no second binary — so
 // `docker exec devmon-agent /usr/local/bin/devmon-agent device ...` is the
