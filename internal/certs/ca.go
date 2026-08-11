@@ -218,7 +218,7 @@ func readFileInRoot(root *os.Root, name string) ([]byte, error) {
 }
 
 // Fingerprint is the hex SHA-256 digest over the CA certificate's DER bytes.
-// It is the pinning anchor an Android client records at pairing time and is
+// It is the pinning anchor a client records at pairing time and is
 // published on GET /v1/status — publishing it is the point, and nothing else
 // about the CA may join it.
 func (c *CA) Fingerprint() string {

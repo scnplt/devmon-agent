@@ -118,6 +118,33 @@ would let any caller mint a fresh limiter key per request:
 [`internal/httpapi/ratelimit.go:67-81`](../internal/httpapi/ratelimit.go)
 (`clientIP`).
 
+### intermediary → listening port
+
+The boundary above assumes the device's TLS connection ends in the agent
+process. A TLS-terminating intermediary — Cloudflare Tunnel's HTTP/HTTPS
+ingress, or any reverse proxy in HTTP mode — moves that endpoint, and three
+properties this model depends on do not survive the move.
+
+Device authentication reads the certificate off the connection itself
+([`internal/httpapi/middleware.go:44-50`](../internal/httpapi/middleware.go)),
+and the intermediary's own connection to the agent carries none, so every
+guarded route answers 401. The device's pinning of the agent's CA stops
+describing what it is actually talking to, so an intermediary that is
+compromised — or merely misconfigured — can answer for the agent without the
+device being able to detect it. And `clientIP` resolves every caller to the
+intermediary's address
+([`internal/httpapi/ratelimit.go:67-81`](../internal/httpapi/ratelimit.go)),
+collapsing both pre-authentication tiers into one budget shared by every
+device.
+
+An edge that verifies the client certificate on the agent's behalf and forwards
+the result as a signed header does not restore the boundary; it relocates the
+authority to that edge, whose configuration is not the operator's startup
+configuration and therefore not the property the agent is built on
+([`internal/config/config.go:3-9`](../internal/config/config.go)). The
+operator-facing version of this, including what does work, is
+[`README.md`](../README.md) under "Reaching it from outside".
+
 ### listening port → mTLS
 
 The TLS listener uses `VerifyClientCertIfGiven`, not
@@ -227,6 +254,11 @@ substance, because the two documents describe the same boundary:
   in front of it.** `install.sh`'s own closing message says so directly: "Do
   not expose this port to the open internet without a VPN or a firewall in
   front of it." ([`install.sh:622-623`](../install.sh)).
+- **A deployment that terminates TLS in front of the agent.** The agent
+  authenticates from the connection it terminates itself; an HTTPS reverse
+  proxy or tunnel ingress is not a supported configuration and is outside this
+  model, not a hardened case within it (see *intermediary → listening port*
+  above).
 - **Side-channel and timing attacks.**
 - **Denial of service beyond what the rate limiter is documented to bound.**
   The limiter's constants — a 50 req/s global unauthenticated backstop, a
@@ -249,7 +281,7 @@ substance, because the two documents describe the same boundary:
 > by nothing else. It is therefore present, in the clear, in every host backup
 > and every VPS snapshot of this directory.
 >
-> — [`README.md:212-221`](../README.md)
+> — [`README.md:331-340`](../README.md)
 
 The PRD records this as an accepted risk rather than a defect: "CA private key
 readable in host backups and VPS snapshots" is Likelihood M, mitigated by
@@ -264,7 +296,7 @@ only `s.cfg.PolicyMode`, the same value for every device
 The README states the same property from the operator's side: "The mode is
 fixed at startup and read once. No client can widen it... Changing the mode
 means changing `DEVMON_POLICY_MODE` on the host and restarting the agent."
-([`README.md:129-132`](../README.md)). A general operator-defined per-device
+([`README.md:203-206`](../README.md)). A general operator-defined per-device
 permission set is out of scope for this release
 ([`.claude/PRPs/prds/devmon-agent.prd.md:164`](../.claude/PRPs/prds/devmon-agent.prd.md)).
 

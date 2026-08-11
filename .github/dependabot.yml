@@ -1,0 +1,70 @@
+version: 2
+
+# Dependabot *alerts* are a repository setting and are already on. This file is
+# the other half: scheduled version updates, which are configuration and exist
+# only where they are committed. Without it nothing is bumped until a human
+# notices — which is how the Node 20 runtime deprecation came to be handled by
+# hand across all seven actions at once.
+#
+# target-branch is `dev` on every ecosystem because `main` is the release branch
+# and takes no direct PRs. The documented cost: GitHub does not raise automated
+# *security* PRs for an ecosystem whose config names a target branch. Alerts
+# still fire, and `govulncheck` on the release bar independently blocks a
+# vulnerable dependency from reaching `main`, so what is given up is the
+# convenience of the PR being opened for us — not the detection.
+updates:
+  # Go modules. The dependency set is small and deliberately so, which is what
+  # makes a weekly cadence appropriate rather than noisy.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+    labels:
+      - dependencies
+    # One PR for the routine bumps, individual PRs for majors — a major here is
+    # a Docker SDK or SQLite driver change worth reading on its own.
+    groups:
+      go-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions. This is the ecosystem with the clearest history of needing
+  # it: every action in ci.yml and release.yml was moved a major version at once
+  # ahead of GitHub's Node 20 removal, because nothing was watching them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
+
+  # The Dockerfile's two base images: the golang build stage and
+  # distroless/static. A base-image CVE is not visible to any Go gate here —
+  # govulncheck reads the module graph, not the layers underneath it.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+    labels:
+      - dependencies

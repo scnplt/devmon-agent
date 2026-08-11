@@ -13,6 +13,63 @@ changes nothing about the agent's behaviour, but this is an open repository and
 a contributor reading the history should not have to reconstruct why the build
 moved.
 
+## [0.1.2] - 2026-08-11
+
+The agent's behaviour is unchanged from 0.1.1 — nothing in `cmd/` or
+`internal/` moved. This release exists so the documentation and the published
+image carry the same version, and so the new API description ships alongside
+the agent it describes rather than trailing it.
+
+### Added
+
+- **`docs/openapi.yaml` — an OpenAPI 3.1 description of the whole `/v1`
+  surface.** The client ships independently of the agent, so the contract
+  between them needed to exist as something a machine can read: it generates
+  client types, and it diffs between releases, which is how a breaking change
+  gets noticed before a user finds it. Until now the only definition was README
+  prose and the end-to-end contract tests.
+
+  It also writes down the sharp edge nothing had documented: object references
+  are validated against `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` before reaching the
+  Engine, and the pattern excludes `:`. An image ID read from a list response is
+  digest-prefixed (`sha256:…`) and must have that prefix stripped before
+  `GET /v1/images/{id}` will accept it; a tagged reference is a 400, not a
+  lookup.
+
+### Changed
+
+- The client is described platform-neutrally throughout the documentation. The
+  agent has never had an Android-specific line in it, and saying "the Android
+  app" implied a constraint the API does not have.
+  ([#24](https://github.com/scnplt/devmon-agent/pull/24))
+
+### Fixed
+
+- The restore command in `docs/BACKUP.md` was wrong — a `tar` invocation that
+  could not have worked as written. Backup documentation is read exactly once,
+  by someone whose state directory is already gone, which is the worst possible
+  moment to find a typo.
+  ([#23](https://github.com/scnplt/devmon-agent/pull/23))
+
+### Internal
+
+- **`govulncheck` runs on the release bar.** `gosec` and `govulncheck` answer
+  different questions: one looks for faults in the code written here, the other
+  for known vulnerabilities in the dependencies and the Go toolchain underneath
+  it. Nothing in CI asked the second. Its single manual run, during the Phase 7
+  security review, reported GO-2026-5856 and produced the Go 1.26.5 bump — a
+  finding that arrived only because someone remembered to run it by hand.
+  `make vuln` is the local counterpart.
+- **Dependabot version updates** for `gomod`, `github-actions`, and `docker`.
+  Alerts were already on; version updates are configuration and exist only where
+  they are committed, so nothing was watching any of the three. The `docker`
+  ecosystem is the one no Go gate can cover: `govulncheck` reads the module
+  graph, not the base-image layers underneath it.
+- Documentation records why an HTTPS-terminating proxy cannot front the agent.
+  Three separate parts of the design read the TLS connection itself, so this is
+  not a configuration problem with a setting that recovers it.
+  ([#22](https://github.com/scnplt/devmon-agent/pull/22))
+
 ## [0.1.1] - 2026-08-11
 
 ### Fixed
@@ -80,5 +137,6 @@ First public release — the full surface.
   writing a `compose.yaml`, and waiting for the agent to answer.
 - **Multi-arch image.** `linux/amd64` and `linux/arm64`.
 
+[0.1.2]: https://github.com/scnplt/devmon-agent/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/scnplt/devmon-agent/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/scnplt/devmon-agent/releases/tag/v0.1.0

@@ -28,7 +28,7 @@ const (
 	// serverCertValidity is the CA/Browser Forum maximum for a leaf certificate.
 	// It is not a round number by accident: modern mobile TLS stacks reject
 	// longer-lived leaves outright, so a "convenient" 10-year self-signed cert
-	// would fail on the Android client with an opaque error.
+	// would fail on the client with an opaque error.
 	serverCertValidity = 398 * 24 * time.Hour
 
 	// certCommonName is cosmetic. Verification uses SANs; CN has been ignored by
@@ -44,7 +44,7 @@ const (
 const (
 	pemTypeCertificate = "CERTIFICATE"
 	// PKCS#8 rather than SEC1 ("EC PRIVATE KEY"): both work with Go, but PKCS#8
-	// is the portable form for the Android client.
+	// is the portable form across client platforms.
 	pemTypePrivateKey = "PRIVATE KEY"
 )
 

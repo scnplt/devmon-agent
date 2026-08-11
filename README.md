@@ -1,10 +1,10 @@
 # devmon-agent
 
-A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so an
-Android client can inspect and restart containers without SSH and without
+A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
+paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.1.1 — the full surface.** The agent is its own certificate
+**Status: 0.1.2 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -68,7 +68,7 @@ docker run -d --name devmon-agent \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.1.1
+  ghcr.io/scnplt/devmon-agent:0.1.2
 ```
 
 See `compose.example.yaml` for the equivalent Compose file and a reference for
@@ -78,7 +78,7 @@ Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.1.1","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.1.2","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 
@@ -99,6 +99,51 @@ expired" apart from "something else is answering on this port". Comparing the
 fingerprint your phone shows during pairing against the one you recorded at
 install is what makes the pairing exchange safe over an untrusted network. If
 you only ever read it from the server you are about to trust, it proves nothing.
+
+### Reaching it from outside
+
+The documented deployment is **direct inbound TLS**: the device's connection
+terminates in the agent process. That is not a default to be overridden — three
+separate parts of the design read the TLS connection itself, so anything that
+terminates TLS in front of the agent breaks them.
+
+This rules out Cloudflare Tunnel's HTTP/HTTPS ingress, and every reverse proxy
+run in HTTP mode: nginx `proxy_pass`, Caddy, Traefik, an ALB. Not as a
+configuration problem — there is no setting on either side that recovers what
+the termination discarded.
+
+| What breaks | Why | What you see |
+|---|---|---|
+| Device authentication | The client certificate belongs to the device's TLS connection. The proxy opens its own connection to the agent, which carries no certificate. | `401 client certificate required` on every guarded route |
+| CA pinning | The app pins the agent's own CA. The proxy presents its certificate, not the agent's. | The app fails during the handshake, before any HTTP response |
+| Rate limiting | Both pre-authentication tiers key on the peer address, which is now the proxy's for every caller. `X-Forwarded-For` is deliberately never consulted — see [Rate limiting](#rate-limiting). | `GET /v1/status` and `POST /v1/pair` share one budget across all devices |
+
+Cloudflare Access mTLS does not bridge this. It verifies the certificate at the
+edge and forwards the result as a signed header; the agent authenticates from
+`r.TLS.PeerCertificates` and reads no such header.
+
+**What does work** is anything that moves bytes without terminating TLS:
+
+- A VPN or overlay network — WireGuard, Tailscale — with the agent bound to the
+  private interface and no published port. Simplest, and the agent is then not
+  on the public internet at all.
+- Cloudflare Zero Trust with `warp-routing`, where the tunnel carries the
+  private network rather than proxying HTTP, and the device joins over WARP.
+- TCP passthrough: nginx `stream`, HAProxy in `tcp` mode, or Cloudflare
+  Spectrum.
+
+Two things to get right on any of them. `DEVMON_PUBLIC_ADDR` must contain the
+address the device actually dials, because it becomes the server certificate's
+SAN — a private IP behind a VPN belongs there just as much as a public hostname.
+And passthrough still hides the caller's address: the guarded tier is unaffected
+because it keys on the device, but the status and pair tiers will see only the
+forwarding host, so size those limits for the whole fleet rather than one phone.
+
+Putting the agent behind an HTTPS proxy would mean replacing its authentication
+model, not configuring it. That is a deliberate trade: request signing survives
+a proxy, but a terminating proxy also reads every container name and log line in
+the clear, and can alter a response the device has no way to verify. See
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 ---
 
@@ -246,6 +291,8 @@ asserted by a packet header. For the same reason `X-Forwarded-For` is never
 consulted: the documented deployment is direct inbound, and honouring a
 client-supplied forwarding header would let any caller mint a fresh limiter key
 per request, which is worse than no limiter because it looks like protection.
+What that costs you behind a forwarding host is
+[Reaching it from outside](#reaching-it-from-outside).
 
 Limits are startup configuration like everything else, so a client can never
 raise its own ceiling, and the values are advertised nowhere — telling a scanner
@@ -319,6 +366,12 @@ happens if `certs/` is lost.
 ---
 
 ## API
+
+The machine-readable form of everything below is
+[docs/openapi.yaml](docs/openapi.yaml) — OpenAPI 3.1, covering every route,
+payload, and failure body. Generate a client from it rather than hand-writing
+one, and diff it between releases to see what changed. This section keeps the
+reasoning; the spec keeps the shapes.
 
 | Route | Auth | Purpose |
 |---|---|---|
@@ -510,7 +563,7 @@ single `UPDATE`, and the next request the revoked device makes is already
 rejected.
 
 TLS 1.3 is the floor. Both peers are ours, so there is nothing to negotiate down
-to, and Android has supported it since API 29.
+to, and every current client TLS stack supports it.
 
 ---
 
@@ -536,7 +589,7 @@ a lost code is minted again rather than recovered.
 
 ### 2. Redeem it
 
-The Android app does this. To do it by hand:
+The client app does this. To do it by hand:
 
 ```bash
 openssl ecparam -name prime256v1 -genkey -noout -out device.key
@@ -758,11 +811,12 @@ branch a pull request targets:
 | `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
 | `image` | PRs into `main` only | `docker build` of the release image |
 | `gosec` | PRs into `main` only | `gosec ./...` |
+| `govulncheck` | PRs into `main` only | `govulncheck ./...` — known vulnerabilities in the dependencies and the Go toolchain, which `gosec` does not look for |
 | `shellcheck` | PRs into `main` only | `shellcheck -s sh install.sh` |
 | `e2e` | PRs into `main` only | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
 
 `dev` is the integration branch, so a PR into it gets fast feedback from `test`
-alone; the full release bar applies on the way into `main`. The four
+alone; the full release bar applies on the way into `main`. The six
 `main`-only jobs are gated on `github.base_ref` and are skipped, not queued, on
 a `dev` PR.
 
