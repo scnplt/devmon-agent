@@ -4,7 +4,7 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
 paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.1.2 — the full surface.** The agent is its own certificate
+**Status: 0.2.0 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -68,7 +68,7 @@ docker run -d --name devmon-agent \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.1.2
+  ghcr.io/scnplt/devmon-agent:0.2.0
 ```
 
 See `compose.example.yaml` for the equivalent Compose file and a reference for
@@ -78,7 +78,7 @@ Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.1.2","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.2.0","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 
@@ -283,6 +283,13 @@ written is stale before it is ever read. Copying the new ID and repeating never
 converges. A name survives recreation, so it is set once. `install.sh` and
 `compose.example.yaml` both pin `container_name` and set this variable for
 exactly this reason.
+
+**Upgrading from 0.1.x:** this variable was called `DEVMON_SELF_CONTAINER_ID`
+before 0.2.0 and the old name is no longer read. An installation that set it
+keeps working only as long as the agent detects its own container unaided; where
+it cannot, lifecycle goes back to answering 503 with the ERROR above. Rename the
+variable — and take the opportunity to give it the container's name rather than
+the ID that was there.
 
 A malformed value is a startup configuration error (exit 2), not a warning: this
 is the documented fix for the one case where lifecycle is unavailable, so a typo

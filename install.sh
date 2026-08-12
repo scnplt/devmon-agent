@@ -22,7 +22,7 @@ set -eu
 # They must stay in step with README.md and compose.example.yaml, which name
 # the same tag.
 IMAGE_REPO='ghcr.io/scnplt/devmon-agent'
-IMAGE_TAG='0.1.2'
+IMAGE_TAG='0.2.0'
 
 # NONROOT_UID is the UID the distroless/static:nonroot image runs as. The state
 # directory must be owned by it or startup fails at MkdirAll with "permission

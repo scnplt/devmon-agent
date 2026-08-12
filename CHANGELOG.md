@@ -13,6 +13,75 @@ changes nothing about the agent's behaviour, but this is an open repository and
 a contributor reading the history should not have to reconstruct why the build
 moved.
 
+## [0.2.0] - 2026-08-12
+
+The agent can now identify its own container by **name**, which is the first
+form of self-identification that survives a `docker compose up -d`. The knob
+that carries it was renamed in the process, and the old name is not read — see
+the breaking change below before upgrading.
+
+### Changed
+
+- **BREAKING: `DEVMON_SELF_CONTAINER_ID` is now `DEVMON_SELF_CONTAINER`, and it
+  accepts a container name.** The old variable name is no longer read and no
+  longer produces an error; an installation that still sets it is running as
+  though nothing were set at all. That is only fatal where automatic detection
+  fails — the exact case the variable existed for — and it fails the way it
+  always has: an ERROR at startup and 503 on the five lifecycle routes, with
+  reads, logs, pairing and status unaffected.
+
+  The rename is what the widened value forced. The variable took 12- or
+  64-character lowercase hex and nothing else, and an ID is the one form that
+  cannot be set correctly: adding the variable to a compose file changes the
+  container's spec, so the next `docker compose up -d` recreates the container
+  and mints a new ID, and the value just written is stale before it is first
+  read. Copying the new ID and repeating never converges. A name survives
+  recreation and is set once. Keeping `_ID` on a field whose right answer is a
+  name would have documented the trap rather than removed it.
+
+  To upgrade: rename the variable, and give it the container's name.
+
+  ```yaml
+  services:
+    devmon-agent:
+      container_name: devmon-agent
+      environment:
+        DEVMON_SELF_CONTAINER: devmon-agent   # was DEVMON_SELF_CONTAINER_ID: 3f2a91c4e5b8
+  ```
+
+  A value that names nothing the Engine recognises is now discarded with a WARN
+  and the agent falls back to its filesystem candidates, rather than being
+  carried forward as a certainty. A malformed value is still a startup error
+  (exit 2). ([#30](https://github.com/scnplt/devmon-agent/pull/30))
+
+- **`install.sh` and `compose.example.yaml` pin `container_name` and set
+  `DEVMON_SELF_CONTAINER`.** Self-identification was previously left to
+  detection on a fresh install, which is correct on most hosts and silently
+  wrong on the rest. Naming it makes a new installation deterministic instead
+  of merely likely.
+
+### Added
+
+- Documentation for reaching the agent from a host behind CGNAT — an overlay
+  network, a self-hosted hub on a VPS, IPv6, or asking the ISP. A
+  carrier-grade-NAT connection has no inbound port, which reads as
+  disqualifying, but the recommended answer never needs one: on an overlay both
+  ends dial outward. The section also states which shortcut does not work —
+  `tailscale serve` and `funnel` terminate TLS, and terminating TLS is the one
+  thing the agent's authentication cannot survive.
+  ([#31](https://github.com/scnplt/devmon-agent/pull/31),
+  [#34](https://github.com/scnplt/devmon-agent/pull/34))
+
+### Internal
+
+- Two flaky log-rotator tests fixed. One removed its temp directory while the
+  rotator goroutine was still writing under it; the other left compression on,
+  so a rotated file was rewritten asynchronously after the assertion had already
+  read the directory. Both failed only under CI timing, which is the kind of
+  failure that teaches a team to re-run the job instead of reading it.
+  ([#32](https://github.com/scnplt/devmon-agent/pull/32),
+  [#33](https://github.com/scnplt/devmon-agent/pull/33))
+
 ## [0.1.2] - 2026-08-11
 
 The agent's behaviour is unchanged from 0.1.1 — nothing in `cmd/` or
@@ -137,6 +206,7 @@ First public release — the full surface.
   writing a `compose.yaml`, and waiting for the agent to answer.
 - **Multi-arch image.** `linux/amd64` and `linux/arm64`.
 
+[0.2.0]: https://github.com/scnplt/devmon-agent/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/scnplt/devmon-agent/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/scnplt/devmon-agent/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/scnplt/devmon-agent/releases/tag/v0.1.0
