@@ -139,6 +139,37 @@ And passthrough still hides the caller's address: the guarded tier is unaffected
 because it keys on the device, but the status and pair tiers will see only the
 forwarding host, so size those limits for the whole fleet rather than one phone.
 
+### Behind CGNAT, with no port to forward
+
+A home server on a carrier-grade-NAT connection has no inbound port and no
+stable address. That sounds like it rules the agent out, but it does not: what
+CGNAT blocks is an *incoming* connection, and the first option above never needs
+one. On an overlay network both ends dial outward to meet each other, so no port
+is forwarded, no dynamic-DNS record is needed, and the agent is never on the
+public internet at all.
+
+- **An overlay network — Tailscale, NetBird, ZeroTier.** Nothing else to run.
+  Install it on the server and on the phone, then point `DEVMON_PUBLIC_ADDR` at
+  the overlay address the device dials. Do not use a feature that fronts the
+  agent with its own HTTPS listener — `tailscale serve` and `funnel` terminate
+  TLS, which is the case above.
+- **Your own hub on a cheap VPS**, if you would rather not depend on a hosted
+  coordination service: WireGuard, Headscale, or a raw TCP tunnel such as
+  `ssh -R`, `frp`, or `rathole`. Both ends dial the VPS. A TCP tunnel does put
+  the agent back on the public internet, so firewall it, and remember the two
+  pre-authentication rate-limit tiers will see one address for every caller.
+- **IPv6**, which is often overlooked: CGNAT is usually IPv4-only, and the same
+  connection may carry a routable IPv6 prefix. Then no tunnel is needed, only a
+  firewall rule and a DDNS AAAA record. Keep one of the options above as well,
+  because the phone will sometimes be on an IPv4-only network.
+- **Ask the ISP.** Many will hand out a public address on request or for a small
+  fee. The fewest moving parts of anything here.
+
+`DEVMON_PUBLIC_ADDR` accepts a list, so a home server can carry both its LAN
+address and its overlay name and be reachable either way. Adding an address
+later is safe: the server certificate is re-issued to cover it and the CA is
+untouched, so no device has to pair again.
+
 Putting the agent behind an HTTPS proxy would mean replacing its authentication
 model, not configuring it. That is a deliberate trade: request signing survives
 a proxy, but a terminating proxy also reads every container name and log line in
