@@ -38,8 +38,8 @@ func TestConfigFaultsReportedTogether(t *testing.T) {
 		a := harness.StartAgent(t, harness.AgentOptions{
 			PolicyMode: "bogus", // invalid DEVMON_POLICY_MODE
 			Env: map[string]string{
-				"DEVMON_LOG_MAX_AGE_DAYS":  "x",               // not an integer
-				"DEVMON_SELF_CONTAINER_ID": "not-a-hex-id!!!", // matches neither container ID pattern
+				"DEVMON_LOG_MAX_AGE_DAYS": "x",               // not an integer
+				"DEVMON_SELF_CONTAINER":   "not-a-hex-id!!!", // matches neither the name nor the ID grammar
 			},
 			ExpectFailure: true,
 		})
@@ -48,7 +48,7 @@ func TestConfigFaultsReportedTogether(t *testing.T) {
 		if exitCode != 2 {
 			t.Errorf("exit code = %d, want 2 (config fault)", exitCode)
 		}
-		for _, name := range []string{"DEVMON_POLICY_MODE", "DEVMON_LOG_MAX_AGE_DAYS", "DEVMON_SELF_CONTAINER_ID"} {
+		for _, name := range []string{"DEVMON_POLICY_MODE", "DEVMON_LOG_MAX_AGE_DAYS", "DEVMON_SELF_CONTAINER"} {
 			if !strings.Contains(stderr, name) {
 				t.Errorf("stderr does not name %s; stderr = %s", name, stderr)
 			}

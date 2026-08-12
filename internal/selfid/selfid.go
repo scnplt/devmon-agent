@@ -39,7 +39,7 @@ type Result struct {
 	// Candidates are container-ID candidates in priority order, longest and
 	// most trustworthy first. May be empty even when Containerized is true.
 	Candidates []string
-	// Override is the operator-supplied DEVMON_SELF_CONTAINER_ID, or "" when
+	// Override is the operator-supplied DEVMON_SELF_CONTAINER, or "" when
 	// none was set. Carried alongside Candidates (rather than requiring the
 	// caller to remember it separately) so internal/dockerx's confirmSelf can
 	// tell whether a skipped candidate was the operator's explicit choice and
@@ -49,7 +49,7 @@ type Result struct {
 
 // Detect gathers candidates. root is the filesystem root to read under ("/"
 // in production, a temp dir in tests). override, when non-empty, is the
-// operator's DEVMON_SELF_CONTAINER_ID and always sorts first. getenv is a
+// operator's DEVMON_SELF_CONTAINER and always sorts first. getenv is a
 // parameter rather than a call to os.Getenv so callers can inject a fake
 // environment in tests without t.Setenv, which forbids t.Parallel.
 func Detect(root, override string, getenv func(string) string) Result {
