@@ -141,7 +141,7 @@ func TestResolveSelfNoneConfirmed(t *testing.T) {
 }
 
 // TestConfirmSelfWarnsOnDiscardedOverride proves that an unrecognised
-// DEVMON_SELF_CONTAINER_ID override is not silently dropped: confirmSelf
+// DEVMON_SELF_CONTAINER override is not silently dropped: confirmSelf
 // still falls through to the next candidate and resolves it (control flow is
 // unchanged — Finding 1's security posture stays sound), but it now logs a
 // warning naming the discarded override. This covers the not-found case,
@@ -173,14 +173,14 @@ func TestConfirmSelfWarnsOnDiscardedOverride(t *testing.T) {
 		t.Fatalf("id = %q, want %q (resolution must still fall through to the next candidate)", got.id, wantID)
 	}
 	logText := logBuf.String()
-	if !strings.Contains(logText, "discarding DEVMON_SELF_CONTAINER_ID") {
+	if !strings.Contains(logText, "discarding DEVMON_SELF_CONTAINER") {
 		t.Errorf("log does not contain the discard warning, want it present: %s", logText)
 	}
 	if !strings.Contains(logText, override) {
 		t.Errorf("log does not name the discarded override %q: %s", override, logText)
 	}
-	if strings.Count(logText, "discarding DEVMON_SELF_CONTAINER_ID") != 1 {
-		t.Errorf("discard warning appeared %d times, want exactly 1", strings.Count(logText, "discarding DEVMON_SELF_CONTAINER_ID"))
+	if strings.Count(logText, "discarding DEVMON_SELF_CONTAINER") != 1 {
+		t.Errorf("discard warning appeared %d times, want exactly 1", strings.Count(logText, "discarding DEVMON_SELF_CONTAINER"))
 	}
 }
 
@@ -210,7 +210,7 @@ func TestConfirmSelfNoWarningWhenOverrideConfirmed(t *testing.T) {
 	if got.id != wantID {
 		t.Fatalf("id = %q, want %q", got.id, wantID)
 	}
-	if strings.Contains(logBuf.String(), "discarding DEVMON_SELF_CONTAINER_ID") {
+	if strings.Contains(logBuf.String(), "discarding DEVMON_SELF_CONTAINER") {
 		t.Errorf("log unexpectedly contains the discard warning: %s", logBuf.String())
 	}
 }

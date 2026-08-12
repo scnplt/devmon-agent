@@ -4,7 +4,7 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
 paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.1.2 — the full surface.** The agent is its own certificate
+**Status: 0.2.0 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -68,7 +68,7 @@ docker run -d --name devmon-agent \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.1.2
+  ghcr.io/scnplt/devmon-agent:0.2.0
 ```
 
 See `compose.example.yaml` for the equivalent Compose file and a reference for
@@ -78,7 +78,7 @@ Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.1.2","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.2.0","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 
@@ -139,6 +139,37 @@ And passthrough still hides the caller's address: the guarded tier is unaffected
 because it keys on the device, but the status and pair tiers will see only the
 forwarding host, so size those limits for the whole fleet rather than one phone.
 
+### Behind CGNAT, with no port to forward
+
+A home server on a carrier-grade-NAT connection has no inbound port and no
+stable address. That sounds like it rules the agent out, but it does not: what
+CGNAT blocks is an *incoming* connection, and the first option above never needs
+one. On an overlay network both ends dial outward to meet each other, so no port
+is forwarded, no dynamic-DNS record is needed, and the agent is never on the
+public internet at all.
+
+- **An overlay network — Tailscale, NetBird, ZeroTier.** Nothing else to run.
+  Install it on the server and wherever the client runs, then point
+  `DEVMON_PUBLIC_ADDR` at the overlay address the client dials. Do not use a feature that fronts the
+  agent with its own HTTPS listener — `tailscale serve` and `funnel` terminate
+  TLS, which is the case above.
+- **Your own hub on a cheap VPS**, if you would rather not depend on a hosted
+  coordination service: WireGuard, Headscale, or a raw TCP tunnel such as
+  `ssh -R`, `frp`, or `rathole`. Both ends dial the VPS. A TCP tunnel does put
+  the agent back on the public internet, so firewall it, and remember the two
+  pre-authentication rate-limit tiers will see one address for every caller.
+- **IPv6**, which is often overlooked: CGNAT is usually IPv4-only, and the same
+  connection may carry a routable IPv6 prefix. Then no tunnel is needed, only a
+  firewall rule and a DDNS AAAA record. Keep one of the options above as well,
+  because the client will sometimes be on an IPv4-only network.
+- **Ask the ISP.** Many will hand out a public address on request or for a small
+  fee. The fewest moving parts of anything here.
+
+`DEVMON_PUBLIC_ADDR` accepts a list, so a home server can carry both its LAN
+address and its overlay name and be reachable either way. Adding an address
+later is safe: the server certificate is re-issued to cover it and the CA is
+untouched, so no device has to pair again.
+
 Putting the agent behind an HTTPS proxy would mean replacing its authentication
 model, not configuring it. That is a deliberate trade: request signing survives
 a proxy, but a terminating proxy also reads every container name and log line in
@@ -162,7 +193,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_PUBLIC_ADDR` | comma list | *(required)* | ≥1 entry; each a DNS name or IP; used as server-certificate SANs |
 | `DEVMON_POLICY_MODE` | enum | `default` | One of `read-only`, `default`, `full` |
 | `DEVMON_DOCKER_HOST` | URL | `unix:///var/run/docker.sock` | Scheme `unix` or `tcp` |
-| `DEVMON_SELF_CONTAINER_ID` | hex | *(auto-detected)* | 12 or 64 lowercase hex characters |
+| `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | A Docker container name, or a 12/64-character hex ID |
 | `DEVMON_LOG_LEVEL` | enum | `info` | One of `debug`, `info`, `warn`, `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | int | `1` | ≥1 |
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
@@ -223,28 +254,49 @@ ID is refused identically. Its row in `GET /v1/containers` carries
 `"protected": true`; every other row carries `"protected": false`, so the app
 can grey out those controls and explain why.
 
-To identify itself, the agent checks `DEVMON_SELF_CONTAINER_ID` first, then
-looks for a container ID in `/proc/self/mountinfo` and `/proc/self/cgroup`, then
-falls back to `$HOSTNAME`. Each candidate is confirmed against the Engine before
-it is accepted, because no single source is reliable — cgroup v2 with a private
+To identify itself, the agent checks `DEVMON_SELF_CONTAINER` first, then looks
+for a container ID in `/proc/self/mountinfo` and `/proc/self/cgroup`, then falls
+back to `$HOSTNAME`. Each candidate is confirmed against the Engine before it is
+accepted, because no single source is reliable — cgroup v2 with a private
 namespace reports nothing useful, and `$HOSTNAME` stops being the container ID
 the moment anyone passes `--hostname`. The resolved ID is logged once at
 startup, so an operator can confirm it protected the right thing.
 
 If the agent is containerised but **no** candidate is confirmed, it logs an
-ERROR naming `DEVMON_SELF_CONTAINER_ID` and answers **503 on the five lifecycle
-routes only**. Reads, logs, pairing, and status keep working. The fix is one
-line — take the ID from `docker ps` and set it:
+ERROR naming `DEVMON_SELF_CONTAINER` and answers **503 on the five lifecycle
+routes only**. Reads, logs, pairing, and status keep working. The fix is to name
+the container and tell the agent that name:
 
 ```yaml
-environment:
-  DEVMON_SELF_CONTAINER_ID: "3f2a91c4e5b8"   # 12 or 64 lowercase hex chars
+services:
+  devmon-agent:
+    container_name: devmon-agent
+    environment:
+      DEVMON_SELF_CONTAINER: devmon-agent
 ```
+
+**Give it a name, not an ID.** The variable accepts either — the Engine resolves
+both — but an ID copied out of `docker ps` is worthless here. Adding a variable
+to a compose file changes the container's spec, so the next `docker compose up
+-d` recreates the container and mints a new ID, and the value that was just
+written is stale before it is ever read. Copying the new ID and repeating never
+converges. A name survives recreation, so it is set once. `install.sh` and
+`compose.example.yaml` both pin `container_name` and set this variable for
+exactly this reason.
+
+**Upgrading from 0.1.x:** this variable was called `DEVMON_SELF_CONTAINER_ID`
+before 0.2.0 and the old name is no longer read. An installation that set it
+keeps working only as long as the agent detects its own container unaided; where
+it cannot, lifecycle goes back to answering 503 with the ERROR above. Rename the
+variable — and take the opportunity to give it the container's name rather than
+the ID that was there.
 
 A malformed value is a startup configuration error (exit 2), not a warning: this
 is the documented fix for the one case where lifecycle is unavailable, so a typo
-must surface at start rather than when the button stays grey. Setting it to a
-valid but *wrong* ID protects that container instead — the override is trusted.
+must surface at start rather than when the button stays grey. A value that is
+well-formed but names some *other* container protects that one instead — the
+override is trusted. One that names nothing the Engine knows is discarded with a
+WARN, and the agent falls back to the filesystem candidates as if it were unset.
 
 Running the agent directly on the host rather than in a container is fine: there
 is no container to protect, so lifecycle works normally and the agent says so

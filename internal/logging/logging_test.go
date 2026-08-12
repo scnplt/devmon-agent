@@ -150,6 +150,13 @@ func TestRotateProducesBackup(t *testing.T) {
 		t.Fatalf("NewSink() unexpected error: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// lumberjack starts a background "mill" goroutine on the first rotation to
+	// compress rotated files, and Close never stops or waits for it. With
+	// compression on, that goroutine can still be writing a .gz into the logs
+	// dir after this test returns and t.TempDir removes it, which fails
+	// cleanup with "directory not empty". Compression itself isn't the
+	// behaviour under test here, so turn it off.
+	s.lj.Compress = false
 	s.Logger.Info("line before rotation")
 
 	// Act
@@ -205,14 +212,34 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 		t.Fatalf("NewSink() unexpected error: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// lumberjack starts a background "mill" goroutine on the first rotation to
+	// compress rotated files, and Close never stops or waits for it. With
+	// compression on and a 10ms tick, that goroutine can still be writing a
+	// .gz into the logs dir after t.TempDir starts removing it, which fails
+	// cleanup with "directory not empty". Compression itself isn't the
+	// behaviour under test here (the ticker driving rotation is), so turn it
+	// off.
+	s.lj.Compress = false
 	s.Logger.Info("seed line so there is something to rotate")
 
 	r := NewRotator(s.lj, 10*time.Millisecond, s.Logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	// The test returns as soon as it sees one rotated file, but the ticker
+	// keeps firing until it is told to stop. Cancelling is not enough: a tick
+	// already inside rotateOnce would create a file while t.TempDir is removing
+	// the directory, which fails the run with "directory not empty". Registered
+	// after the cleanups above so LIFO waits for the goroutine before either.
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	// Act
-	go func() { _ = r.Run(ctx) }()
+	go func() {
+		defer close(done)
+		_ = r.Run(ctx)
+	}()
 
 	// Assert
 	deadline := time.Now().Add(2 * time.Second)
