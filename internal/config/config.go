@@ -35,7 +35,7 @@ const (
 	envLogMaxTotalMB   = "DEVMON_LOG_MAX_TOTAL_MB"
 	envAuditMaxAgeDays = "DEVMON_AUDIT_MAX_AGE_DAYS"
 	envAuditMaxRows    = "DEVMON_AUDIT_MAX_ROWS"
-	envSelfContainerID = "DEVMON_SELF_CONTAINER_ID"
+	envSelfContainer   = "DEVMON_SELF_CONTAINER"
 
 	envRateStatusPerMin  = "DEVMON_RATE_STATUS_PER_MIN"
 	envRatePairPerMin    = "DEVMON_RATE_PAIR_PER_MIN"
@@ -87,14 +87,13 @@ const (
 
 const hoursPerDay = 24
 
-// shortContainerIDPattern and fullContainerIDPattern match Docker's short
-// (12-character) and full (64-character) hex container IDs. Docker always
-// lower-cases these; an uppercase value is treated as a typo rather than
-// silently normalized, so the operator finds out at start.
-var (
-	shortContainerIDPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
-	fullContainerIDPattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
-)
+// containerRefPattern matches Docker's container-name grammar: it must start
+// with an alphanumeric character and may continue with alphanumerics,
+// underscores, periods, or hyphens. This also admits 12- and 64-character hex
+// container IDs as a byproduct, which is intended — ContainerInspect resolves
+// both names and IDs through the same "name or ID" lookup, so one pattern
+// covers everything this knob accepts.
+var containerRefPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 
 // Config is the fully parsed, validated startup configuration.
 type Config struct {
@@ -113,10 +112,14 @@ type Config struct {
 	RatePairPerMin    int
 	RateGuardedPerSec int
 
-	// SelfContainerID is an operator-supplied override for the agent's own
-	// container ID, used when the agent cannot detect it automatically. Empty
-	// is the normal case; it has no default.
-	SelfContainerID string
+	// SelfContainer is an operator-supplied name-or-ID override for the
+	// agent's own container, used when the agent cannot detect it
+	// automatically. A container name (container_name: / --name) is the form
+	// worth using: docker compose up -d recreates the container whenever the
+	// compose file changes and mints a new ID, so an ID copied out of docker
+	// ps is stale on the very next boot, while a name survives recreation.
+	// Empty is the normal case; it has no default.
+	SelfContainer string
 }
 
 // Derived paths live here as methods so no other package ever concatenates a
@@ -172,7 +175,7 @@ func Load(getenv func(string) string) (Config, error) {
 		RatePairPerMin:    l.boundedInt(envRatePairPerMin, defaultRatePairPerMin, minRatePerX),
 		RateGuardedPerSec: l.boundedInt(envRateGuardedPerSec, defaultRateGuardedPerSec, minRatePerX),
 
-		SelfContainerID: l.selfContainerID(),
+		SelfContainer: l.selfContainer(),
 	}
 
 	l.checkRetentionOrder(cfg)
@@ -270,21 +273,23 @@ func (l *loader) dockerHost() string {
 	return host
 }
 
-// selfContainerID parses the optional self-identification override. Absent is
-// the normal path: the agent detects its own container ID by other means and
+// selfContainer parses the optional self-identification override. Absent is
+// the normal path: the agent detects its own container by other means and
 // this variable exists only as the documented fallback. A value that is
 // present but malformed is a startup configuration error, not a warning — an
 // operator who typos it must find out at start rather than when the delete
-// button stays greyed out.
-func (l *loader) selfContainerID() string {
-	id := l.raw(envSelfContainerID, "")
-	if id == "" {
+// button stays greyed out. The value is used exactly as given: Docker
+// container names are case-sensitive, so it is never lower-cased or
+// otherwise normalized here.
+func (l *loader) selfContainer() string {
+	ref := l.raw(envSelfContainer, "")
+	if ref == "" {
 		return ""
 	}
-	if !shortContainerIDPattern.MatchString(id) && !fullContainerIDPattern.MatchString(id) {
-		l.fail(envSelfContainerID, "%q is not a valid container ID (want 12 or 64 lowercase hex characters)", id)
+	if !containerRefPattern.MatchString(ref) {
+		l.fail(envSelfContainer, "%q is not a valid container name or ID (want a container name or a 12/64-character hex ID)", ref)
 	}
-	return id
+	return ref
 }
 
 func (l *loader) logLevel() slog.Level {
