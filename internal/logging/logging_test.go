@@ -209,10 +209,22 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 
 	r := NewRotator(s.lj, 10*time.Millisecond, s.Logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	// The test returns as soon as it sees one rotated file, but the ticker
+	// keeps firing until it is told to stop. Cancelling is not enough: a tick
+	// already inside rotateOnce would create a file while t.TempDir is removing
+	// the directory, which fails the run with "directory not empty". Registered
+	// after the cleanups above so LIFO waits for the goroutine before either.
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 
 	// Act
-	go func() { _ = r.Run(ctx) }()
+	go func() {
+		defer close(done)
+		_ = r.Run(ctx)
+	}()
 
 	// Assert
 	deadline := time.Now().Add(2 * time.Second)
