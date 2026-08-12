@@ -150,6 +150,13 @@ func TestRotateProducesBackup(t *testing.T) {
 		t.Fatalf("NewSink() unexpected error: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// lumberjack starts a background "mill" goroutine on the first rotation to
+	// compress rotated files, and Close never stops or waits for it. With
+	// compression on, that goroutine can still be writing a .gz into the logs
+	// dir after this test returns and t.TempDir removes it, which fails
+	// cleanup with "directory not empty". Compression itself isn't the
+	// behaviour under test here, so turn it off.
+	s.lj.Compress = false
 	s.Logger.Info("line before rotation")
 
 	// Act
@@ -205,6 +212,14 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 		t.Fatalf("NewSink() unexpected error: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// lumberjack starts a background "mill" goroutine on the first rotation to
+	// compress rotated files, and Close never stops or waits for it. With
+	// compression on and a 10ms tick, that goroutine can still be writing a
+	// .gz into the logs dir after t.TempDir starts removing it, which fails
+	// cleanup with "directory not empty". Compression itself isn't the
+	// behaviour under test here (the ticker driving rotation is), so turn it
+	// off.
+	s.lj.Compress = false
 	s.Logger.Info("seed line so there is something to rotate")
 
 	r := NewRotator(s.lj, 10*time.Millisecond, s.Logger)
