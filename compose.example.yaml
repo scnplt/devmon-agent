@@ -23,7 +23,12 @@
 
 services:
   devmon-agent:
-    image: ghcr.io/scnplt/devmon-agent:0.1.2
+    image: ghcr.io/scnplt/devmon-agent:0.2.0
+
+    # Pinned so the agent can name itself through DEVMON_SELF_CONTAINER below.
+    # Without it compose derives the container name from the project directory,
+    # which changes if this file moves.
+    container_name: devmon-agent
     restart: unless-stopped
 
     ports:
@@ -53,6 +58,13 @@ services:
       # read-only | default | full. Fixed at startup and immutable thereafter —
       # a client can never widen what is granted here.
       DEVMON_POLICY_MODE: default
+
+      # How the agent recognises its own container, so it can refuse to stop or
+      # delete itself. It can usually work this out unaided; setting it makes
+      # that deterministic. Give it the container's NAME, not its ID — an ID
+      # changes every time the container is recreated, which is exactly what
+      # `docker compose up -d` does after any edit to this file.
+      DEVMON_SELF_CONTAINER: devmon-agent
 
       DEVMON_LOG_MAX_AGE_DAYS: "1"
       DEVMON_LOG_MAX_TOTAL_MB: "64"

@@ -36,7 +36,7 @@ type Client struct {
 // is a fatal startup error rather than a degraded mode: an agent that starts and
 // then fails every request is harder to diagnose than one that refuses to start.
 //
-// selfOverride is the operator's DEVMON_SELF_CONTAINER_ID, or "" when unset.
+// selfOverride is the operator's DEVMON_SELF_CONTAINER, or "" when unset.
 // It is the escape hatch for the rare host where every filesystem-derived
 // candidate is wrong (D2).
 func New(ctx context.Context, host string, selfOverride string, log *slog.Logger) (*Client, error) {
