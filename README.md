@@ -149,8 +149,8 @@ is forwarded, no dynamic-DNS record is needed, and the agent is never on the
 public internet at all.
 
 - **An overlay network — Tailscale, NetBird, ZeroTier.** Nothing else to run.
-  Install it on the server and on the phone, then point `DEVMON_PUBLIC_ADDR` at
-  the overlay address the device dials. Do not use a feature that fronts the
+  Install it on the server and wherever the client runs, then point
+  `DEVMON_PUBLIC_ADDR` at the overlay address the client dials. Do not use a feature that fronts the
   agent with its own HTTPS listener — `tailscale serve` and `funnel` terminate
   TLS, which is the case above.
 - **Your own hub on a cheap VPS**, if you would rather not depend on a hosted
@@ -161,7 +161,7 @@ public internet at all.
 - **IPv6**, which is often overlooked: CGNAT is usually IPv4-only, and the same
   connection may carry a routable IPv6 prefix. Then no tunnel is needed, only a
   firewall rule and a DDNS AAAA record. Keep one of the options above as well,
-  because the phone will sometimes be on an IPv4-only network.
+  because the client will sometimes be on an IPv4-only network.
 - **Ask the ISP.** Many will hand out a public address on request or for a small
   fee. The fewest moving parts of anything here.
 
