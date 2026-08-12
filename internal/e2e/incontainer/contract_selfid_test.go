@@ -16,7 +16,7 @@ import (
 // This file covers the self-IDENTIFICATION half of Phase 5's outstanding
 // checklist (lifecycle-policy-and-audit.plan.md:1086-1126): proving the
 // agent finds its own container through /proc/self/mountinfo rather than
-// $HOSTNAME, that an explicit DEVMON_SELF_CONTAINER_ID override is honoured
+// $HOSTNAME, that an explicit DEVMON_SELF_CONTAINER override is honoured
 // ahead of that auto-detection, and that a well-formed but unresolvable
 // override degrades the agent's lifecycle routes rather than crashing it or
 // silently disabling self-protection.
@@ -92,10 +92,14 @@ func TestSelfIDResolvesWithOverriddenHostname(t *testing.T) {
 	}
 }
 
-// TestExplicitSelfIDOverrideIsHonoured proves DEVMON_SELF_CONTAINER_ID is
+// TestExplicitSelfIDOverrideIsHonoured proves DEVMON_SELF_CONTAINER is
 // honoured ahead of mountinfo/cgroup auto-detection, the moment the Engine
 // confirms it names a real container — WITHOUT needing the override to
-// equal the agent's OWN Docker-assigned ID.
+// equal the agent's OWN Docker-assigned ID. It covers both forms the knob
+// promises to accept: a container name and a full hex ID. The name form is
+// the one an operator can actually apply once and have survive
+// `docker compose up -d` recreation — see config.go's SelfContainer doc
+// comment for why an ID copied out of `docker ps` is stale on the next boot.
 //
 // That equality cannot be constructed at all: a container's ID does not
 // exist until client.ContainerCreate returns it, and the SAME call must
@@ -119,38 +123,43 @@ func TestExplicitSelfIDOverrideIsHonoured(t *testing.T) {
 
 	bystander := harness.StartFixture(t, e, harness.FixtureOptions{NameSuffix: "override-target"})
 	waitFixtureRunning(t, e, bystander)
+	bystanderRefs := refForms(t, e, bystander)
 
-	c := harness.RunAgentContainer(t, e, harness.ContainerAgentOptions{
-		Image:      selfIDImageTag,
-		PolicyMode: "full",
-		Env:        map[string]string{"DEVMON_SELF_CONTAINER_ID": bystander},
-	})
-	device := harness.PairDeviceInContainer(t, c, "explicit-override-device")
+	for _, form := range []string{"name", "full"} {
+		t.Run(form, func(t *testing.T) {
+			c := harness.RunAgentContainer(t, e, harness.ContainerAgentOptions{
+				Image:      selfIDImageTag,
+				PolicyMode: "full",
+				Env:        map[string]string{"DEVMON_SELF_CONTAINER": bystanderRefs[form]},
+			})
+			device := harness.PairDeviceInContainer(t, c, "explicit-override-device-"+form)
 
-	status, obj := device.JSON(t, http.MethodGet, "/v1/containers?all=true")
-	if status != http.StatusOK {
-		t.Fatalf("GET /v1/containers?all=true: status = %d, want %d", status, http.StatusOK)
-	}
-	items, ok := obj["items"].([]any)
-	if !ok {
-		t.Fatalf("GET /v1/containers?all=true: items is not a JSON array: %#v", obj["items"])
-	}
+			status, obj := device.JSON(t, http.MethodGet, "/v1/containers?all=true")
+			if status != http.StatusOK {
+				t.Fatalf("GET /v1/containers?all=true: status = %d, want %d", status, http.StatusOK)
+			}
+			items, ok := obj["items"].([]any)
+			if !ok {
+				t.Fatalf("GET /v1/containers?all=true: items is not a JSON array: %#v", obj["items"])
+			}
 
-	bystanderRow := findRowByID(t, items, bystander)
-	if protected, ok := bystanderRow["protected"]; !ok || protected != true {
-		t.Errorf("bystander row (the DEVMON_SELF_CONTAINER_ID target): protected = %v, want true — the override was not honoured", protected)
-	}
+			bystanderRow := findRowByID(t, items, bystander)
+			if protected, ok := bystanderRow["protected"]; !ok || protected != true {
+				t.Errorf("bystander row (the DEVMON_SELF_CONTAINER %s-form target): protected = %v, want true — the override was not honoured", form, protected)
+			}
 
-	agentRow := findRowByID(t, items, c.ID)
-	if protected, ok := agentRow["protected"]; !ok || protected != false {
-		t.Errorf("agent's own real row: protected = %v, want false — "+
-			"the agent self-identified as its OWN container despite the override naming a different one", protected)
+			agentRow := findRowByID(t, items, c.ID)
+			if protected, ok := agentRow["protected"]; !ok || protected != false {
+				t.Errorf("agent's own real row: protected = %v, want false — "+
+					"the agent self-identified as its OWN container despite the override naming a different one", protected)
+			}
+		})
 	}
 }
 
 // TestUnresolvableSelfIDFailsClosed is the case where the agent starts
 // successfully and DEGRADES, rather than refusing to start: a well-formed
-// but non-existent DEVMON_SELF_CONTAINER_ID is not a configuration error
+// but non-existent DEVMON_SELF_CONTAINER is not a configuration error
 // (internal/config/config.go validates only the override's SHAPE — the
 // Engine is not reachable yet at config-parse time). Per
 // internal/dockerx/lifecycle.go's resolveTarget, once the agent ends up
@@ -193,7 +202,7 @@ func TestUnresolvableSelfIDFallsBackToDetection(t *testing.T) {
 	c := harness.RunAgentContainer(t, e, harness.ContainerAgentOptions{
 		Image:      selfIDImageTag,
 		PolicyMode: "full",
-		Env:        map[string]string{"DEVMON_SELF_CONTAINER_ID": unresolvableSelfID},
+		Env:        map[string]string{"DEVMON_SELF_CONTAINER": unresolvableSelfID},
 	})
 	device := harness.PairDeviceInContainer(t, c, "unresolvable-override-device")
 
@@ -249,7 +258,7 @@ func TestUnresolvableSelfIDFallsBackToDetection(t *testing.T) {
 	// must log both the warning naming it as discarded and the override
 	// value itself, or an operator who pins the wrong container ID still
 	// gets no signal that their explicit configuration was thrown away.
-	if !strings.Contains(logText, "discarding DEVMON_SELF_CONTAINER_ID") {
+	if !strings.Contains(logText, "discarding DEVMON_SELF_CONTAINER") {
 		t.Errorf("agent.log does not contain the discard warning for the unrecognised override")
 	}
 	if !strings.Contains(logText, unresolvableSelfID) {

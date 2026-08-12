@@ -162,7 +162,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_PUBLIC_ADDR` | comma list | *(required)* | ≥1 entry; each a DNS name or IP; used as server-certificate SANs |
 | `DEVMON_POLICY_MODE` | enum | `default` | One of `read-only`, `default`, `full` |
 | `DEVMON_DOCKER_HOST` | URL | `unix:///var/run/docker.sock` | Scheme `unix` or `tcp` |
-| `DEVMON_SELF_CONTAINER_ID` | hex | *(auto-detected)* | 12 or 64 lowercase hex characters |
+| `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | A Docker container name, or a 12/64-character hex ID |
 | `DEVMON_LOG_LEVEL` | enum | `info` | One of `debug`, `info`, `warn`, `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | int | `1` | ≥1 |
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
@@ -223,28 +223,42 @@ ID is refused identically. Its row in `GET /v1/containers` carries
 `"protected": true`; every other row carries `"protected": false`, so the app
 can grey out those controls and explain why.
 
-To identify itself, the agent checks `DEVMON_SELF_CONTAINER_ID` first, then
-looks for a container ID in `/proc/self/mountinfo` and `/proc/self/cgroup`, then
-falls back to `$HOSTNAME`. Each candidate is confirmed against the Engine before
-it is accepted, because no single source is reliable — cgroup v2 with a private
+To identify itself, the agent checks `DEVMON_SELF_CONTAINER` first, then looks
+for a container ID in `/proc/self/mountinfo` and `/proc/self/cgroup`, then falls
+back to `$HOSTNAME`. Each candidate is confirmed against the Engine before it is
+accepted, because no single source is reliable — cgroup v2 with a private
 namespace reports nothing useful, and `$HOSTNAME` stops being the container ID
 the moment anyone passes `--hostname`. The resolved ID is logged once at
 startup, so an operator can confirm it protected the right thing.
 
 If the agent is containerised but **no** candidate is confirmed, it logs an
-ERROR naming `DEVMON_SELF_CONTAINER_ID` and answers **503 on the five lifecycle
-routes only**. Reads, logs, pairing, and status keep working. The fix is one
-line — take the ID from `docker ps` and set it:
+ERROR naming `DEVMON_SELF_CONTAINER` and answers **503 on the five lifecycle
+routes only**. Reads, logs, pairing, and status keep working. The fix is to name
+the container and tell the agent that name:
 
 ```yaml
-environment:
-  DEVMON_SELF_CONTAINER_ID: "3f2a91c4e5b8"   # 12 or 64 lowercase hex chars
+services:
+  devmon-agent:
+    container_name: devmon-agent
+    environment:
+      DEVMON_SELF_CONTAINER: devmon-agent
 ```
+
+**Give it a name, not an ID.** The variable accepts either — the Engine resolves
+both — but an ID copied out of `docker ps` is worthless here. Adding a variable
+to a compose file changes the container's spec, so the next `docker compose up
+-d` recreates the container and mints a new ID, and the value that was just
+written is stale before it is ever read. Copying the new ID and repeating never
+converges. A name survives recreation, so it is set once. `install.sh` and
+`compose.example.yaml` both pin `container_name` and set this variable for
+exactly this reason.
 
 A malformed value is a startup configuration error (exit 2), not a warning: this
 is the documented fix for the one case where lifecycle is unavailable, so a typo
-must surface at start rather than when the button stays grey. Setting it to a
-valid but *wrong* ID protects that container instead — the override is trusted.
+must surface at start rather than when the button stays grey. A value that is
+well-formed but names some *other* container protects that one instead — the
+override is trusted. One that names nothing the Engine knows is discarded with a
+WARN, and the agent falls back to the filesystem candidates as if it were unset.
 
 Running the agent directly on the host rather than in a container is fine: there
 is no container to protect, so lifecycle works normally and the agent says so

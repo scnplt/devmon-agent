@@ -472,6 +472,11 @@ compose_file_contents() {
 services:
   $SERVICE_NAME:
     image: $IMAGE_REPO:$IMAGE_TAG
+
+    # Pinned so the agent can name itself through DEVMON_SELF_CONTAINER below.
+    # Without it compose derives the container name from the project directory,
+    # which changes if this file moves.
+    container_name: $SERVICE_NAME
     restart: unless-stopped
 
     ports:
@@ -496,6 +501,12 @@ services:
     environment:
       DEVMON_PUBLIC_ADDR: "$PUBLIC_ADDR"
       DEVMON_POLICY_MODE: "$POLICY_MODE"
+
+      # How the agent recognises its own container, so it can refuse to stop
+      # or delete itself. It can usually work this out unaided, but the name
+      # pinned above is the one form that stays true across a recreate — an ID
+      # would be stale the next time this file changes.
+      DEVMON_SELF_CONTAINER: "$SERVICE_NAME"
 
       DEVMON_LOG_MAX_AGE_DAYS: "$LOG_MAX_AGE_DAYS"
       DEVMON_LOG_MAX_TOTAL_MB: "$LOG_MAX_TOTAL_MB"

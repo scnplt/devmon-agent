@@ -163,32 +163,41 @@ func TestLoadOverrides(t *testing.T) {
 			},
 		},
 		{
-			name: "self container id override, short form",
-			env:  map[string]string{envSelfContainerID: "0123456789ab"},
+			name: "self container override, name form",
+			env:  map[string]string{envSelfContainer: "devmon-agent"},
 			check: func(t *testing.T, cfg Config) {
-				if cfg.SelfContainerID != "0123456789ab" {
-					t.Errorf("SelfContainerID = %q, want 0123456789ab", cfg.SelfContainerID)
+				if cfg.SelfContainer != "devmon-agent" {
+					t.Errorf("SelfContainer = %q, want devmon-agent", cfg.SelfContainer)
 				}
 			},
 		},
 		{
-			name: "self container id override, full form",
+			name: "self container override, short hex ID form",
+			env:  map[string]string{envSelfContainer: "0123456789ab"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.SelfContainer != "0123456789ab" {
+					t.Errorf("SelfContainer = %q, want 0123456789ab", cfg.SelfContainer)
+				}
+			},
+		},
+		{
+			name: "self container override, full hex ID form",
 			env: map[string]string{
-				envSelfContainerID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				envSelfContainer: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			},
 			check: func(t *testing.T, cfg Config) {
 				want := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-				if cfg.SelfContainerID != want {
-					t.Errorf("SelfContainerID = %q, want %s", cfg.SelfContainerID, want)
+				if cfg.SelfContainer != want {
+					t.Errorf("SelfContainer = %q, want %s", cfg.SelfContainer, want)
 				}
 			},
 		},
 		{
-			name: "self container id absent is the normal path",
+			name: "self container absent is the normal path",
 			env:  map[string]string{},
 			check: func(t *testing.T, cfg Config) {
-				if cfg.SelfContainerID != "" {
-					t.Errorf("SelfContainerID = %q, want empty", cfg.SelfContainerID)
+				if cfg.SelfContainer != "" {
+					t.Errorf("SelfContainer = %q, want empty", cfg.SelfContainer)
 				}
 			},
 		},
@@ -267,19 +276,29 @@ func TestLoadRejections(t *testing.T) {
 			wantKey: envAuditMaxAgeDays,
 		},
 		{
-			name:    "self container id uppercase",
-			env:     map[string]string{envSelfContainerID: "0123456789AB"},
-			wantKey: envSelfContainerID,
+			name:    "self container leading hyphen",
+			env:     map[string]string{envSelfContainer: "-devmon-agent"},
+			wantKey: envSelfContainer,
 		},
 		{
-			name:    "self container id wrong length",
-			env:     map[string]string{envSelfContainerID: "0123456789abc"},
-			wantKey: envSelfContainerID,
+			name:    "self container leading period",
+			env:     map[string]string{envSelfContainer: ".devmon-agent"},
+			wantKey: envSelfContainer,
 		},
 		{
-			name:    "self container id non-hex",
-			env:     map[string]string{envSelfContainerID: "0123456789zz"},
-			wantKey: envSelfContainerID,
+			name:    "self container with embedded slash",
+			env:     map[string]string{envSelfContainer: "devmon/agent"},
+			wantKey: envSelfContainer,
+		},
+		{
+			name:    "self container with a space",
+			env:     map[string]string{envSelfContainer: "devmon agent"},
+			wantKey: envSelfContainer,
+		},
+		{
+			name:    "self container single character",
+			env:     map[string]string{envSelfContainer: "a"},
+			wantKey: envSelfContainer,
 		},
 		{"non-integer status rate", map[string]string{envRateStatusPerMin: "many"}, envRateStatusPerMin},
 		{"zero status rate", map[string]string{envRateStatusPerMin: "0"}, envRateStatusPerMin},

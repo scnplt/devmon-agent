@@ -823,7 +823,8 @@ components:
       description: |
         The agent is running in a container but could not determine which one,
         so it cannot enforce its own exclusion and every mutating route fails
-        closed. Resolvable on the host by setting `DEVMON_SELF_CONTAINER_ID`.
+        closed. Resolvable on the host by setting `DEVMON_SELF_CONTAINER` to
+        the agent container's name.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

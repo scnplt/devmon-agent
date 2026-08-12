@@ -69,12 +69,12 @@ func (c *Client) confirmSelf(ctx context.Context, detected selfid.Result) selfIn
 			}
 			// The override is the operator's explicit configuration, not a
 			// best-effort filesystem guess like mountinfo or cgroup — losing
-			// it silently leaves no signal that DEVMON_SELF_CONTAINER_ID was
+			// it silently leaves no signal that DEVMON_SELF_CONTAINER was
 			// discarded. detected.Override appears in Candidates at most
 			// once (selfid.Detect dedupes), so this fires exactly once.
 			if detected.Override != "" && candidate == detected.Override {
-				c.log.Warn("discarding DEVMON_SELF_CONTAINER_ID: the Engine does not recognise it",
-					slog.String("container_id", detected.Override),
+				c.log.Warn("discarding DEVMON_SELF_CONTAINER: the Engine does not recognise it",
+					slog.String("self_container", detected.Override),
 				)
 			}
 			continue
@@ -90,7 +90,7 @@ func (c *Client) confirmSelf(ctx context.Context, detected selfid.Result) selfIn
 
 	if detected.Containerized {
 		c.log.Error("agent could not identify its own container; " +
-			"set DEVMON_SELF_CONTAINER_ID to the agent's container ID and restart")
+			"set DEVMON_SELF_CONTAINER to the agent's container name or ID and restart")
 	} else {
 		c.log.Info("agent is not running in a container; self-exclusion is inapplicable")
 	}
