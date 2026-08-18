@@ -216,6 +216,71 @@ func TestHistoricalTailBounds(t *testing.T) {
 	}
 }
 
+// TestTailParamAcceptsInRangeValue is tailParam's missing positive case: a
+// value inside [minTail, maxTail] must pass through unchanged rather than
+// falling back to the route's default, which every other tailParam test
+// exercises.
+func TestTailParamAcceptsInRangeValue(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	var gotTail int
+	fd := &fakeDocker{
+		containerLogsFn: func(_ context.Context, _ string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error) {
+			gotTail = opts.Tail
+			return dockerx.ListResult[dockerx.LogLine]{}, nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs?tail=50", nil, serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotTail != 50 {
+		t.Errorf("tail = %d, want 50 (an in-range value passed through unchanged)", gotTail)
+	}
+}
+
+// TestSinceParamAcceptsValidTimestamp is sinceParam's missing positive case:
+// a well-formed RFC3339Nano value must reach the Engine's request options
+// unchanged, rather than falling into the error branch every other
+// sinceParam test exercises.
+func TestSinceParamAcceptsValidTimestamp(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const since = "2026-08-08T10:02:11.441Z"
+	var gotSince string
+	fd := &fakeDocker{
+		containerLogsFn: func(_ context.Context, _ string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error) {
+			gotSince = opts.Since
+			return dockerx.ListResult[dockerx.LogLine]{}, nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs?since="+since, nil, serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotSince != since {
+		t.Errorf("since = %q, want %q", gotSince, since)
+	}
+}
+
 // TestStreamHappyPathExactBytes pins the exact SSE wire bytes for a stream
 // that emits three lines and ends cleanly: the id:/event:/data: lines, the
 // blank-line terminator on every frame, and the response's Content-Type.

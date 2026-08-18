@@ -390,6 +390,44 @@ func TestToContainerDetailProtected(t *testing.T) {
 	}
 }
 
+// TestToMounts covers the projection of a container's mount points onto the
+// allowlisted DTO, including both a named volume and a bind mount, which
+// differ in whether Name is populated.
+func TestToMounts(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	mounts := []container.MountPoint{
+		{
+			Type:        "volume",
+			Name:        "myvolume",
+			Source:      "/var/lib/docker/volumes/myvolume/_data",
+			Destination: "/data",
+			RW:          true,
+		},
+		{
+			Type:        "bind",
+			Source:      "/host/config",
+			Destination: "/etc/config",
+			RW:          false,
+		},
+	}
+
+	// Act
+	got := toMounts(mounts)
+
+	// Assert
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Type != "volume" || got[0].Name != "myvolume" || !got[0].ReadWrite {
+		t.Errorf("got[0] = %+v, want a read-write named volume", got[0])
+	}
+	if got[1].Type != "bind" || got[1].Name != "" || got[1].ReadWrite {
+		t.Errorf("got[1] = %+v, want a read-only unnamed bind mount", got[1])
+	}
+}
+
 // TestListContainersTruncation covers the boundary and over-the-boundary
 // truncation cases without a live daemon: the mapping and truncation logic is
 // exercised directly rather than through the SDK.

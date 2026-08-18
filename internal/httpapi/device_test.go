@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,4 +287,182 @@ func mustMarshalRenew(t *testing.T) []byte {
 		t.Fatalf("marshal renew request: %v", err)
 	}
 	return body
+}
+
+// TestHandleRenewRejectsOversizedBody covers decodeRenewRequest's 413 branch:
+// a body past maxRenewBodyBytes must be rejected before it ever reaches
+// decodeCSRPEM.
+func TestHandleRenewRejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, ca := testServerForPairing(t)
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+	body, err := json.Marshal(renewRequest{CSRPEM: strings.Repeat("x", maxRenewBodyBytes+1024)})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", body, paired.serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleRenewRejectsMalformedJSON covers decodeRenewRequest's 400 branch
+// for a body that is not valid JSON at all.
+func TestHandleRenewRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, ca := testServerForPairing(t)
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+	req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", []byte("{not json"), paired.serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleRenewFailsClosedWithoutResolvedDevice is the mandatory GOTCHA for
+// handleRenew: it only ever runs behind requireDevice, but if it somehow runs
+// without a device resolved in the request context, it must fail closed with
+// 500 rather than panic or proceed with a zero-value device ID.
+func TestHandleRenewFailsClosedWithoutResolvedDevice(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, _, _ := testServerForPairing(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/device/renew", bytes.NewReader(mustMarshalRenew(t)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	// Act — the handler is called directly, bypassing requireDevice.
+	s.handleRenew(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestHandleUnpairSelfFailsClosedWithoutResolvedDevice mirrors
+// TestHandleRenewFailsClosedWithoutResolvedDevice for handleUnpairSelf.
+func TestHandleUnpairSelfFailsClosedWithoutResolvedDevice(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, _, _ := testServerForPairing(t)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/device/self", nil)
+	rec := httptest.NewRecorder()
+
+	// Act — the handler is called directly, bypassing requireDevice.
+	s.handleUnpairSelf(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestHandleUnpairSelfRevokeFailureIsInternalError drives handleUnpairSelf's
+// RevokeDevice error branch directly: a Device resolved in context whose ID
+// was never actually persisted makes RevokeDevice return
+// state.ErrDeviceNotFound, which handleUnpairSelf must map to 500 like any
+// other store failure — it never reaches this handler through the real
+// requireDevice path, since that middleware only ever injects a device it
+// just looked up successfully.
+func TestHandleUnpairSelfRevokeFailureIsInternalError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, _, _ := testServerForPairing(t)
+	ctx := deviceContext("device-never-persisted")
+	req := httptest.NewRequest(http.MethodDelete, "/v1/device/self", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.handleUnpairSelf(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRenewDeviceIssueCertFailureIsInternalError drives renewDevice's
+// IssueDeviceCert error branch: decodeCSRPEM only checks that the CSR is a
+// well-formed "CERTIFICATE REQUEST" PEM block, not the key algorithm inside
+// it, so an RSA-keyed CSR reaches renewDevice and fails at IssueDeviceCert
+// (which requires ECDSA P-256).
+func TestRenewDeviceIssueCertFailureIsInternalError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, ca := testServerForPairing(t)
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+	body, err := json.Marshal(renewRequest{CSRPEM: generateRSACSRPEM(t)})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", body, paired.serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	var respBody errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if respBody.Error != msgDeviceInternalError {
+		t.Errorf("error = %q, want %q", respBody.Error, msgDeviceInternalError)
+	}
+}
+
+// TestRenewDeviceRecordCertFailureReturnsError drives renewDevice's
+// RecordDeviceCert error branch directly, unlike the other renewDevice tests
+// above: a closed *state.Store makes IssueDeviceCert succeed (it never
+// touches the store) but RecordDeviceCert fail, which is otherwise
+// unreachable through the HTTP layer because requireDevice itself needs a
+// live store to authenticate the caller.
+func TestRenewDeviceRecordCertFailureReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, ca := testServerForPairing(t)
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+	csrDER, ok := decodeCSRPEM(generateCSRPEM(t, "irrelevant"))
+	if !ok {
+		t.Fatalf("decodeCSRPEM: failed to decode generated CSR")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Act
+	_, err := s.renewDevice(ctx, paired.device.ID, csrDER)
+
+	// Assert
+	if err == nil {
+		t.Fatal("renewDevice() error = nil, want a store failure after the store was closed")
+	}
 }

@@ -71,7 +71,7 @@ make vuln                                    # govulncheck; must report none
 
 go test ./internal/... -race                 # always -race
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 80%
+go tool cover -func=coverage.out | tail -1   # floor is 90%
 
 shellcheck -s sh install.sh
 ```
@@ -95,7 +95,7 @@ under test rather than the function:
 func TestLoadRejectsZeroRateGuardedPerSec(t *testing.T) { ... }
 ```
 
-Coverage over `./internal/...` must stay at or above 80%. The e2e suite does
+Coverage over `./internal/...` must stay at or above 90%. The e2e suite does
 not count toward that number — it asserts the wire contract, deliberately
 sharing no production code with what it tests.
 

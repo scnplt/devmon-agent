@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,6 +208,132 @@ func TestSSEKeepaliveStartsResponse(t *testing.T) {
 	}
 	if !rec.deadlineCleared {
 		t.Error("write deadline not cleared after a zero-event keepalive")
+	}
+}
+
+// writeFailingRecorder wraps deadlineAwareRecorder to make every Write call
+// after the response is committed fail, so a test can force sse.event's
+// "write sse frame: %w" and sse.keepalive's "write sse keepalive: %w" paths
+// without a real disconnected socket. WriteHeader is untouched, so start()
+// still succeeds and commits the response before the failure is observed.
+type writeFailingRecorder struct {
+	*deadlineAwareRecorder
+	failErr error
+}
+
+func (w *writeFailingRecorder) Write([]byte) (int, error) {
+	return 0, w.failErr
+}
+
+// TestSSEEventWriteFailure covers event's "write sse frame" error branch: the
+// frame body fails to reach the writer even though headers already committed
+// successfully.
+func TestSSEEventWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	rec := &writeFailingRecorder{
+		deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()},
+		failErr:               errors.New("write: broken pipe"),
+	}
+	sw := newSSEWriter(rec)
+
+	// Act
+	err := sw.event("1", sseEventLog, map[string]string{"line": "hello"})
+
+	// Assert
+	if err == nil {
+		t.Fatal("event() error = nil, want the write failure surfaced")
+	}
+}
+
+// TestSSEKeepaliveWriteFailure covers keepalive's "write sse keepalive" error
+// branch, the keepalive-specific counterpart to TestSSEEventWriteFailure.
+func TestSSEKeepaliveWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	rec := &writeFailingRecorder{
+		deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()},
+		failErr:               errors.New("write: broken pipe"),
+	}
+	sw := newSSEWriter(rec)
+
+	// Act
+	err := sw.keepalive()
+
+	// Assert
+	if err == nil {
+		t.Fatal("keepalive() error = nil, want the write failure surfaced")
+	}
+}
+
+// TestSSEEventMarshalFailure covers event's "marshal sse payload" error
+// branch: a channel value cannot be JSON-encoded, so the frame is never
+// written even though the response was already committed by the implicit
+// start().
+func TestSSEEventMarshalFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sw := newSSEWriter(rec)
+
+	// Act
+	err := sw.event("1", sseEventLog, make(chan int))
+
+	// Assert
+	if err == nil {
+		t.Fatal("event() error = nil, want a marshal failure for an unencodable payload")
+	}
+	if !sw.Started() {
+		t.Error("Started() = false after a marshal failure, want true: startLocked already committed the response")
+	}
+}
+
+// TestSSEKeepaliveUnflushableWriterFailsClosed is keepalive's counterpart to
+// TestSSEUnflushableWriter: a zero-event keepalive on a writer
+// http.ResponseController cannot reach must surface the startLocked failure
+// rather than silently continuing into a stream with no cleared write
+// deadline.
+func TestSSEKeepaliveUnflushableWriterFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	w := newPlainResponseWriter()
+	sw := newSSEWriter(w)
+
+	// Act
+	err := sw.keepalive()
+
+	// Assert
+	if err == nil {
+		t.Fatal("keepalive() error = nil, want a write-deadline failure")
+	}
+	if sw.Started() {
+		t.Error("Started() = true after a failed keepalive, want false")
+	}
+}
+
+// TestSSEEventUnflushableWriterFailsClosed is event's counterpart to
+// TestSSEUnflushableWriter, covering the startLocked failure reached through
+// event rather than through start directly.
+func TestSSEEventUnflushableWriterFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	w := newPlainResponseWriter()
+	sw := newSSEWriter(w)
+
+	// Act
+	err := sw.event("1", sseEventLog, map[string]string{"line": "hello"})
+
+	// Assert
+	if err == nil {
+		t.Fatal("event() error = nil, want a write-deadline failure")
+	}
+	if sw.Started() {
+		t.Error("Started() = true after a failed event, want false")
 	}
 }
 

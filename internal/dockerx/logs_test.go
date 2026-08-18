@@ -4,9 +4,11 @@ package dockerx
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -574,5 +576,320 @@ func TestContainerLogsItemsNeverNilWhenEmpty(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte(`"items":[]`)) {
 		t.Errorf("marshaled body = %s, want it to contain \"items\":[]", data)
+	}
+}
+
+// rawLogHandler answers a GET .../logs request with the raw bytes body,
+// mirroring the Engine's own log stream response: no JSON envelope, no
+// content-type negotiation, just the framed (or unframed, for TTY) bytes.
+func rawLogHandler(body []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}
+}
+
+// TestContainerUsesTTYEngineError covers containerUsesTTY's classify branch
+// through the real Engine call path: an inspect failure surfaces as a
+// classified error, not a panic or a silent false.
+func TestContainerUsesTTYEngineError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref): errorHandler(http.StatusInternalServerError),
+	})
+
+	// Act
+	_, err := c.containerUsesTTY(context.Background(), ref)
+
+	// Assert
+	if err == nil {
+		t.Fatal("containerUsesTTY() error = nil, want a classified engine failure")
+	}
+}
+
+// TestContainerUsesTTYInvalidRef covers the ValidateRef guard: an invalid ref
+// is rejected before any Engine call is made.
+func TestContainerUsesTTYInvalidRef(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	c, rec := newFakeEngine(t, map[string]http.HandlerFunc{})
+
+	// Act
+	_, err := c.containerUsesTTY(context.Background(), "../../info")
+
+	// Assert
+	if !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrInvalidRef)", err)
+	}
+	if got := rec.Count(); got != 0 {
+		t.Errorf("engine request count = %d, want 0", got)
+	}
+}
+
+// TestContainerLogsNonTTYHappyPath drives ContainerLogs end to end through a
+// fake Engine: inspect reports no TTY, the logs endpoint answers a
+// multiplexed stream, and the result is the demuxed lines.
+func TestContainerLogsNonTTYHappyPath(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	var buf bytes.Buffer
+	buf.Write(buildFrame(frameTypeStdout, []byte("out-1\n")))
+	buf.Write(buildFrame(frameTypeStderr, []byte("err-1\n")))
+	c, rec := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref):           jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+		"GET /containers/ref1/logs": rawLogHandler(buf.Bytes()),
+	})
+
+	// Act
+	got, err := c.ContainerLogs(context.Background(), ref, LogOptions{})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ContainerLogs() error = %v, want nil", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("len(Items) = %d, want 2", len(got.Items))
+	}
+	if got.Items[0].Line != "out-1" || got.Items[0].Stream != streamStdout {
+		t.Errorf("Items[0] = %+v, want stdout \"out-1\"", got.Items[0])
+	}
+	if got.Items[1].Line != "err-1" || got.Items[1].Stream != streamStderr {
+		t.Errorf("Items[1] = %+v, want stderr \"err-1\"", got.Items[1])
+	}
+	if got.Truncated {
+		t.Error("Truncated = true, want false")
+	}
+	if got := rec.Count(); got < 2 {
+		t.Errorf("engine request count = %d, want at least 2 (inspect + logs)", got)
+	}
+}
+
+// TestContainerLogsTTYHappyPath is TestContainerLogsNonTTYHappyPath's TTY
+// counterpart: the inspect result selects the unframed reader.
+func TestContainerLogsTTYHappyPath(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref):           jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: true}}),
+		"GET /containers/ref1/logs": rawLogHandler([]byte("hello tty\n")),
+	})
+
+	// Act
+	got, err := c.ContainerLogs(context.Background(), ref, LogOptions{})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ContainerLogs() error = %v, want nil", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Line != "hello tty" {
+		t.Fatalf("got = %+v, want a single line %q", got.Items, "hello tty")
+	}
+}
+
+// TestContainerLogsInvalidRef covers the ValidateRef guard reached through
+// containerUsesTTY: no Engine call is made at all.
+func TestContainerLogsInvalidRef(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	c, rec := newFakeEngine(t, map[string]http.HandlerFunc{})
+
+	// Act
+	_, err := c.ContainerLogs(context.Background(), "../../info", LogOptions{})
+
+	// Assert
+	if !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrInvalidRef)", err)
+	}
+	if got := rec.Count(); got != 0 {
+		t.Errorf("engine request count = %d, want 0", got)
+	}
+}
+
+// TestContainerLogsInvalidSince covers engineOptions' error path reached
+// through ContainerLogs, after containerUsesTTY has already succeeded.
+func TestContainerLogsInvalidSince(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref): jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+	})
+
+	// Act
+	_, err := c.ContainerLogs(context.Background(), ref, LogOptions{Since: "not-a-timestamp"})
+
+	// Assert
+	if err != ErrInvalidSince {
+		t.Fatalf("err = %v, want ErrInvalidSince", err)
+	}
+}
+
+// TestContainerLogsEngineError covers classify's path when the logs endpoint
+// itself fails, after a successful TTY inspect.
+func TestContainerLogsEngineError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref):           jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+		"GET /containers/ref1/logs": errorHandler(http.StatusInternalServerError),
+	})
+
+	// Act
+	_, err := c.ContainerLogs(context.Background(), ref, LogOptions{})
+
+	// Assert
+	if err == nil {
+		t.Fatal("ContainerLogs() error = nil, want a classified engine failure")
+	}
+}
+
+// TestContainerLogsDemuxError covers the demux failure path: a stream cut
+// mid-frame surfaces as a wrapped error, not a partial silent success.
+func TestContainerLogsDemuxError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	full := buildFrame(frameTypeStdout, []byte("cut short"))
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref):           jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+		"GET /containers/ref1/logs": rawLogHandler(full[:frameHeaderLen+2]),
+	})
+
+	// Act
+	_, err := c.ContainerLogs(context.Background(), ref, LogOptions{})
+
+	// Assert
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v, want wrapped io.ErrUnexpectedEOF", err)
+	}
+}
+
+// TestStreamContainerLogsHappyPath drives StreamContainerLogs end to end
+// through a fake Engine, proving it calls emit once per demuxed line.
+func TestStreamContainerLogsHappyPath(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	var buf bytes.Buffer
+	buf.Write(buildFrame(frameTypeStdout, []byte("line one\n")))
+	buf.Write(buildFrame(frameTypeStdout, []byte("line two\n")))
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref):           jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+		"GET /containers/ref1/logs": rawLogHandler(buf.Bytes()),
+	})
+
+	var got []LogLine
+	emit := func(l LogLine) error {
+		got = append(got, l)
+		return nil
+	}
+
+	// Act
+	err := c.StreamContainerLogs(context.Background(), ref, LogOptions{}, emit)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("StreamContainerLogs() error = %v, want nil", err)
+	}
+	if len(got) != 2 || got[0].Line != "line one" || got[1].Line != "line two" {
+		t.Fatalf("got = %+v, want two lines in order", got)
+	}
+}
+
+// TestStreamContainerLogsInvalidRef covers the ValidateRef guard reached
+// through containerUsesTTY.
+func TestStreamContainerLogsInvalidRef(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	c, rec := newFakeEngine(t, map[string]http.HandlerFunc{})
+
+	// Act
+	err := c.StreamContainerLogs(context.Background(), "../../info", LogOptions{}, func(LogLine) error { return nil })
+
+	// Assert
+	if !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrInvalidRef)", err)
+	}
+	if got := rec.Count(); got != 0 {
+		t.Errorf("engine request count = %d, want 0", got)
+	}
+}
+
+// TestStreamContainerLogsInvalidSince covers engineOptions' error path
+// reached through StreamContainerLogs.
+func TestStreamContainerLogsInvalidSince(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref): jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+	})
+
+	// Act
+	err := c.StreamContainerLogs(context.Background(), ref, LogOptions{Since: "garbage"}, func(LogLine) error { return nil })
+
+	// Assert
+	if err != ErrInvalidSince {
+		t.Fatalf("err = %v, want ErrInvalidSince", err)
+	}
+}
+
+// TestStreamContainerLogsEngineError covers classify's path when the logs
+// endpoint itself fails.
+func TestStreamContainerLogsEngineError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref):           jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+		"GET /containers/ref1/logs": errorHandler(http.StatusInternalServerError),
+	})
+
+	// Act
+	err := c.StreamContainerLogs(context.Background(), ref, LogOptions{}, func(LogLine) error { return nil })
+
+	// Assert
+	if err == nil {
+		t.Fatal("StreamContainerLogs() error = nil, want a classified engine failure")
+	}
+}
+
+// TestStreamContainerLogsContextCancelledBeforeInspect covers ctx cancelled
+// before the pre-stream inspect ever completes: the classified error
+// surfaces through StreamContainerLogs rather than hanging.
+func TestStreamContainerLogsContextCancelledBeforeInspect(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "ref1"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref): jsonHandler(http.StatusOK, container.InspectResponse{Config: &container.Config{Tty: false}}),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Act
+	err := c.StreamContainerLogs(ctx, ref, LogOptions{}, func(LogLine) error { return nil })
+
+	// Assert
+	if err == nil {
+		t.Fatal("StreamContainerLogs() error = nil, want a context-cancelled failure")
 	}
 }

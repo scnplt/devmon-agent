@@ -274,6 +274,30 @@ func TestToNetworkDetailWithContainers(t *testing.T) {
 	}
 }
 
+// TestToNetworkEndpointIPv6 covers the IPv6Address branch left untested by
+// TestToNetworkDetailWithContainers, proving toNetworkEndpoint guards
+// IPv4Address and IPv6Address independently rather than sharing one check.
+func TestToNetworkEndpointIPv6(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	ep := network.EndpointResource{
+		Name:        "api",
+		IPv6Address: netip.MustParsePrefix("fd00::2/64"),
+	}
+
+	// Act
+	got := toNetworkEndpoint("c1", ep)
+
+	// Assert
+	if got.IPv6Address != "fd00::2/64" {
+		t.Errorf("got.IPv6Address = %q, want fd00::2/64", got.IPv6Address)
+	}
+	if got.IPv4Address != "" {
+		t.Errorf("got.IPv4Address = %q, want empty for an unset netip.Prefix", got.IPv4Address)
+	}
+}
+
 // TestListNetworksTruncation covers the boundary and over-the-boundary
 // truncation cases without a live daemon.
 func TestListNetworksTruncation(t *testing.T) {
