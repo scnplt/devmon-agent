@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,6 +18,23 @@ import (
 	"github.com/scnplt/devmon-agent/internal/policy"
 	"github.com/scnplt/devmon-agent/internal/tlsconf"
 )
+
+// freeTCPAddr reserves a free TCP port by binding then immediately closing a
+// listener, so a test can start the real server on a known address rather
+// than the OS-assigned ":0" — needed here because the test dials the server
+// itself, which requires knowing the port in advance.
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve free port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("close port reservation: %v", err)
+	}
+	return addr
+}
 
 func testTLSConfig(t *testing.T) *tls.Config {
 	t.Helper()
@@ -197,6 +215,55 @@ func TestLogRoutePrecedence(t *testing.T) {
 			}
 			tc.verify(t, rec.Body.Bytes())
 		})
+	}
+}
+
+// TestRunReturnsShutdownError covers both shutdown's error branch and Run's
+// propagation of it: a connection stuck mid-request-headers counts as active
+// for http.Server.Shutdown's purposes, so Shutdown blocks until shutdown's
+// own fresh context expires after shutdownGrace and returns
+// context.DeadlineExceeded, which Run must surface rather than swallow.
+func TestRunReturnsShutdownError(t *testing.T) {
+	// Not t.Parallel(): this test deliberately holds a connection open for
+	// shutdownGrace (5s) so its background goroutines do not skew
+	// TestStreamGoroutineDoesNotLeak's before/after count if the two run
+	// concurrently.
+
+	// Arrange — a known port, since this test dials the server itself.
+	addr := freeTCPAddr(t)
+	s := runnableServer(t, addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() { done <- s.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond) // let the listener bind
+
+	// A raw TLS connection that completes the handshake but never finishes
+	// sending request headers: the server is still waiting to read, so the
+	// connection is active, not idle, when Shutdown is asked to drain it.
+	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // test-only, talks to our own ephemeral server
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: example\r\n")); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+
+	// Act
+	cancel()
+
+	// Assert
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run() = nil, want a shutdown-timeout error with a connection still active")
+		}
+		if !bodyContains(err.Error(), "shut down http server") {
+			t.Errorf("error %q does not identify the failing step", err)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("Run() did not return after shutdownGrace elapsed")
 	}
 }
 

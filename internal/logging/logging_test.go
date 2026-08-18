@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/natefinch/lumberjack.v2"
+
 	"github.com/scnplt/devmon-agent/internal/config"
 )
 
@@ -251,6 +253,85 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Error("ticker never produced a rotated file; age-based retention would never apply")
+}
+
+// TestRotateOnceLogsErrorWhenRotateFails covers rotateOnce's error branch.
+// lumberjack.Logger.Rotate opens its target with os.MkdirAll(dir, ...) first;
+// pointing Filename at a path whose parent segment is an ordinary file — not
+// a missing or extra directory — makes that MkdirAll fail identically on
+// every OS, unlike a directory-as-filename trick which some platforms
+// silently work around by renaming the directory itself. rotateOnce must log
+// the failure and return without panicking or attempting
+// tightenPermissions.
+func TestRotateOnceLogsErrorWhenRotateFails(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — blocker is a regular file, so the "sub" directory Rotate
+	// needs to create underneath it can never exist.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	lj := &lumberjack.Logger{Filename: filepath.Join(blocker, "sub", "agent.log")}
+	log, buf := newCapturingLoggerForTest()
+	r := NewRotator(lj, defaultRotateInterval, log)
+
+	// Act — must not panic.
+	r.rotateOnce()
+
+	// Assert
+	if !strings.Contains(buf.String(), "log rotation failed") {
+		t.Errorf("log = %q, want it to mention the rotation failure", buf.String())
+	}
+}
+
+// TestTightenPermissionsIgnoresMissingFile covers tightenPermissions'
+// success-on-absence branch: a rotated-away file that no longer exists is
+// not an error worth reporting, since the mode only matters for the file
+// that currently exists.
+func TestTightenPermissionsIgnoresMissingFile(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	missing := filepath.Join(t.TempDir(), "does-not-exist.log")
+
+	// Act
+	err := tightenPermissions(missing)
+
+	// Assert
+	if err != nil {
+		t.Errorf("tightenPermissions(%q) error = %v, want nil for a missing file", missing, err)
+	}
+}
+
+// TestTightenPermissionsWrapsRealChmodFailure covers tightenPermissions'
+// error branch: a path Chmod rejects for a reason other than "does not
+// exist" — here, an embedded NUL byte, which every OS's path syscalls reject
+// as invalid rather than as a missing file — must return a wrapped error
+// naming the path.
+func TestTightenPermissionsWrapsRealChmodFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	invalid := filepath.Join(t.TempDir(), "bad\x00name.log")
+
+	// Act
+	err := tightenPermissions(invalid)
+
+	// Assert
+	if err == nil {
+		t.Fatal("tightenPermissions() error = nil, want a failure for an invalid path")
+	}
+	if !strings.Contains(err.Error(), "tighten permissions") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+// newCapturingLoggerForTest mirrors the pattern used across this repo's other
+// packages: a text-handler logger writing into a buffer a test can inspect.
+func newCapturingLoggerForTest() (*slog.Logger, *strings.Builder) {
+	var buf strings.Builder
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
 func TestNewSinkFailsOnUncreatableLogsDir(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -56,6 +57,26 @@ func generateCSRPEM(t *testing.T, subjectCN string) string {
 	}, key)
 	if err != nil {
 		t.Fatalf("create CSR: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+}
+
+// generateRSACSRPEM builds a PEM-encoded PKCS#10 CSR from a fresh RSA key,
+// for tests that drive IssueDeviceCert's "not ECDSA" rejection: decodeCSRPEM
+// only checks the PEM block type, never the key algorithm inside it, so a
+// well-formed non-ECDSA CSR reaches pairDevice/renewDevice and fails one step
+// later than a malformed CSR does.
+func generateRSACSRPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA CSR key: %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "irrelevant"},
+	}, key)
+	if err != nil {
+		t.Fatalf("create RSA CSR: %v", err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
@@ -188,6 +209,74 @@ func TestHandlePairMalformedCSRFails(t *testing.T) {
 	}
 	if respBody.Error != msgPairFailed {
 		t.Errorf("error = %q, want the terse %q", respBody.Error, msgPairFailed)
+	}
+}
+
+// TestHandlePairIssueCertFailureIsInternalError drives pairDevice's
+// IssueDeviceCert error branch: an RSA-keyed CSR is a well-formed PEM
+// "CERTIFICATE REQUEST" block, so it passes decodeCSRPEM, but IssueDeviceCert
+// rejects it one step later for not being ECDSA. This is also the
+// deleteOrphanedDevice cleanup path: the device row CreateDevice made must
+// not survive a failed pairing attempt.
+func TestHandlePairIssueCertFailureIsInternalError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	body, err := json.Marshal(pairRequest{PairingCode: code, CSRPEM: generateRSACSRPEM(t)})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	var respBody errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if respBody.Error != msgPairInternalError {
+		t.Errorf("error = %q, want %q", respBody.Error, msgPairInternalError)
+	}
+
+	devices, err := st.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Errorf("devices = %+v after a failed pairing attempt, want the orphaned row deleted", devices)
+	}
+}
+
+// TestDeleteOrphanedDeviceLogsSecondFailure covers deleteOrphanedDevice's own
+// error branch: when the cleanup DELETE itself fails (here, because the store
+// is already closed), it must only log — never panic or propagate — since the
+// caller has already logged the original failure that triggered the cleanup.
+func TestDeleteOrphanedDeviceLogsSecondFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	log, buf := newCapturingLogger()
+	s, st, _ := testServerForPairing(t)
+	s.log = log
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Act — must not panic despite the closed store.
+	s.deleteOrphanedDevice(context.Background(), "orphan-id")
+
+	// Assert
+	if !bodyContains(buf.String(), "delete orphaned device after failed pairing") {
+		t.Errorf("log = %q, want it to mention the failed cleanup", buf.String())
 	}
 }
 
