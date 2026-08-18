@@ -337,6 +337,42 @@ func TestStopTimeoutIsExplicit(t *testing.T) {
 	}
 }
 
+// TestLifecycleMutatingCallFailure proves that when resolveTarget succeeds
+// but the Engine's mutating endpoint itself fails, every one of the five
+// lifecycle methods surfaces a classified error rather than a nil success.
+// This is what exercises the classify branch on the actual
+// ContainerRestart/ContainerKill/etc calls, not just resolveTarget's own
+// pre-flight inspect.
+func TestLifecycleMutatingCallFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, op := range lifecycleOps() {
+		t.Run(op.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			const ref = "some-container"
+			const resolvedID = "some00000000000000000000000000000000000000000000000000000000"
+			c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+				inspectRoute(ref):          jsonHandler(http.StatusOK, container.InspectResponse{ID: resolvedID}),
+				op.actionRoute(resolvedID): errorHandler(http.StatusInternalServerError),
+			})
+			c = withSelf(c, false, "")
+
+			// Act
+			err := op.call(c, context.Background(), ref)
+
+			// Assert
+			if err == nil {
+				t.Fatal("err = nil, want a classified engine failure from the mutating call")
+			}
+			if errors.Is(err, ErrNotFound) {
+				t.Errorf("err = %v, want NOT errors.Is(err, ErrNotFound)", err)
+			}
+		})
+	}
+}
+
 // TestLifecycleUnknownRef proves an unresolvable ref surfaces as ErrNotFound,
 // via the pre-flight inspect resolveTarget always performs.
 func TestLifecycleUnknownRef(t *testing.T) {
