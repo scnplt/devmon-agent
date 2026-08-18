@@ -10,8 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/time/rate"
+
 	"github.com/scnplt/devmon-agent/internal/config"
 	"github.com/scnplt/devmon-agent/internal/policy"
+	"github.com/scnplt/devmon-agent/internal/ratelimit"
 	"github.com/scnplt/devmon-agent/internal/state"
 )
 
@@ -278,6 +281,103 @@ func TestClientIP(t *testing.T) {
 				t.Errorf("clientIP(%q) = %q, want %q", tt.remoteAddr, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestTooManyRequestsFloorsRetryAfterAtOneSecond covers tooManyRequests'
+// floor branch: a limit whose reciprocal ceils to less than one second (here,
+// rate.Inf, whose reciprocal is 0) must still report a Retry-After of at
+// least one integer second, since RFC 9110 section 10.2.3 allows no
+// fractional seconds and 0 would tell a client to retry immediately.
+func TestTooManyRequestsFloorsRetryAfterAtOneSecond(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s := rateLimitedServer(t, 30, 5, 20)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.tooManyRequests(rec, rate.Inf)
+
+	// Assert
+	if got := rec.Header().Get(headerRetryAfter); got != "1" {
+		t.Errorf("Retry-After = %q, want %q", got, "1")
+	}
+}
+
+// TestWithGlobalUnauthLimitRejectsPastBurst drives withGlobalUnauthLimit's
+// own rejection branch directly: the shared bucket is process-wide, not
+// per-IP, so exhausting its burst denies the very next request regardless of
+// origin.
+func TestWithGlobalUnauthLimitRejectsPastBurst(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s := rateLimitedServer(t, 30, 5, 20)
+	var ran int
+	handler := s.withGlobalUnauthLimit(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ran++
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Act — drain the global burst.
+	var lastRec *httptest.ResponseRecorder
+	for i := 0; i < unauthGlobalBurst; i++ {
+		lastRec = httptest.NewRecorder()
+		handler.ServeHTTP(lastRec, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	}
+	if lastRec.Code != http.StatusOK {
+		t.Fatalf("request within burst status = %d, want 200", lastRec.Code)
+	}
+
+	// Act — one past the burst.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+
+	// Assert
+	assertRateLimitedResponse(t, rec)
+	if ran != unauthGlobalBurst {
+		t.Errorf("next ran %d times, want exactly %d", ran, unauthGlobalBurst)
+	}
+}
+
+// TestWithIPLimitFallsBackToGlobalWhenRegistryFull drives withIPLimit's
+// keyed==false branch directly: a registry already at its key cap with every
+// held bucket still actively throttled refuses to admit a new key, and the
+// request must fall back to the shared global bucket rather than being
+// admitted unconditionally or refused outright (D9).
+func TestWithIPLimitFallsBackToGlobalWhenRegistryFull(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a registry capped at one key, whose sole bucket starts full
+	// and refills at a negligible rate, so it is never swept as idle.
+	s := rateLimitedServer(t, 30, 5, 20)
+	reg := ratelimit.NewRegistry(rate.Limit(0.0001), 1, 1)
+	var ran int
+	handler := s.withIPLimit(reg, rate.Limit(1), "test-tier", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ran++
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Act — the first IP claims the registry's only key and its only token.
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, requestFromIP(http.MethodGet, "/v1/status", "203.0.113.30"))
+
+	// Act — a second, distinct IP cannot get its own bucket (registry full,
+	// and the first bucket is not idle), so it falls back to the global
+	// bucket, which still has room.
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, requestFromIP(http.MethodGet, "/v1/status", "203.0.113.31"))
+
+	// Assert
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first IP status = %d, want 200", firstRec.Code)
+	}
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second IP status = %d, want 200 (fallback to global bucket); body: %s", secondRec.Code, secondRec.Body.String())
+	}
+	if ran != 2 {
+		t.Errorf("next ran %d times, want 2", ran)
 	}
 }
 
