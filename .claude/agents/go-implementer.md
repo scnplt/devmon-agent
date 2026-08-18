@@ -36,7 +36,7 @@ go vet ./...
 go build ./...
 go test ./internal/... -race
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 80%
+go tool cover -func=coverage.out | tail -1   # floor is 90%
 ```
 
 If a gate fails, fix the implementation — not the test — unless the test itself encodes the
