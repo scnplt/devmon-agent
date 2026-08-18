@@ -10,3 +10,7 @@
 
 coverage.out
 .env
+
+# Review write-ups are ephemeral working notes. Reviews are delivered in the
+# session or as PR comments, never committed.
+.claude/PRPs/reviews/

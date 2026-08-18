@@ -201,8 +201,7 @@ branch.
 
 ## Review
 
-Reviewed before commit by the main session plus `ecc:go-reviewer` and `ecc:security-reviewer` —
-see [logs-and-live-streaming-review.md](../reviews/logs-and-live-streaming-review.md).
+Reviewed before commit by the main session plus `ecc:go-reviewer` and `ecc:security-reviewer`.
 
 Two HIGH findings, both in the keepalive path, and both fixed in the same working tree before
 anything was committed:

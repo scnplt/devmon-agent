@@ -79,7 +79,7 @@ relitigate them.
 | **D7** | Throttled calls are not audited | The device limiter sits *before* `withAudit` | An audited 429 lets an authenticated device inflate the audit table past `DEVMON_AUDIT_MAX_ROWS` and push real history out — the limiter would become the mechanism for destroying the record it exists beside. Throttling is logged at `Warn` to the operational log instead, which is size-bounded and disposable. |
 | **D8** | Global pre-auth backstop is a constant, not a knob | `unauthGlobalPerSec` / `unauthGlobalBurst` in code | Per-IP alone does not stop a distributed scan. Deriving the global ceiling from the per-IP variables would mean an operator who raises one silently removes the other, and a fourth env var is install surface the PRD explicitly asks not to add for values nobody tunes. |
 | **D9** | Registry overflow falls back to the global bucket | Not fail-open, not lockout | Refusing every new key when the table is full lets an attacker with N addresses lock the operator out. Ignoring the limiter when full is a trivial bypass. Falling back to the global bucket is strictly tighter than no limiter and still admits a legitimate operator whenever the global bucket has tokens. |
-| **D10** | Security review is a document, not just a pass | `.claude/PRPs/reviews/phase-7-security-review.md` | The PRD's success signal is "security review passes with no unmitigated high-severity finding". That is only checkable against a written, per-row verdict. Findings it raises are fixed inside this phase or explicitly accepted in writing. |
+| **D10** | Security review is a written, per-row verdict | Delivered in the session, not committed | The PRD's success signal is "security review passes with no unmitigated high-severity finding". That is only checkable against a per-row verdict, so the review is written out — but as a session deliverable or PR comment, not a repository artifact. Findings it raises are fixed inside this phase or explicitly accepted in writing. |
 | **D11** | The e2e suite is extended, not replaced | New `contract_ratelimit_test.go` in the existing host-binary group | Rate limiting is the only behaviour change in this phase that a client can observe. The Phase 6 rules still hold: `//go:build e2e`, assertions against the wire, no production code shared with the suite. |
 | **D12** | Version `0.1.0` is what ships | Tag `v0.1.0`, image `ghcr.io/scnplt/devmon-agent:0.1.0` | The README and `compose.example.yaml` already name that tag. Publishing anything else means editing both and the installer, for no gain. |
 
@@ -364,7 +364,6 @@ agent's own identifier and is already logged by `requireOp`.
 | `README.md` | UPDATE | Status, rate-limit config, installer, license, doc links |
 | `compose.example.yaml` | UPDATE | Rate variables; the Phase 6/7 installer note is now stale |
 | `Makefile` | UPDATE | `make shellcheck` |
-| `.claude/PRPs/reviews/phase-7-security-review.md` | CREATE | D10 |
 | `.claude/PRPs/prds/devmon-agent.prd.md` | UPDATE | Phase 7 row → complete, plan and report links |
 | `.claude/PRPs/reports/hardening-and-oss-release-report.md` | CREATE | Phase report |
 
@@ -656,7 +655,7 @@ mutually independent once 1-4 land and may be dispatched in parallel.
 
 ### Task 7: Security review against the PRD risk table
 
-- **ACTION**: Write `.claude/PRPs/reviews/phase-7-security-review.md`; fix what it finds.
+- **ACTION**: Write the security review out in-session (or as a PR comment); fix what it finds.
 - **IMPLEMENT**: One section per row of the PRD's Technical Risks table (fifteen rows,
   `devmon-agent.prd.md:176-192`). Each states: the risk, the mitigation **as implemented**
   with a `file:line` citation, the residual risk, and a verdict of `mitigated`,

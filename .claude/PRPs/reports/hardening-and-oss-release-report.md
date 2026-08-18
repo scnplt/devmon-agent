@@ -1,7 +1,6 @@
 # Implementation Report: Hardening & OSS Release (Phase 7)
 
 **Plan**: [hardening-and-oss-release.plan.md](../plans/completed/hardening-and-oss-release.plan.md)
-**Security review**: [phase-7-security-review.md](../reviews/phase-7-security-review.md)
 **Branch**: `feat/hardening-and-oss-release`
 **Baseline**: `14b1804` (Phase 6 merge) → `854251a`
 **Date**: 2026-08-10 – 2026-08-11
