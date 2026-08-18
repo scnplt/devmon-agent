@@ -215,6 +215,30 @@ func TestConfirmSelfNoWarningWhenOverrideConfirmed(t *testing.T) {
 	}
 }
 
+// TestResolveSelfUsesDetectedCandidates proves resolveSelf wires
+// selfid.Detect's real output into confirmSelf: the override always sorts
+// first (selfid.Detect's own guarantee), so a fake Engine that only
+// recognises the override proves resolveSelf reached the Engine with it,
+// regardless of whatever the host's real filesystem candidates are.
+func TestResolveSelfUsesDetectedCandidates(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const override = "resolve-self-override"
+	const wantID = "f555555555555555555555555555555555555555555555555555555555555f"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		"GET /containers/" + override + "/json": jsonHandler(http.StatusOK, containerInspectFixture(wantID)),
+	})
+
+	// Act
+	got := c.resolveSelf(context.Background(), override)
+
+	// Assert
+	if got.id != wantID {
+		t.Fatalf("id = %q, want %q", got.id, wantID)
+	}
+}
+
 // TestClientSelfAccessors proves SelfID, SelfKnown, and Containerized read
 // exactly the fields resolveSelf/confirmSelf populate.
 func TestClientSelfAccessors(t *testing.T) {

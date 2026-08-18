@@ -482,6 +482,31 @@ func TestNewServerAppliesHardeningTimeouts(t *testing.T) {
 	}
 }
 
+// TestWriteJSONLogsEncodeFailureWithoutPanicking covers writeJSON's encode-
+// failure branch: a channel value cannot be marshalled to JSON, and by the
+// time Encode fails the status line and headers are already committed, so
+// the only thing left to do is log it rather than try to correct the
+// response.
+func TestWriteJSONLogsEncodeFailureWithoutPanicking(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	log, buf := newCapturingLogger()
+	s := NewServer(config.Config{StateDir: t.TempDir(), ListenAddr: ":8443", PolicyMode: policy.ModeDefault}, nil, nil, nil, nil, log)
+	rec := httptest.NewRecorder()
+
+	// Act — must not panic despite the unencodable body.
+	s.writeJSON(rec, http.StatusOK, map[string]any{"bad": make(chan int)})
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (already committed before the encode failure)", rec.Code)
+	}
+	if !bodyContains(buf.String(), "write response") {
+		t.Errorf("log = %q, want it to mention the failed write", buf.String())
+	}
+}
+
 func keysOf(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

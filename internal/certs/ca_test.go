@@ -10,6 +10,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -416,6 +418,360 @@ func TestLoadOrCreateCARejectsWrongKeyType(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not an ECDSA key") {
 		t.Errorf("error %q does not identify the wrong key type", err)
+	}
+}
+
+func TestGenerateAndWriteCAFailsWhenKeyFileExists(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — ca.key already present makes writeExclusive's O_EXCL reject it.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, caKeyFile), []byte("stub"), 0o600); err != nil {
+		t.Fatalf("write stub CA key: %v", err)
+	}
+
+	// Act
+	err := generateAndWriteCA(dir, testLogger())
+
+	// Assert
+	if err == nil {
+		t.Fatal("generateAndWriteCA() error = nil, want a failure on the pre-existing key")
+	}
+	if !strings.Contains(err.Error(), "create "+caKeyFile) {
+		t.Errorf("error %q does not identify the failing file", err)
+	}
+}
+
+func TestGenerateAndWriteCACleansUpOrphanedKeyOnCertWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — ca.crt already present, so the key write succeeds and the
+	// certificate write fails, triggering the rollback.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, caCertFile), []byte("stub"), 0o644); err != nil {
+		t.Fatalf("write stub CA cert: %v", err)
+	}
+
+	// Act
+	err := generateAndWriteCA(dir, testLogger())
+
+	// Assert
+	if err == nil {
+		t.Fatal("generateAndWriteCA() error = nil, want a failure on the pre-existing certificate")
+	}
+	if !strings.Contains(err.Error(), "create "+caCertFile) {
+		t.Errorf("error %q does not identify the failing file", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, caKeyFile)); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("orphaned ca.key was not cleaned up after the failed certificate write: %v", statErr)
+	}
+}
+
+func TestLoadOrCreateCAFailsWhenDirIsFile(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a regular file occupying the path LoadOrCreateCA expects to
+	// MkdirAll into.
+	parent := t.TempDir()
+	blocked := filepath.Join(parent, "not-a-dir")
+	if err := os.WriteFile(blocked, []byte("stub"), 0o600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+
+	// Act
+	_, _, err := LoadOrCreateCA(blocked, testLogger())
+
+	// Assert
+	if err == nil {
+		t.Fatal("LoadOrCreateCA() error = nil, want a failure when dir is a file")
+	}
+	if !strings.Contains(err.Error(), "create certs dir") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestGenerateAndWriteCAFailsWhenDirMissing(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a nonexistent dir makes os.OpenRoot fail.
+	parent := t.TempDir()
+	missingDir := filepath.Join(parent, "does-not-exist")
+
+	// Act
+	err := generateAndWriteCA(missingDir, testLogger())
+
+	// Assert
+	if err == nil {
+		t.Fatal("generateAndWriteCA() error = nil, want a failure when dir is missing")
+	}
+	if !strings.Contains(err.Error(), "open certs dir") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCAFailsWhenDirMissing(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a nonexistent dir makes os.OpenRoot fail.
+	parent := t.TempDir()
+	missingDir := filepath.Join(parent, "does-not-exist")
+
+	// Act
+	_, err := loadCA(missingDir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure when dir is missing")
+	}
+	if !strings.Contains(err.Error(), "open certs dir") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCARejectsUnparsableCertDER(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a well-typed PEM certificate block wrapping DER bytes that
+	// do not parse as a certificate.
+	dir := t.TempDir()
+	if _, _, err := LoadOrCreateCA(dir, testLogger()); err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	garbageCertPEM := pem.EncodeToMemory(&pem.Block{Type: pemTypeCertificate, Bytes: []byte("not real DER")})
+	if err := os.WriteFile(filepath.Join(dir, caCertFile), garbageCertPEM, 0o644); err != nil {
+		t.Fatalf("overwrite CA cert: %v", err)
+	}
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure on unparsable certificate DER")
+	}
+	if !strings.Contains(err.Error(), "parse CA certificate") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCARejectsUnparsableKeyDER(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a well-typed PEM private key block wrapping DER bytes that
+	// do not parse as PKCS#8.
+	dir := t.TempDir()
+	if _, _, err := LoadOrCreateCA(dir, testLogger()); err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	garbageKeyPEM := pem.EncodeToMemory(&pem.Block{Type: pemTypePrivateKey, Bytes: []byte("not real DER")})
+	if err := os.WriteFile(filepath.Join(dir, caKeyFile), garbageKeyPEM, 0o600); err != nil {
+		t.Fatalf("overwrite CA key: %v", err)
+	}
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure on unparsable key DER")
+	}
+	if !strings.Contains(err.Error(), "parse CA key") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCAFailsWhenKeyFileMissing(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — only ca.crt is present, as loadCA would see it if called
+	// directly outside the keypairExists gate that normally protects it.
+	dir := t.TempDir()
+	if _, _, err := LoadOrCreateCA(dir, testLogger()); err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, caKeyFile)); err != nil {
+		t.Fatalf("remove ca.key: %v", err)
+	}
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure when ca.key is missing")
+	}
+	if !strings.Contains(err.Error(), "read CA key") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCAFailsWhenCertFileIsDirectory(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a directory in place of ca.crt opens successfully but fails
+	// on read, exercising readFileInRoot's io.ReadAll error branch.
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, caCertFile), 0o755); err != nil {
+		t.Fatalf("mkdir in place of ca.crt: %v", err)
+	}
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure when ca.crt is a directory")
+	}
+	if !strings.Contains(err.Error(), "read CA certificate") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCAFailsWhenCertFileMissing(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — an empty directory, so readFileInRoot's Open fails.
+	dir := t.TempDir()
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure when ca.crt is missing")
+	}
+	if !strings.Contains(err.Error(), "read CA certificate") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestLoadCARejectsCertPEMBlockWrongType(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a well-formed PEM block, but not a certificate.
+	dir := t.TempDir()
+	if _, _, err := LoadOrCreateCA(dir, testLogger()); err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	wrongTypePEM := pem.EncodeToMemory(&pem.Block{Type: "NOT A CERTIFICATE", Bytes: []byte("x")})
+	if err := os.WriteFile(filepath.Join(dir, caCertFile), wrongTypePEM, 0o644); err != nil {
+		t.Fatalf("overwrite CA cert: %v", err)
+	}
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure on a wrong-typed PEM block")
+	}
+	if !strings.Contains(err.Error(), "not a PEM certificate") {
+		t.Errorf("error %q does not identify the wrong PEM type", err)
+	}
+}
+
+func TestLoadCARejectsKeyPEMBlockWrongType(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a well-formed PEM block, but not a private key.
+	dir := t.TempDir()
+	if _, _, err := LoadOrCreateCA(dir, testLogger()); err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	wrongTypePEM := pem.EncodeToMemory(&pem.Block{Type: "NOT A KEY", Bytes: []byte("x")})
+	if err := os.WriteFile(filepath.Join(dir, caKeyFile), wrongTypePEM, 0o600); err != nil {
+		t.Fatalf("overwrite CA key: %v", err)
+	}
+
+	// Act
+	_, err := loadCA(dir)
+
+	// Assert
+	if err == nil {
+		t.Fatal("loadCA() error = nil, want a failure on a wrong-typed PEM block")
+	}
+	if !strings.Contains(err.Error(), "not a PEM private key") {
+		t.Errorf("error %q does not identify the wrong PEM type", err)
+	}
+}
+
+func TestIssueDeviceCertRejectsGarbageCSR(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	dir := t.TempDir()
+	ca, _, err := LoadOrCreateCA(dir, testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+
+	// Act
+	_, _, _, err = ca.IssueDeviceCert([]byte("not a CSR"), "dev-id", time.Now())
+
+	// Assert
+	if err == nil {
+		t.Fatal("IssueDeviceCert() error = nil, want a failure on an unparsable CSR")
+	}
+	if !strings.Contains(err.Error(), "parse device CSR") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestIssueDeviceCertFailsWhenSignerKeyDoesNotMatchCertificate(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a CA whose stored key does not match its stored certificate,
+	// as a corrupted certs directory might produce. x509.CreateCertificate
+	// refuses to sign with a mismatched key.
+	dir := t.TempDir()
+	real, _, err := LoadOrCreateCA(dir, testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate unrelated key: %v", err)
+	}
+	mismatched := &CA{cert: real.cert, key: otherKey}
+	csrDER := newDeviceCSR(t, "dev")
+
+	// Act
+	_, _, _, err = mismatched.IssueDeviceCert(csrDER, "dev-id", time.Now())
+
+	// Assert
+	if err == nil {
+		t.Fatal("IssueDeviceCert() error = nil, want a failure on a mismatched signer key")
+	}
+	if !strings.Contains(err.Error(), "create device certificate") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+func TestIssueServerCertFailsWhenSignerKeyDoesNotMatchCertificate(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — same mismatch as the device-cert case, exercised against
+	// IssueServerCert's own x509.CreateCertificate call.
+	dir := t.TempDir()
+	real, _, err := LoadOrCreateCA(dir, testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA() unexpected error: %v", err)
+	}
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate unrelated key: %v", err)
+	}
+	mismatched := &CA{cert: real.cert, key: otherKey}
+
+	// Act
+	_, _, err = mismatched.IssueServerCert([]string{"vps.example.com"}, time.Now())
+
+	// Assert
+	if err == nil {
+		t.Fatal("IssueServerCert() error = nil, want a failure on a mismatched signer key")
+	}
+	if !strings.Contains(err.Error(), "create server certificate") {
+		t.Errorf("error %q does not identify the failing step", err)
 	}
 }
 

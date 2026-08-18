@@ -74,7 +74,7 @@ go build ./...
 
 go test ./internal/... -race                        # tests (always -race)
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1          # floor is 80%
+go tool cover -func=coverage.out | tail -1          # floor is 90%
 
 gofmt -l .                                          # must print nothing
 go vet ./...
