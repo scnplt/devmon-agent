@@ -58,7 +58,7 @@ implementer agent can finish it in a single context.
 gofmt -l .                                   # must print nothing
 go vet ./...
 go test ./internal/... -race                 # always -race
-go tool cover -func=coverage.out | tail -1   # floor is 80%
+go tool cover -func=coverage.out | tail -1   # floor is 90%
 gosec ./...                                  # must be clean
 ```
 

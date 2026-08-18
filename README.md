@@ -776,7 +776,7 @@ cover up. Host access is the authority here, exactly as it is for revocation.
 make build          # -> bin/devmon-agent
 make test           # unit tests
 make test-race      # with -race (needs a C toolchain)
-make cover          # coverage; the floor is 80% over ./internal/...
+make cover          # coverage; the floor is 90% over ./internal/...
 make lint           # gofmt + go vet + golangci-lint when installed
 make sec            # gosec
 make image          # docker build
@@ -859,7 +859,7 @@ branch a pull request targets:
 
 | Job | Runs on | What it does |
 |---|---|---|
-| `test` | every PR, and pushes to `dev`/`main` | `go build ./...`, race tests over the whole module, and the 80% coverage floor over `./internal/...` |
+| `test` | every PR, and pushes to `dev`/`main` | `go build ./...`, race tests over the whole module, and the 90% coverage floor over `./internal/...` |
 | `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
 | `image` | PRs into `main` only | `docker build` of the release image |
 | `gosec` | PRs into `main` only | `gosec ./...` |
