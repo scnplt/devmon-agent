@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -85,6 +86,19 @@ type Server struct {
 
 	http *http.Server
 
+	// lifecycleCtx is the server's own lifetime signal, wired in as
+	// http.Server's BaseContext (issue #41). Every request's r.Context() is
+	// derived from it, so cancelling it cancels every in-flight request's
+	// context in one step — chiefly the one long-lived handler,
+	// handleStreamContainerLogs, whose stream is otherwise bounded only by
+	// the client. shutdown cancels it before calling http.Server.Shutdown,
+	// so a live stream unwinds immediately instead of pinning Shutdown for
+	// the full shutdownGrace window. Client-initiated disconnects are
+	// unaffected: they still cancel r.Context() the same way they always
+	// did, independent of this context's own lifetime.
+	lifecycleCtx    context.Context
+	cancelLifecycle context.CancelFunc
+
 	// afterCreateHook is a test seam, nil in production. pairDevice calls it,
 	// if set, right after CreateDevice succeeds and before RedeemPairingCode
 	// runs, so a test can land a context cancellation at that exact
@@ -105,6 +119,7 @@ type Server struct {
 // instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: make(chan struct{}, maxConcurrentStreams)}
+	s.lifecycleCtx, s.cancelLifecycle = context.WithCancel(context.Background())
 
 	s.unauthGlobal = rate.NewLimiter(rate.Limit(unauthGlobalPerSec), unauthGlobalBurst)
 
@@ -146,6 +161,11 @@ func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		// BaseContext parents every request's r.Context(): cancelling
+		// lifecycleCtx in shutdown cancels every in-flight request's context
+		// in one step, which is how a live SSE stream (issue #41) learns to
+		// stop without Shutdown having to wait out the client.
+		BaseContext: func(net.Listener) context.Context { return s.lifecycleCtx },
 	}
 	return s
 }
@@ -244,6 +264,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) shutdown() error {
 	s.log.Info("shutting down http server")
+
+	// Cancel the shared lifecycle context first, before asking http.Server
+	// to drain: it is the parent of every in-flight request's context, so
+	// this is what makes a live SSE log stream (issue #41) return promptly
+	// instead of pinning Shutdown below for the full shutdownGrace window.
+	s.cancelLifecycle()
 
 	// A fresh context: ctx is already cancelled, and Shutdown needs a live
 	// deadline to drain against.
