@@ -11,11 +11,13 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/scnplt/devmon-agent/internal/certs"
+	"github.com/scnplt/devmon-agent/internal/config"
 	"github.com/scnplt/devmon-agent/internal/policy"
 	"github.com/scnplt/devmon-agent/internal/state"
 )
@@ -277,6 +279,147 @@ func TestHandleUnpairSelfSucceedsUnderEveryPolicyMode(t *testing.T) {
 				t.Errorf("status = %d, want 204 under %s policy; body: %s", rec.Code, tt.mode, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestHandleRenewWritesAuditRowWithAuthenticatedDeviceID is issue #44's renew
+// coverage: a renewal must write exactly one audit row, carrying the
+// authenticated caller's own device ID (D15), never a path parameter (the
+// route has none).
+func TestHandleRenewWritesAuditRowWithAuthenticatedDeviceID(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, ca := testServerForPairing(t)
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+	req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", mustMarshalRenew(t), paired.serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	entries, err := st.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opRenew {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opRenew)
+	}
+	if entries[0].Outcome != state.OutcomeSuccess {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeSuccess)
+	}
+	if entries[0].DeviceID != paired.device.ID {
+		t.Errorf("device_id = %q, want the authenticated device's ID %q", entries[0].DeviceID, paired.device.ID)
+	}
+}
+
+// TestHandleUnpairSelfWritesAuditRowWithAuthenticatedDeviceID is issue #44's
+// self-revoke coverage: revoking one's own access is the highest-value
+// identity event, and must always leave an audit trail carrying the
+// authenticated caller's own device ID.
+func TestHandleUnpairSelfWritesAuditRowWithAuthenticatedDeviceID(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, ca := testServerForPairing(t)
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+	req := requestWithPeerSerial(http.MethodDelete, "/v1/device/self", nil, paired.serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", rec.Code, rec.Body.String())
+	}
+	entries, err := st.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opUnpairSelf {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opUnpairSelf)
+	}
+	if entries[0].Outcome != state.OutcomeSuccess {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeSuccess)
+	}
+	if entries[0].DeviceID != paired.device.ID {
+		t.Errorf("device_id = %q, want the authenticated device's ID %q", entries[0].DeviceID, paired.device.ID)
+	}
+}
+
+// TestHandleRenewRateLimitedWritesNoAuditRow proves D7's ordering holds for
+// the guarded identity routes too: withDeviceLimit sits inside requireDevice
+// but outside withIdentityAudit, so a throttled renewal must never write a
+// row.
+func TestHandleRenewRateLimitedWritesNoAuditRow(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a guarded tier of burst 2 (guardedPerSec 1 x
+	// guardedBurstMultiplier 2), so the third request in a row is throttled
+	// before withIdentityAudit ever runs.
+	dir := t.TempDir()
+	cfg := config.Config{
+		StateDir:          dir,
+		ListenAddr:        ":8443",
+		PolicyMode:        policy.ModeDefault,
+		RateGuardedPerSec: 1,
+	}
+	st, err := state.Open(context.Background(), filepath.Join(dir, "devmon.db"), testLogger())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ca, _, err := certs.LoadOrCreateCA(t.TempDir(), testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA: %v", err)
+	}
+	s := NewServer(cfg, st, ca, nil, nil, testLogger())
+	ctx := context.Background()
+	paired := pairDeviceForTest(t, ctx, st, ca, "Pixel 9")
+
+	// Act — drain the device's burst of 2 with successful renewals.
+	for i := 0; i < 2; i++ {
+		req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", mustMarshalRenew(t), paired.serial)
+		rec := httptest.NewRecorder()
+		s.routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("renewal %d status = %d, want 200; body: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rowsBeforeThrottle, err := st.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAudit before throttle: %v", err)
+	}
+
+	// Act — a third request, past the burst.
+	req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", mustMarshalRenew(t), paired.serial)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("third renewal status = %d, want 429", rec.Code)
+	}
+	rowsAfterThrottle, err := st.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAudit after throttle: %v", err)
+	}
+	if len(rowsAfterThrottle) != len(rowsBeforeThrottle) {
+		t.Errorf("audit rows after throttled request = %d, want unchanged from %d",
+			len(rowsAfterThrottle), len(rowsBeforeThrottle))
 	}
 }
 

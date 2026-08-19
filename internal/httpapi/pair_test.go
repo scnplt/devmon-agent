@@ -331,6 +331,170 @@ func TestPairDeviceRollbackSurvivesCanceledContext(t *testing.T) {
 	}
 }
 
+// testServerForPairingWithRate mirrors testServerForPairing but lets a test
+// set a deliberately tiny RatePairPerMin, for driving the pair rate limiter
+// to exhaustion without dozens of requests.
+func testServerForPairingWithRate(t *testing.T, pairPerMin int) (*Server, *state.Store, *certs.CA) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Config{
+		StateDir:       dir,
+		ListenAddr:     ":8443",
+		PolicyMode:     policy.ModeDefault,
+		RatePairPerMin: pairPerMin,
+	}
+	st, err := state.Open(context.Background(), filepath.Join(dir, "devmon.db"), testLogger())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ca, _, err := certs.LoadOrCreateCA(t.TempDir(), testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA: %v", err)
+	}
+	return NewServer(cfg, st, ca, nil, nil, testLogger()), st, ca
+}
+
+// TestHandlePairSuccessWritesAuditRowWithNewDeviceID is the pair-success half
+// of issue #44: the audit row for a successful pairing must carry the newly
+// created device's ID, learned only from the response — the request that
+// produced it never carried a client certificate.
+func TestHandlePairSuccessWritesAuditRowWithNewDeviceID(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	body, err := json.Marshal(pairRequest{
+		PairingCode: code,
+		CSRPEM:      generateCSRPEM(t, "irrelevant"),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp pairResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opPair {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opPair)
+	}
+	if entries[0].Outcome != state.OutcomeSuccess {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeSuccess)
+	}
+	if entries[0].DeviceID != resp.DeviceID {
+		t.Errorf("device_id = %q, want the newly created device's ID %q", entries[0].DeviceID, resp.DeviceID)
+	}
+}
+
+// TestHandlePairFailureWritesAuditRowWithEmptyDeviceID is the pair-failure
+// half of issue #44: an invalid pairing code writes a row with a failure
+// outcome and an empty device ID (no device was ever created), and the
+// submitted code must never appear in the row.
+func TestHandlePairFailureWritesAuditRowWithEmptyDeviceID(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	const badCode = "unknown-pairing-code"
+	body, err := json.Marshal(pairRequest{
+		PairingCode: badCode,
+		CSRPEM:      generateCSRPEM(t, "irrelevant"),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body: %s", rec.Code, rec.Body.String())
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opPair {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opPair)
+	}
+	if entries[0].DeviceID != "" {
+		t.Errorf("device_id = %q, want empty (pairing failed, no device created)", entries[0].DeviceID)
+	}
+	if entries[0].Outcome == state.OutcomeSuccess {
+		t.Error("outcome = success, want a failure outcome")
+	}
+	if strings.Contains(entries[0].Detail, badCode) {
+		t.Errorf("detail = %q, must never contain the submitted pairing code", entries[0].Detail)
+	}
+	if strings.Contains(entries[0].Target, badCode) {
+		t.Errorf("target = %q, must never contain the submitted pairing code", entries[0].Target)
+	}
+}
+
+// TestHandlePairRateLimitedWritesNoAuditRow is the D7-ordering regression
+// test for issue #44: a pair attempt refused by the per-IP pair limiter must
+// never reach withPairAudit, so it must write zero rows regardless of how
+// many attempts preceded it.
+func TestHandlePairRateLimitedWritesNoAuditRow(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a pair tier of burst 1, so the second request is refused by
+	// the limiter before withPairAudit ever runs.
+	s, st, _ := testServerForPairingWithRate(t, 1)
+	body, err := json.Marshal(pairRequest{PairingCode: "irrelevant", CSRPEM: "not a pem csr"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act — first request consumes the burst (and still fails pairing, but
+	// that is not what this test is about).
+	first := postPair(s, body)
+	if first.Code == http.StatusTooManyRequests {
+		t.Fatalf("first request status = 429, want the burst to admit it")
+	}
+
+	// Act — second request past the burst.
+	second := postPair(s, body)
+
+	// Assert
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want 429", second.Code)
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (only the first, non-throttled attempt)", len(entries))
+	}
+}
+
 func TestHandlePairOversizedBodyFails(t *testing.T) {
 	t.Parallel()
 

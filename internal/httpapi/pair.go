@@ -75,6 +75,9 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 
 	csrDER, ok := decodeCSRPEM(req.CSRPEM)
 	if !ok {
+		// state.OutcomeInvalid, never the submitted code or CSR bytes: the
+		// audit row must never carry key material or pairing codes.
+		setAuditOutcome(r.Context(), state.OutcomeInvalid, "malformed csr")
 		s.writeError(w, http.StatusUnauthorized, msgPairFailed)
 		return
 	}
@@ -82,14 +85,20 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.pairDevice(r.Context(), req.PairingCode, csrDER)
 	if err != nil {
 		if errors.Is(err, state.ErrPairingCodeInvalid) {
+			setAuditOutcome(r.Context(), state.OutcomeInvalid, "invalid or expired pairing code")
 			s.writeError(w, http.StatusUnauthorized, msgPairFailed)
 			return
 		}
 		s.log.Error("pair device", slog.Any("err", err))
+		setAuditOutcome(r.Context(), state.OutcomeInternalError, "")
 		s.writeError(w, http.StatusInternalServerError, msgPairInternalError)
 		return
 	}
 
+	// On success the audit row must carry the identity that pairing just
+	// granted (issue #44), which withPairAudit has no other way to learn —
+	// the request that produced it never carried a client certificate.
+	setAuditDeviceID(r.Context(), resp.DeviceID)
 	s.writeJSON(w, http.StatusCreated, resp)
 }
 
