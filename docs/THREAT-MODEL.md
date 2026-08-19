@@ -75,7 +75,7 @@ made it.
   logs, and the five mutating routes:
   [`internal/httpapi/server.go:149-208`](../internal/httpapi/server.go)
   (`routes`). It is read only through the host-side CLI
-  (`device audit list`), which is host access, not API access.
+  (`audit list`), which is host access, not API access.
 - Retention is enforced on a fixed interval, independent of request traffic:
   [`internal/state/pruner.go:11-14`](../internal/state/pruner.go) and
   [`internal/state/pruner.go:44-56`](../internal/state/pruner.go).
@@ -88,13 +88,12 @@ documented deployment.
 - `install.sh` mounts it `:ro`: "`:ro` does not prevent writes through the
   Docker API — the API is request/response over the socket — but it does
   prevent the socket file itself being replaced, and it states intent."
-  ([`install.sh:465-468`](../install.sh)).
+  ([`install.sh`, `compose_file_contents`](../install.sh)).
 - The agent talks to it through `github.com/moby/moby/client`, constructed
   once at startup from `DEVMON_DOCKER_HOST`:
   [`internal/dockerx/client.go:42-46`](../internal/dockerx/client.go).
 - The socket's GID is resolved from the host, not assumed, because it varies
-  per distribution: [`install.sh:371-390`](../install.sh)
-  (`resolve_socket_gid`).
+  per distribution: [`install.sh`, `resolve_socket_gid`](../install.sh).
 
 ---
 
@@ -252,7 +251,7 @@ substance, because the two documents describe the same boundary:
 - **An operator who exposes the port to the internet with no VPN or firewall
   in front of it.** `install.sh`'s own closing message says so directly: "Do
   not expose this port to the open internet without a VPN or a firewall in
-  front of it." ([`install.sh:622-623`](../install.sh)).
+  front of it." ([`install.sh`, `print_next_steps`](../install.sh)).
 - **A deployment that terminates TLS in front of the agent.** The agent
   authenticates from the connection it terminates itself; an HTTPS reverse
   proxy or tunnel ingress is not a supported configuration and is outside this
@@ -280,7 +279,7 @@ substance, because the two documents describe the same boundary:
 > by nothing else. It is therefore present, in the clear, in every host backup
 > and every VPS snapshot of this directory.
 >
-> — [`README.md:331-340`](../README.md)
+> — [`README.md`, `## State directory`](../README.md#state-directory)
 
 This is an accepted risk rather than a defect. A CA private key readable in
 host backups and VPS snapshots is judged medium likelihood and mitigated by
@@ -294,8 +293,8 @@ only `s.cfg.PolicyMode`, the same value for every device
 The README states the same property from the operator's side: "The mode is
 fixed at startup and read once. No client can widen it... Changing the mode
 means changing `DEVMON_POLICY_MODE` on the host and restarting the agent."
-([`README.md:203-206`](../README.md)). A general operator-defined per-device
-permission set is out of scope for this release.
+([`README.md`, `### Policy modes`](../README.md#policy-modes)). A general
+operator-defined per-device permission set is out of scope for this release.
 
 **Root-equivalent blast radius if the agent is compromised.** From
 `SECURITY.md`: "Anything that can drive its API can start, stop, and delete
