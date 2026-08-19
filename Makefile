@@ -116,10 +116,6 @@ e2e-container:
 e2e-endurance:
 	DEVMON_E2E_ENDURANCE=1 CGO_ENABLED=1 go test -tags e2e ./internal/e2e/api/... $(E2E_TESTFLAGS) -timeout 45m
 
-# `make lint` already covers the e2e files with gofmt, which ignores build tags.
-# go vet and golangci-lint do not, which is the only reason this target exists.
-# Do not fold `--build-tags e2e` into `lint`: it would pull the e2e packages into
-# every ordinary lint run and slow the fast dev-PR path for no benefit.
 # Removes containers a run that crashed hard enough to skip its own t.Cleanup
 # left behind. Deliberately an EXPLICIT operator action and never automatic:
 # the label matches every run's containers, so an implicit version could not
@@ -133,6 +129,10 @@ e2e-clean:
 		echo "no com.devmon.e2e containers to remove"; \
 	fi
 
+# `make lint` already covers the e2e files with gofmt, which ignores build tags.
+# go vet and golangci-lint do not, which is the only reason this target exists.
+# Do not fold `--build-tags e2e` into `lint`: it would pull the e2e packages into
+# every ordinary lint run and slow the fast dev-PR path for no benefit.
 e2e-lint:
 	go vet -tags e2e ./...
 	@if command -v golangci-lint >/dev/null 2>&1; then \

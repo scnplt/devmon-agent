@@ -287,7 +287,7 @@ func (l *loader) selfContainer() string {
 		return ""
 	}
 	if !containerRefPattern.MatchString(ref) {
-		l.fail(envSelfContainer, "%q is not a valid container name or ID (want a container name or a 12/64-character hex ID)", ref)
+		l.fail(envSelfContainer, "%q is not a valid container name or ID (want two or more characters matching [a-zA-Z0-9][a-zA-Z0-9_.-])", ref)
 	}
 	return ref
 }
