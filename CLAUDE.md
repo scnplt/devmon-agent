@@ -40,6 +40,13 @@ Rules:
 - In a `Workflow` script, set the tier explicitly per stage:
   `agent(prompt, {model: 'opus'})` for planning stages, `{model: 'sonnet'}` for
   implementation stages — a workflow agent otherwise inherits the Opus session model.
+- **If you delegate, you own collection.** Never end a turn while a spawned agent is still
+  running: a completed child cannot notify a parent whose turn has ended, so its result is
+  lost. Wait for it, verify its gate output, then report.
+
+Only two agents exist in this repository — `phase-planner` and `go-implementer`
+(`.claude/agents/`). Reviewers are invoked as `ecc:go-reviewer` and
+`ecc:security-reviewer`. Any other agent name is a mistake.
 
 ## Branching
 
@@ -119,6 +126,22 @@ covers. It does not become a file in the repository.
   "produce a review document to commit".
 - Reports (`.claude/PRPs/reports/*.md`) are still written — they record what a phase shipped,
   not what a reviewer said — but like the rest of `.claude/PRPs/` they stay local.
+
+## Rules files
+
+`CLAUDE.md` is the single authority on model routing, delegation, workflow, commit cadence,
+and the gate list. `.claude/rules/ecc/**` is trimmed to what this repository actually uses
+and covers **style and git only**:
+
+| File | Scope |
+|------|-------|
+| `common/coding-style.md` | KISS/DRY/YAGNI, file and function size, error handling |
+| `common/git-workflow.md` | Branching model, commit format, PR workflow |
+| `golang/coding-style.md` | Go formatting, interfaces, error wrapping, naming |
+
+Nothing under `.claude/rules/` may route work to an agent or pick a model. If a generic
+rule file reappears from an upstream ECC install and contradicts this file, this file wins
+— delete the contradiction rather than annotating it.
 
 ## Planning docs
 
