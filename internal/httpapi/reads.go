@@ -100,12 +100,17 @@ const (
 
 // writeDockerError maps a dockerx failure onto a status code. ErrInvalidRef
 // and ErrConflict are client mistakes (400, 409), ErrNotFound is an answer
-// (404), ErrSelfProtected and ErrSelfUnknown are the self-exclusion rule
-// refusing an operation (403, 503), and everything else is the Engine
-// failing upstream of us (502) — never 500, which must keep meaning "the
-// agent itself broke". r carries the in-flight audit entry (a no-op outside
-// a mutating route, via setAuditOutcome), so every failure path — including
-// the pre-existing not-found and invalid-ref branches — is recorded.
+// (404), ErrNotModified is a no-op success (204: the object was already in
+// the requested state, D9), ErrSelfProtected and ErrSelfUnknown are the
+// self-exclusion rule refusing an operation (403, 503), and everything else
+// is the Engine failing upstream of us (502) — never 500, which must keep
+// meaning "the agent itself broke". r carries the in-flight audit entry (a
+// no-op outside a mutating route, via setAuditOutcome), so every failure
+// path — including the pre-existing not-found and invalid-ref branches — is
+// recorded. The ErrNotModified branch deliberately leaves the audit outcome
+// untouched: withAudit seeds it as OutcomeSuccess, and a container already
+// in the requested state is success from the caller's viewpoint, not a
+// failure to record over.
 func (s *Server) writeDockerError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	switch {
 	case errors.Is(err, dockerx.ErrInvalidRef):
@@ -114,6 +119,8 @@ func (s *Server) writeDockerError(w http.ResponseWriter, r *http.Request, op str
 	case errors.Is(err, dockerx.ErrNotFound):
 		setAuditOutcome(r.Context(), state.OutcomeNotFound, "")
 		s.writeError(w, http.StatusNotFound, msgNotFound)
+	case errors.Is(err, dockerx.ErrNotModified):
+		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, dockerx.ErrSelfProtected):
 		setAuditOutcome(r.Context(), state.OutcomeDeniedSelf, "")
 		s.writeError(w, http.StatusForbidden, msgSelfProtected)

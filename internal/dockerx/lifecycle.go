@@ -48,7 +48,10 @@ func (c *Client) resolveTarget(ctx context.Context, ref string) (string, error) 
 // StartContainer starts a stopped container. Starting an already-running
 // container answers 304 from the Engine, which this SDK version treats as a
 // successful status and returns with a nil error — so D9's "already in the
-// requested state is success" holds here with no special case.
+// requested state is success" holds here with no special case. If a future
+// SDK version surfaces the 304 as an error instead, classify maps it to
+// ErrNotModified and httpapi.writeDockerError answers 204 for it too, so the
+// caller-visible behavior does not change either way.
 func (c *Client) StartContainer(ctx context.Context, ref string) error {
 	id, err := c.resolveTarget(ctx, ref)
 	if err != nil {
@@ -83,7 +86,8 @@ func (c *Client) RestartContainer(ctx context.Context, ref string) error {
 // StopContainer stops a running container, waiting up to stopGraceSeconds
 // for it to exit on its own before SIGKILL. Stopping an already-stopped
 // container answers 304, which returns nil for the same reason described on
-// StartContainer (D9).
+// StartContainer (D9), with the same ErrNotModified/204 fallback if that
+// SDK behavior ever changes.
 func (c *Client) StopContainer(ctx context.Context, ref string) error {
 	id, err := c.resolveTarget(ctx, ref)
 	if err != nil {
