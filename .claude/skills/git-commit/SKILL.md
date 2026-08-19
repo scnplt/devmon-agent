@@ -36,13 +36,18 @@ git branch --show-current
 
 ### 2. Branch check
 
-If the current branch is `main`, **stop and create a feature branch first**:
+If the current branch is `main` **or `dev`**, **stop and create a feature branch
+first**, cut from `dev`:
 
 ```bash
+git checkout dev && git pull
 git checkout -b <type>/<short-kebab-description>
 ```
 
-Never commit directly to `main`.
+Never commit directly to `main` or `dev`. Both are protected: `main` is
+production/release and `dev` is the integration branch, and every change reaches
+either one through a PR. See `CLAUDE.md` and
+`.claude/rules/ecc/common/git-workflow.md` for the full branching model.
 
 ### 3. Quality gates (Go project)
 
