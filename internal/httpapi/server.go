@@ -84,6 +84,14 @@ type Server struct {
 	deviceLimit  rate.Limit
 
 	http *http.Server
+
+	// afterCreateHook is a test seam, nil in production. pairDevice calls it,
+	// if set, right after CreateDevice succeeds and before RedeemPairingCode
+	// runs, so a test can land a context cancellation at that exact
+	// interleaving point deterministically instead of racing the SQL layer
+	// with a sleep. It is per-instance rather than a package-level var so
+	// setting it on one test's Server can never race a different test's.
+	afterCreateHook func()
 }
 
 // NewServer wires the API. tlsCfg carries the server certificate, so the
