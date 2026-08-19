@@ -101,6 +101,7 @@ func TestLifecycleRoutesStatusMatrix(t *testing.T) {
 		wantBody   string // empty means no error body is expected (success)
 	}{
 		{name: "success", err: nil, wantStatus: http.StatusNoContent},
+		{name: "not modified", err: dockerx.ErrNotModified, wantStatus: http.StatusNoContent},
 		{name: "self protected", err: dockerx.ErrSelfProtected, wantStatus: http.StatusForbidden, wantBody: msgSelfProtected},
 		{name: "self unknown", err: dockerx.ErrSelfUnknown, wantStatus: http.StatusServiceUnavailable, wantBody: msgSelfUnknown},
 		{name: "conflict", err: dockerx.ErrConflict, wantStatus: http.StatusConflict, wantBody: msgContainerConflict},
@@ -144,6 +145,48 @@ func TestLifecycleRoutesStatusMatrix(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestLifecycleNotModifiedAuditsAsSuccess asserts that a dockerx.ErrNotModified
+// result — the Engine reporting the object was already in the requested
+// state — audits as OutcomeSuccess with no engine_error row, matching the
+// 204 status writeDockerError answers for it (issue #45, D9). Without this
+// branch the error would fall into writeDockerError's default case, turning
+// "start an already-running container" into a false Engine-outage report.
+func TestLifecycleNotModifiedAuditsAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range lifecycleRouteCases() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			fd := &fakeDocker{}
+			route.setErr(fd, dockerx.ErrNotModified)
+			s, st := testServerWithDocker(t, policy.ModeFull, fd)
+			serial := pairDeviceForRead(t, st)
+			handler := auditChain(s, route.op, route.handler(s))
+			rec := httptest.NewRecorder()
+
+			// Act
+			handler.ServeHTTP(rec, lifecycleRequest(serial))
+
+			// Assert
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			entries, err := st.ListAudit(context.Background(), 10)
+			if err != nil {
+				t.Fatalf("ListAudit: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("len(entries) = %d, want 1", len(entries))
+			}
+			if entries[0].Outcome != state.OutcomeSuccess {
+				t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeSuccess)
+			}
+		})
 	}
 }
 
