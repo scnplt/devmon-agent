@@ -397,7 +397,7 @@ func TestPrunerRunTicksAndPrunes(t *testing.T) {
 
 	// Act
 	go func() { done <- p.Run(runCtx) }()
-	time.Sleep(50 * time.Millisecond) // let at least one tick fire
+	waitForRowCount(t, s, 0, 2*time.Second) // wait for the first tick to prune the stale row
 	cancel()
 
 	// Assert
