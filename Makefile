@@ -67,12 +67,23 @@ fmt:
 	gofmt -l -w .
 
 # golangci-lint is preferred. When it is not installed, `go vet` is the minimum bar.
+# Both steps need an explicit conditional: `gofmt -l` exits 0 even when it lists
+# files, so the output is what fails (the same guard ci.yml uses), and
+# `A && B || C` would print the not-installed message on B's failure rather
+# than A's, swallowing every golangci-lint finding.
 lint:
-	gofmt -l .
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "these files are not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 	go vet ./...
-	@command -v golangci-lint >/dev/null 2>&1 \
-		&& golangci-lint run ./... \
-		|| echo "golangci-lint not installed — go vet was the only lint run"
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not installed — go vet was the only lint run"; \
+	fi
 
 sec:
 	gosec ./...
@@ -124,9 +135,11 @@ e2e-clean:
 
 e2e-lint:
 	go vet -tags e2e ./...
-	@command -v golangci-lint >/dev/null 2>&1 \
-		&& golangci-lint run --build-tags e2e $(E2E_PKGS) \
-		|| echo "golangci-lint not installed — go vet -tags e2e was the only lint run"
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run --build-tags e2e $(E2E_PKGS); \
+	else \
+		echo "golangci-lint not installed — go vet -tags e2e was the only lint run"; \
+	fi
 
 image:
 	docker build \
