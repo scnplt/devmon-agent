@@ -5,6 +5,7 @@ package dockerx
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
@@ -159,9 +160,11 @@ func toContainerDetail(r container.InspectResponse, selfID string) ContainerDeta
 
 // zeroTimeToEmpty returns "" for a container timestamp that Docker reports as
 // the zero RFC3339Nano value ("0001-01-01T00:00:00Z"), which means "never
-// started" or "never finished" rather than an actual timestamp.
+// started" or "never finished" rather than an actual timestamp. A prefix
+// check is used instead of a fixed-length slice so short strings (which a
+// misbehaving Engine, proxy, or fake can return) never panic.
 func zeroTimeToEmpty(ts string) string {
-	if ts == "" || ts[:4] == "0001" {
+	if ts == "" || strings.HasPrefix(ts, "0001") {
 		return ""
 	}
 	return ts

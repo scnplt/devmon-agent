@@ -42,6 +42,13 @@ const (
 
 	// pemTypeCertificateRequest is the PEM block type of a PKCS#10 CSR.
 	pemTypeCertificateRequest = "CERTIFICATE REQUEST"
+
+	// deleteOrphanedDeviceTimeout bounds the detached rollback DELETE issued
+	// by deleteOrphanedDevice. The call deliberately runs on a context
+	// independent of the request (see its doc comment), so this timeout — not
+	// the request's own deadline — is what stops a wedged database from
+	// hanging the handler goroutine forever.
+	deleteOrphanedDeviceTimeout = 5 * time.Second
 )
 
 type pairRequest struct {
@@ -122,32 +129,44 @@ func decodeCSRPEM(csrPEM string) ([]byte, bool) {
 // never actually spent, so the deletion is bookkeeping rather than a
 // rollback of a granted credential, but it is identical either way from the
 // caller's point of view: no orphan device row survives.
+//
+// The rollback (deleteOrphanedDevice) never uses ctx. A client that aborts
+// the connection right after CreateDevice commits makes every remaining call
+// in this function fail on a context that is already dying — including the
+// DELETE meant to undo the orphan the abort just created, which would
+// otherwise leave a permanent "pending" row behind on every such abort. The
+// rollback therefore runs on a context detached from the request, the same
+// reason withAudit writes on context.Background() (audit.go): the cleanup
+// must outlive the request that triggered it.
 func (s *Server) pairDevice(ctx context.Context, code string, csrDER []byte) (pairResponse, error) {
 	device, err := s.st.CreateDevice(ctx, pendingDeviceName)
 	if err != nil {
 		return pairResponse{}, fmt.Errorf("create device for pairing: %w", err)
 	}
+	if s.afterCreateHook != nil {
+		s.afterCreateHook()
+	}
 
 	deviceName, err := s.st.RedeemPairingCode(ctx, code, device.ID)
 	if err != nil {
-		s.deleteOrphanedDevice(ctx, device.ID)
+		s.deleteOrphanedDevice(device.ID)
 		return pairResponse{}, fmt.Errorf("redeem pairing code: %w", err)
 	}
 
 	if err := s.st.RenameDevice(ctx, device.ID, deviceName); err != nil {
-		s.deleteOrphanedDevice(ctx, device.ID)
+		s.deleteOrphanedDevice(device.ID)
 		return pairResponse{}, fmt.Errorf("rename paired device: %w", err)
 	}
 
 	now := time.Now()
 	certPEM, serial, notAfter, err := s.ca.IssueDeviceCert(csrDER, device.ID, now)
 	if err != nil {
-		s.deleteOrphanedDevice(ctx, device.ID)
+		s.deleteOrphanedDevice(device.ID)
 		return pairResponse{}, fmt.Errorf("issue device certificate: %w", err)
 	}
 
 	if err := s.st.RecordDeviceCert(ctx, device.ID, serial, now, notAfter); err != nil {
-		s.deleteOrphanedDevice(ctx, device.ID)
+		s.deleteOrphanedDevice(device.ID)
 		return pairResponse{}, fmt.Errorf("record device certificate: %w", err)
 	}
 
@@ -162,7 +181,14 @@ func (s *Server) pairDevice(ctx context.Context, code string, csrDER []byte) (pa
 // deleteOrphanedDevice removes a device row left behind by a failed pairing
 // attempt. The original failure is logged by the caller; this logs only a
 // second failure, if the cleanup itself does not succeed.
-func (s *Server) deleteOrphanedDevice(ctx context.Context, deviceID string) {
+//
+// It takes no context: it always runs detached from the request (see the
+// pairDevice doc comment), bounded by deleteOrphanedDeviceTimeout instead of
+// whatever deadline the request happened to carry.
+func (s *Server) deleteOrphanedDevice(deviceID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), deleteOrphanedDeviceTimeout)
+	defer cancel()
+
 	if err := s.st.DeleteDevice(ctx, deviceID); err != nil {
 		s.log.Error("delete orphaned device after failed pairing",
 			slog.String("device_id", deviceID),
