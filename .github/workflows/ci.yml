@@ -10,8 +10,13 @@ name: CI
 on:
   pull_request:
     branches: [dev, main]
+  # Push runs only on main. dev's ruleset enforces up-to-date branches
+  # (strict status checks), so the PR run already tested the exact tree the
+  # merge produces — a dev push run would repeat it. main's ruleset is not
+  # strict, so the post-merge tree can differ from what the PR tested; this
+  # push run is the safety net for that gap.
   push:
-    branches: [dev, main]
+    branches: [main]
 
 permissions:
   contents: read
