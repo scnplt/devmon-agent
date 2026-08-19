@@ -235,6 +235,7 @@ func (l *loader) publicAddrs() []string {
 	}
 
 	addrs := make([]string, 0, strings.Count(raw, ",")+1)
+	hadInvalidEntry := false
 	for _, part := range strings.Split(raw, ",") {
 		e := strings.TrimSpace(part)
 		if e == "" {
@@ -242,11 +243,17 @@ func (l *loader) publicAddrs() []string {
 		}
 		if !isValidSAN(e) {
 			l.fail(envPublicAddr, "%q is not a valid DNS name or IP address", e)
+			hadInvalidEntry = true
 			continue
 		}
 		addrs = append(addrs, e)
 	}
-	if len(addrs) == 0 && len(l.problems) == 0 {
+	// Only report the missing-address problem when nothing in raw was even
+	// attempted (e.g. it was all commas and blanks) — an invalid entry already
+	// reports its own problem above, and reporting is a per-field decision, so
+	// it must never key off the loader's overall problem count from unrelated
+	// fields such as DEVMON_STATE_DIR.
+	if len(addrs) == 0 && !hadInvalidEntry {
 		l.fail(envPublicAddr, "must list at least one address")
 	}
 	return addrs

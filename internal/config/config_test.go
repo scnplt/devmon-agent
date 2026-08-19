@@ -385,6 +385,36 @@ func TestLoadAggregatesEveryProblem(t *testing.T) {
 	}
 }
 
+func TestLoadReportsPublicAddrProblemEvenAfterAnEarlierFault(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a relative DEVMON_STATE_DIR fails first, and DEVMON_PUBLIC_ADDR
+	// is present but empty after trimming its comma-only entries. Both faults
+	// must surface in the same pass: an operator fixing DEVMON_STATE_DIR must
+	// not restart only to discover DEVMON_PUBLIC_ADDR was broken all along.
+	env := map[string]string{
+		envStateDir:   "relative",
+		envPublicAddr: ",",
+	}
+
+	// Act
+	_, err := Load(fakeEnv(env))
+
+	// Assert
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("Load() error = %v, want *ValidationError", err)
+	}
+	if len(vErr.Problems) != 2 {
+		t.Fatalf("Problems = %#v, want 2 (state dir and public addr)", vErr.Problems)
+	}
+	for _, key := range []string{envStateDir, envPublicAddr} {
+		if !strings.Contains(vErr.Error(), key) {
+			t.Errorf("aggregated error does not name %s:\n%s", key, vErr.Error())
+		}
+	}
+}
+
 func TestLoadAggregatesRateLimitProblems(t *testing.T) {
 	t.Parallel()
 
