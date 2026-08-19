@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/scnplt/devmon-agent/internal/state"
 )
 
 // Limits and messages for the two routes an already-paired device uses on
@@ -56,11 +58,13 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 
 	req, ok := s.decodeRenewRequest(w, r)
 	if !ok {
+		setAuditOutcome(r.Context(), state.OutcomeInvalid, "malformed request body")
 		return
 	}
 
 	csrDER, ok := decodeCSRPEM(req.CSRPEM)
 	if !ok {
+		setAuditOutcome(r.Context(), state.OutcomeInvalid, "malformed csr")
 		s.writeError(w, http.StatusUnauthorized, msgRenewFailed)
 		return
 	}
@@ -71,6 +75,7 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 			slog.String("device_id", device.ID),
 			slog.Any("err", err),
 		)
+		setAuditOutcome(r.Context(), state.OutcomeInternalError, "")
 		s.writeError(w, http.StatusInternalServerError, msgDeviceInternalError)
 		return
 	}
@@ -140,6 +145,7 @@ func (s *Server) handleUnpairSelf(w http.ResponseWriter, r *http.Request) {
 			slog.String("device_id", device.ID),
 			slog.Any("err", err),
 		)
+		setAuditOutcome(r.Context(), state.OutcomeInternalError, "")
 		s.writeError(w, http.StatusInternalServerError, msgDeviceInternalError)
 		return
 	}
