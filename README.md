@@ -859,18 +859,24 @@ branch a pull request targets:
 
 | Job | Runs on | What it does |
 |---|---|---|
-| `test` | every PR, and pushes to `dev`/`main` | `go build ./...`, race tests over the whole module, and the 90% coverage floor over `./internal/...` |
-| `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
-| `image` | PRs into `main` only | `docker build` of the release image |
-| `gosec` | PRs into `main` only | `gosec ./...` |
-| `govulncheck` | PRs into `main` only | `govulncheck ./...` — known vulnerabilities in the dependencies and the Go toolchain, which `gosec` does not look for |
-| `shellcheck` | PRs into `main` only | `shellcheck -s sh install.sh` |
-| `e2e` | PRs into `main` only | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
+| `test` | every PR, and pushes to `main` | `go build ./...`, race tests over the whole module, and the 90% coverage floor over `./internal/...` |
+| `lint` | PRs into `main`, and pushes to `main` | `gofmt`, `go vet`, `golangci-lint` |
+| `image` | PRs into `main`, and pushes to `main` | `docker build` of the release image |
+| `gosec` | PRs into `main`, and pushes to `main` | `gosec ./...` |
+| `govulncheck` | PRs into `main`, and pushes to `main` | `govulncheck ./...` — known vulnerabilities in the dependencies and the Go toolchain, which `gosec` does not look for |
+| `shellcheck` | PRs into `main`, and pushes to `main` | `shellcheck -s sh install.sh` |
+| `e2e` | PRs into `main`, and pushes to `main` | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
 
 `dev` is the integration branch, so a PR into it gets fast feedback from `test`
 alone; the full release bar applies on the way into `main`. The six
-`main`-only jobs are gated on `github.base_ref` and are skipped, not queued, on
-a `dev` PR.
+`main`-only jobs are gated on `github.base_ref == 'main'`, which GitHub
+populates for `pull_request` events only, **or** `github.ref ==
+'refs/heads/main'`, which covers the push of the merge commit. Neither is true
+on a `dev` PR, so they are skipped there — not queued. The second half of the
+gate is what makes `main`'s HEAD carry its own release-bar result: `main`'s
+ruleset is not strict, so the merge commit can differ from the tree the PR
+tested, and without it that commit would only ever have been checked by
+`test`.
 
 Toolchain versions come from `go.mod`, and the linter and scanner versions are
 pinned in the workflow's `env` block — bump them there, deliberately, rather
