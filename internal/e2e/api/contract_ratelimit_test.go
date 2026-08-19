@@ -18,7 +18,6 @@ import (
 // two pre-authentication tiers (status, pair), the per-device guarded tier
 // (D6), recovery once Retry-After elapses, and the audit-table property D7
 // exists for — a throttled call writes no row.
-// hardening-and-oss-release.plan.md's "Rate-Limiting Contract" section.
 //
 // Every test in this file starts its own agent: the three DEVMON_RATE_*
 // variables are startup configuration, so sharing an agent across cases

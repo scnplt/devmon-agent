@@ -15,8 +15,7 @@ import (
 // three named tiers (read-only, default, full) each answer a fixed status
 // per lifecycle operation, and reads/logs stay at 200 regardless of tier —
 // read-only restricts mutation, never visibility.
-// lifecycle-policy-and-audit.plan.md:1086-1126, and specifically the two
-// checklist rows "Start the agent with DEVMON_POLICY_MODE=read-only; all
+// It covers specifically the two checklist rows "Start the agent with DEVMON_POLICY_MODE=read-only; all
 // five routes answer 403 and reads still answer 200" and "Start with
 // DEVMON_POLICY_MODE unset; restart/stop/start work, kill/delete are
 // refused".
@@ -182,6 +181,6 @@ func TestPolicyMatrix(t *testing.T) {
 // "false", already asserted (both list and inspect projections) by
 // TestContainerReadContractKeys in contract_reads_test.go — repeating an
 // identical assertion in this file would add no falsifiability. The value
-// this field takes for the agent's OWN row ("true", the PRD's headline
+// this field takes for the agent's OWN row ("true", the headline
 // signal) needs a containerised agent to observe at all and is
 // TestAgentRowIsMarkedProtected, internal/e2e/incontainer, Task 10.

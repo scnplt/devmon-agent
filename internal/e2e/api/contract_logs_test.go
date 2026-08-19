@@ -16,9 +16,8 @@ import (
 	"github.com/scnplt/devmon-agent/internal/e2e/harness"
 )
 
-// This file replays Phase 4's outstanding half — the two items
-// logs-and-live-streaming-report.md:178-190 left unverified against a real
-// host: the 30-minute endurance run (owned by Task 12's
+// This file replays Phase 4's outstanding half — the two items left
+// unverified against a real host: the 30-minute endurance run (owned by Task 12's
 // contract_endurance_test.go, gated by DEVMON_E2E_ENDURANCE per D14 — no
 // long-running test belongs here) and the Wi-Fi <-> mobile-data handover's
 // agent-side half. That half is two properties an app's reconnect logic
@@ -26,14 +25,14 @@ import (
 // cleanly after an RST (D15), and ?since=<last id> resumes with at most one
 // repeated line, never a gap. The client half — actually performing a
 // network handover — is named as belonging to the client app's own suite
-// (the phase plan's Coverage Map).
+// (it belongs to the client app's own suite).
 //
 // It also covers the historical log route's bounds (?tail=, ?since=) and the
 // stream route's keepalive and slot-exhaustion behaviour, none of which had
 // an owner outside this file.
 //
-// What this file deliberately does NOT assert: logs-and-live-streaming-report.md
-// records that an abandoned stream logs at ERROR in agent.log. That is a
+// What this file deliberately does NOT assert: an abandoned stream logs at
+// ERROR in agent.log. That is a
 // known, recorded, unfixed observation (D19 — no production code changes in
 // this phase); asserting its absence would make the eventual fix look like a
 // regression, so it is left alone.
@@ -111,7 +110,7 @@ func collectFrames(t *testing.T, s *harness.Stream, n int, deadline time.Duratio
 // TestHistoricalLogsBounded asserts ?tail=20 against a fixture producing far
 // more than 20 lines returns exactly 20 items, truncated: false, and every
 // item carries the documented ts/stream/line keys (Timestamp extracted into
-// its own field, as the phase plan's Coverage Map requires).
+// its own field, as the documented contract requires).
 func TestHistoricalLogsBounded(t *testing.T) {
 	t.Parallel()
 	engine := harness.RequireEngine(t)

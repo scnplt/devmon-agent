@@ -9,10 +9,9 @@ cannot be traced to a line of code, it does not appear — see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) if you find one that no longer
 resolves.
 
-This document does not contradict [`README.md`](../README.md) or the
-[PRD](../.claude/PRPs/prds/devmon-agent.prd.md). Where the README already
-states a security property, this document repeats its wording rather than
-rephrasing it.
+This document does not contradict [`README.md`](../README.md). Where the
+README already states a security property, this document repeats its wording
+rather than rephrasing it.
 
 ---
 
@@ -283,11 +282,10 @@ substance, because the two documents describe the same boundary:
 >
 > — [`README.md:331-340`](../README.md)
 
-The PRD records this as an accepted risk rather than a defect: "CA private key
-readable in host backups and VPS snapshots" is Likelihood M, mitigated by
-"restrictive file permissions" with encryption revisited "only if a credible
-unlocking mechanism exists"
-([`.claude/PRPs/prds/devmon-agent.prd.md:184`](../.claude/PRPs/prds/devmon-agent.prd.md)).
+This is an accepted risk rather than a defect. A CA private key readable in
+host backups and VPS snapshots is judged medium likelihood and mitigated by
+restrictive file permissions; encryption at rest will be revisited only if a
+credible unlocking mechanism exists.
 
 **No RBAC — every paired device has the same powers.** Policy is a single
 mode fixed for the whole install, not a per-device grant: `requireOp` checks
@@ -297,20 +295,18 @@ The README states the same property from the operator's side: "The mode is
 fixed at startup and read once. No client can widen it... Changing the mode
 means changing `DEVMON_POLICY_MODE` on the host and restarting the agent."
 ([`README.md:203-206`](../README.md)). A general operator-defined per-device
-permission set is out of scope for this release
-([`.claude/PRPs/prds/devmon-agent.prd.md:164`](../.claude/PRPs/prds/devmon-agent.prd.md)).
+permission set is out of scope for this release.
 
 **Root-equivalent blast radius if the agent is compromised.** From
 `SECURITY.md`: "Anything that can drive its API can start, stop, and delete
 containers on the host, and — through Docker — reach root-equivalent power
 over that host. A vulnerability here is not a 'container management bug'; it
 is a host compromise."
-([`SECURITY.md:5-8`](../SECURITY.md)). The PRD's Technical Risks table records
-the same as the first row: "Agent compromise equals host root compromise
-(Docker socket access is root-equivalent)," mitigated by "narrow enumerated
-API surface rather than a socket proxy; mTLS with per-device credentials;
-audit logging; treat security review as a release gate"
-([`.claude/PRPs/prds/devmon-agent.prd.md:178`](../.claude/PRPs/prds/devmon-agent.prd.md)).
+([`SECURITY.md:5-8`](../SECURITY.md)). This is the project's first-ranked
+technical risk — agent compromise equals host root compromise, because Docker
+socket access is root-equivalent — and it is mitigated by a narrow enumerated
+API surface rather than a socket proxy, mTLS with per-device credentials,
+audit logging, and treating security review as a release gate.
 
 ---
 

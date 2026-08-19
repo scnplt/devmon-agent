@@ -19,9 +19,8 @@ import (
 // log is deliberately unreachable over the HTTPS API, so this file drives
 // every assertion through harness.ListAudit, never SQLite and never a route
 // this agent does not register).
-// lifecycle-policy-and-audit.plan.md:1086-1126, specifically the "audit list
-// shows one row per attempt..." and "revoke the device... audit list gains
-// no row" checklist items.
+// It covers specifically the "audit list shows one row per attempt..." and
+// "revoke the device... audit list gains no row" checklist items.
 //
 // What this file deliberately does NOT cover: the exact HTTP status per
 // operation is contract_lifecycle_test.go and contract_policy_test.go's job;
@@ -125,8 +124,8 @@ func TestAuditRowPerMutatingRequest(t *testing.T) {
 	}
 }
 
-// TestAuditRecordsRefusals is the PRD's explicit requirement stated on its
-// own: a call the host's policy refuses still leaves a row, with outcome
+// TestAuditRecordsRefusals states one explicit requirement on its own: a
+// call the host's policy refuses still leaves a row, with outcome
 // denied_policy, not silence. TestAuditRowPerMutatingRequest already proves
 // this as one cell of a sequence; this test isolates it so a reader searching
 // for "does a refusal get logged" finds a single, minimal answer.
@@ -159,8 +158,8 @@ func TestAuditRecordsRefusals(t *testing.T) {
 
 // TestReadsWriteNoAuditRows drives all eight read routes and both log routes
 // against a freshly started agent, then asserts the audit table is still
-// empty: only mutating routes carry withAudit
-// (lifecycle-policy-and-audit.plan.md D17), and a suite that never checked
+// empty: only mutating routes carry withAudit (D17), and a suite that never
+// checked
 // this would not notice a future route accidentally gaining the middleware.
 func TestReadsWriteNoAuditRows(t *testing.T) {
 	t.Parallel()

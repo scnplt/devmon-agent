@@ -3,7 +3,7 @@
 // Package logging builds the agent's structured logger over a size- and
 // age-bounded file on the state mount, teed to stderr.
 //
-// Two guarantees this package exists to keep, both PRD requirements:
+// Two guarantees this package exists to keep, both of them requirements:
 //
 //   - Log lines written before a crash are readable after a restart. That is why
 //     the sink is a file on the bind-mounted state directory and not only stderr.
