@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -272,11 +273,61 @@ func TestDeleteOrphanedDeviceLogsSecondFailure(t *testing.T) {
 	}
 
 	// Act — must not panic despite the closed store.
-	s.deleteOrphanedDevice(context.Background(), "orphan-id")
+	s.deleteOrphanedDevice("orphan-id")
 
 	// Assert
 	if !bodyContains(buf.String(), "delete orphaned device after failed pairing") {
 		t.Errorf("log = %q, want it to mention the failed cleanup", buf.String())
+	}
+}
+
+// TestPairDeviceRollbackSurvivesCanceledContext reproduces GH-40: a client
+// that aborts the connection right after CreateDevice commits must not leave
+// a "pending" device row behind, even though the request context it handed
+// pairDevice is already dead by the time the rollback runs.
+//
+// afterCreateHook lets this test land the cancellation at the exact
+// interleaving point a real disconnect would, deterministically and on the
+// same goroutine — racing the SQL layer with a sleep cannot guarantee
+// RedeemPairingCode observes a canceled context instead of simply winning the
+// race and succeeding. The hook lives on this test's own Server instance, so
+// it carries no risk to any other, parallel test.
+func TestPairDeviceRollbackSurvivesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	csrDER, ok := decodeCSRPEM(generateCSRPEM(t, "irrelevant"))
+	if !ok {
+		t.Fatal("decodeCSRPEM() rejected a well-formed CSR")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.afterCreateHook = cancel
+
+	// Act — CreateDevice runs on a live context and succeeds; the hook then
+	// cancels ctx before RedeemPairingCode, which pairDevice calls next with
+	// the very same ctx, ever runs.
+	_, err = s.pairDevice(ctx, code, csrDER)
+
+	// Assert
+	if err == nil {
+		t.Fatal("pairDevice() error = nil, want a redeem failure from the canceled context")
+	}
+	if errors.Is(err, state.ErrPairingCodeInvalid) {
+		t.Fatalf("pairDevice() error = %v, want a context failure, not ErrPairingCodeInvalid", err)
+	}
+
+	devices, err := st.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Errorf("devices = %+v after a pairing attempt whose request context died mid-flight, want the orphaned row deleted", devices)
 	}
 }
 
