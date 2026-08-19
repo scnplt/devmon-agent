@@ -187,15 +187,24 @@ func (s *Server) routes() http.Handler {
 
 	// Unauthenticated by design (D2): the device has no certificate yet, so
 	// the pairing code itself is what authenticates this one call.
+	// withPairAudit sits inside both rate-limit tiers (D7): a request either
+	// one refuses must never reach it, or a throttled scanner could fill the
+	// audit table (issue #44).
 	mux.Handle("POST /v1/pair",
-		s.withGlobalUnauthLimit(s.withIPLimit(s.pairLimits, s.pairLimit, "pair", http.HandlerFunc(s.handlePair))))
+		s.withGlobalUnauthLimit(s.withIPLimit(s.pairLimits, s.pairLimit, "pair", s.withPairAudit(http.HandlerFunc(s.handlePair)))))
 
 	// Guarded: both act on the calling device's own identity, resolved by
 	// requireDevice from its client certificate — never from the request.
 	// withDeviceLimit sits immediately inside requireDevice, before anything
 	// else, exactly as it does for the read/logs/mutate helpers below.
-	mux.Handle("POST /v1/device/renew", s.requireDevice(s.withDeviceLimit(http.HandlerFunc(s.handleRenew))))
-	mux.Handle("DELETE /v1/device/self", s.requireDevice(s.withDeviceLimit(http.HandlerFunc(s.handleUnpairSelf))))
+	// withIdentityAudit sits inside withDeviceLimit for the same reason
+	// withAudit does on the mutate routes below (D7, D15, issue #44): a
+	// throttled call must never write a row, and every row must carry a real,
+	// authenticated device.
+	mux.Handle("POST /v1/device/renew",
+		s.requireDevice(s.withDeviceLimit(s.withIdentityAudit(opRenew, http.HandlerFunc(s.handleRenew)))))
+	mux.Handle("DELETE /v1/device/self",
+		s.requireDevice(s.withDeviceLimit(s.withIdentityAudit(opUnpairSelf, http.HandlerFunc(s.handleUnpairSelf)))))
 
 	// Read operations. Every one is guarded three times: requireDevice proves
 	// who is calling, withDeviceLimit bounds how often, requireOp proves the

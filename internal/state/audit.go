@@ -29,6 +29,11 @@ const (
 	OutcomeConflict     = "conflict"
 	OutcomeUnavailable  = "unavailable" // self ID unknown (D3)
 	OutcomeEngineError  = "engine_error"
+	// OutcomeInternalError covers a failure on the agent's own side that is
+	// neither the caller's fault nor a Docker Engine error — for example a
+	// store write that failed while issuing or recording a device
+	// certificate during pairing or renewal.
+	OutcomeInternalError = "internal_error"
 )
 
 // AppendAudit records one mutating operation. It is called once per mutating
