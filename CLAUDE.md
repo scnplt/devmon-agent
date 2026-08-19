@@ -123,7 +123,9 @@ covers. It does not become a file in the repository.
 ## Planning docs
 
 - PRD: `.claude/PRPs/prds/devmon-agent.prd.md` — scope, decisions log, phase table
-- Plans: `.claude/PRPs/plans/*.plan.md` — one per phase; the plan is the implementation contract
+- Plans: `.claude/PRPs/plans/*.plan.md` — one per phase; the plan is the implementation
+  contract. Every phase shipped so far has moved to `.claude/PRPs/plans/completed/`, so
+  that is where the current examples live; an in-flight plan sits in `plans/` itself.
 
 Read the current phase's plan before writing code. It carries verified upstream API
 signatures and the gotchas above with full rationale.

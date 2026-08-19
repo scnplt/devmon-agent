@@ -1,5 +1,9 @@
 # Implementation Report: Secure Foundation & Persistence (Phase 1)
 
+> **Historical record.** Figures, thresholds, and release status below describe the
+> repo as it stood when this phase shipped, and are deliberately not updated in
+> place. Most visibly, the coverage floor was 80% at the time and is 90% today.
+
 ## Summary
 
 The DevMon agent now runs as a container. It parses and validates its entire

@@ -1,5 +1,9 @@
 # Implementation Report: Hardening & OSS Release (Phase 7)
 
+> **Historical record.** Figures, thresholds, and release status below describe the
+> repo as it stood when this phase shipped, and are deliberately not updated in
+> place. Most visibly, the coverage floor was 80% at the time and is 90% today.
+
 **Plan**: [hardening-and-oss-release.plan.md](../plans/completed/hardening-and-oss-release.plan.md)
 **Branch**: `feat/hardening-and-oss-release`
 **Baseline**: `14b1804` (Phase 6 merge) → `854251a`

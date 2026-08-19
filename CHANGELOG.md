@@ -200,7 +200,8 @@ First public release — the full surface.
 - **Audit.** Every mutating attempt recorded and attributed to the calling
   device, including the ones policy refused. The audit table outlives the
   operational log.
-- **Rate limiting.** Two tiers on the listening port.
+- **Rate limiting.** Two pre-authentication tiers on the listening port, plus a
+  per-device tier behind the handshake and a global backstop.
 - **Installer.** `install.sh` takes a clean host to a printed pairing code:
   resolving the docker socket GID, creating and chowning the state directory,
   writing a `compose.yaml`, and waiting for the agent to answer.

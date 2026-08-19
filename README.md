@@ -15,8 +15,9 @@ read historical logs and follow a live stream; and start, restart, stop, kill
 and delete containers — as far as the host's startup policy mode permits, and
 never against the agent's own container. Every mutating attempt is recorded in
 an audit table that outlives the operational log. The listening port is rate
-limited in two tiers, and an executable contract suite runs the real binary
-against a real Docker Engine.
+limited in two pre-authentication tiers, plus a per-device tier behind the
+handshake and a global backstop, and an executable contract suite runs the real
+binary against a real Docker Engine.
 
 License: [AGPL-3.0-only](LICENSE). Changes by version: [CHANGELOG.md](CHANGELOG.md).
 
@@ -71,8 +72,9 @@ docker run -d --name devmon-agent \
   ghcr.io/scnplt/devmon-agent:0.2.0
 ```
 
-See `compose.example.yaml` for the equivalent Compose file and a reference for
-every configuration knob.
+See `compose.example.yaml` for the equivalent Compose file. It carries the knobs
+worth setting by hand, not all of them — the full list is the environment table
+below.
 
 Verify it is up:
 
@@ -193,7 +195,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_PUBLIC_ADDR` | comma list | *(required)* | ≥1 entry; each a DNS name or IP; used as server-certificate SANs |
 | `DEVMON_POLICY_MODE` | enum | `default` | One of `read-only`, `default`, `full` |
 | `DEVMON_DOCKER_HOST` | URL | `unix:///var/run/docker.sock` | Scheme `unix` or `tcp` |
-| `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | A Docker container name, or a 12/64-character hex ID |
+| `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | Docker's own name grammar: `[a-zA-Z0-9][a-zA-Z0-9_.-]+` (two characters or more). Hex container IDs satisfy it too |
 | `DEVMON_LOG_LEVEL` | enum | `info` | One of `debug`, `info`, `warn`, `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | int | `1` | ≥1 |
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
@@ -776,7 +778,7 @@ cover up. Host access is the authority here, exactly as it is for revocation.
 make build          # -> bin/devmon-agent
 make test           # unit tests
 make test-race      # with -race (needs a C toolchain)
-make cover          # coverage; the floor is 90% over ./internal/...
+make cover          # prints total coverage over ./internal/...; CI enforces the 90% floor
 make lint           # gofmt + go vet + golangci-lint when installed
 make sec            # gosec
 make image          # docker build

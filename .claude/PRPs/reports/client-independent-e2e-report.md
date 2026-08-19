@@ -1,5 +1,9 @@
 # Implementation Report: Client-Independent End-to-End Suite (Phase 6)
 
+> **Historical record.** Figures, thresholds, and release status below describe the
+> repo as it stood when this phase shipped, and are deliberately not updated in
+> place. Most visibly, the coverage floor was 80% at the time and is 90% today.
+
 ## Summary
 
 The manual validation checklists of Phases 1-5 are now code. `internal/e2e/` holds a

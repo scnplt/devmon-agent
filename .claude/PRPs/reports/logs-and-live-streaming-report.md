@@ -1,5 +1,9 @@
 # Implementation Report: Logs & Live Streaming (Phase 4)
 
+> **Historical record.** Figures, thresholds, and release status below describe the
+> repo as it stood when this phase shipped, and are deliberately not updated in
+> place. Most visibly, the coverage floor was 80% at the time and is 90% today.
+
 ## Summary
 
 A paired device can now read a container's output two ways: a bounded historical fetch that
