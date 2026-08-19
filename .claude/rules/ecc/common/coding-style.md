@@ -6,17 +6,13 @@ Write **everything in English**: code comments, doc comments, identifiers, log a
 messages, markdown docs, commit messages, and PR text. The conversation language never
 changes the language of the artifact.
 
-## Immutability (CRITICAL)
+## Shared state
 
-ALWAYS create new objects, NEVER mutate existing ones:
+Do not mutate a value another goroutine or caller can observe. Return a new value
+instead of editing one in place, and keep configuration read-only after startup.
 
-```
-// Pseudocode
-WRONG:  modify(original, field, value) → changes original in-place
-CORRECT: update(original, field, value) → returns new copy with change
-```
-
-Rationale: Immutable data prevents hidden side effects, makes debugging easier, and enables safe concurrency.
+Rationale: hidden in-place edits are the failure mode `-race` exists to catch, and this
+agent's whole security model rests on startup configuration being immutable thereafter.
 
 ## Core Principles
 
@@ -42,7 +38,7 @@ Rationale: Immutable data prevents hidden side effects, makes debugging easier, 
 
 MANY SMALL FILES > FEW LARGE FILES:
 - High cohesion, low coupling
-- 200-400 lines typical, 800 max
+- 200-400 lines typical. Past ~400 is a signal to extract, not a hard failure
 - Extract utilities from large modules
 - Organize by feature/domain, not by type
 
@@ -64,11 +60,9 @@ ALWAYS validate at system boundaries:
 
 ## Naming Conventions
 
-- Variables and functions: `camelCase` with descriptive names
-- Booleans: prefer `is`, `has`, `should`, or `can` prefixes
-- Interfaces, types, and components: `PascalCase`
-- Constants: `UPPER_SNAKE_CASE`
-- Custom hooks: `camelCase` with a `use` prefix
+Follow the host language's own conventions — for this repository that means
+[golang/coding-style.md](../golang/coding-style.md) and `go vet`, not a cross-language
+casing table.
 
 ## Code Smells to Avoid
 
@@ -89,8 +83,8 @@ Split large functions into focused pieces with clear responsibilities.
 Before marking work complete:
 - [ ] Code is readable and well-named
 - [ ] Functions are small (<50 lines)
-- [ ] Files are focused (<800 lines)
+- [ ] Files are focused (~400 lines)
 - [ ] No deep nesting (>4 levels)
 - [ ] Proper error handling
 - [ ] No hardcoded values (use constants or config)
-- [ ] No mutation (immutable patterns used)
+- [ ] No mutation of state another caller can observe
