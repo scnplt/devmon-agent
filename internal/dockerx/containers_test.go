@@ -471,3 +471,38 @@ func TestListContainersTruncation(t *testing.T) {
 		})
 	}
 }
+
+// TestZeroTimeToEmpty covers short inputs (length 1-3) that must not panic
+// when sliced, alongside the zero-time marker and a real timestamp. An
+// Engine (or a proxy/fake in front of one) that returns a short string for
+// State.StartedAt or State.FinishedAt must not crash the request.
+func TestZeroTimeToEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ts   string
+		want string
+	}{
+		{name: "empty string", ts: "", want: ""},
+		{name: "single char, shorter than zero-time prefix", ts: "0", want: "0"},
+		{name: "three chars, shorter than zero-time prefix", ts: "000", want: "000"},
+		{name: "exact zero-time prefix", ts: "0001", want: ""},
+		{name: "full zero-time value", ts: "0001-01-01T00:00:00Z", want: ""},
+		{name: "real timestamp", ts: "2026-08-19T10:15:30.123456789Z", want: "2026-08-19T10:15:30.123456789Z"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act
+			got := zeroTimeToEmpty(tt.ts)
+
+			// Assert
+			if got != tt.want {
+				t.Errorf("zeroTimeToEmpty(%q) = %q, want %q", tt.ts, got, tt.want)
+			}
+		})
+	}
+}
