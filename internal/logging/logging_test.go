@@ -26,6 +26,29 @@ func testConfig(t *testing.T, totalMB int) config.Config {
 	}
 }
 
+// waitForGlobMatch polls pattern until it matches at least one file or
+// deadline elapses, so a test can synchronize on a background ticker's
+// observable effect (a rotated file appearing on disk) instead of sleeping
+// a fixed amount of wall-clock time.
+func waitForGlobMatch(t *testing.T, pattern string, deadline time.Duration) []string {
+	t.Helper()
+
+	giveUpAt := time.Now().Add(deadline)
+	for {
+		entries, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %q: %v", pattern, err)
+		}
+		if len(entries) > 0 {
+			return entries
+		}
+		if time.Now().After(giveUpAt) {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestSinkPersistsAcrossReopen is the phase's crash-survival signal: lines
 // written by one process must still be readable after it dies and a new one
 // opens the same state mount.
@@ -237,19 +260,12 @@ func TestRotatorRunRotatesOnStartupWhenFileHasContent(t *testing.T) {
 	}()
 
 	// Assert
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		entries, _ := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
-		if len(entries) > 0 {
-			cancel()
-			<-done
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	entries := waitForGlobMatch(t, filepath.Join(cfg.LogsDir(), "agent-*"), 2*time.Second)
 	cancel()
 	<-done
-	t.Error("Run() never produced a rotated backup within the test window; the startup pass regressed")
+	if len(entries) == 0 {
+		t.Error("Run() never produced a rotated backup within the test window; the startup pass regressed")
+	}
 }
 
 // TestRotatorRunSkipsStartupRotationOnEmptyOrMissingFile guards against the
@@ -376,15 +392,9 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 	}()
 
 	// Assert
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		entries, _ := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
-		if len(entries) > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if entries := waitForGlobMatch(t, filepath.Join(cfg.LogsDir(), "agent-*"), 2*time.Second); len(entries) == 0 {
+		t.Error("ticker never produced a rotated file; age-based retention would never apply")
 	}
-	t.Error("ticker never produced a rotated file; age-based retention would never apply")
 }
 
 // TestRotateOnceLogsErrorWhenRotateFails covers rotateOnce's error branch.
