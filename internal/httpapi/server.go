@@ -44,9 +44,8 @@ const (
 	// goroutine, an Engine connection, and a socket for its entire life, so an
 	// unbounded count is a file-descriptor exhaustion the agent inflicts on the
 	// host it exists to protect. A constant rather than an env var: every extra
-	// startup setting is surface the operator has to understand at install
-	// time, and eight concurrent log views on one phone is
-	// already beyond any real use.
+	// startup setting is surface the operator has to understand at install time,
+	// and eight concurrent log views on one phone is already beyond any real use.
 	maxConcurrentStreams = 8
 )
 
