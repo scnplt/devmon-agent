@@ -2,14 +2,14 @@ name: CI
 
 # Two bars, scaled to the target branch:
 #   PR -> dev     : `test` only, for fast feedback on the integration branch.
-#   PR -> main    : `test` plus `lint`, `image`, `shellcheck`, `gosec`, `govulncheck`
-#                   and `e2e` — the release bar.
+#   PR -> main    : `test` plus `lint`, `image`, `shellcheck`, `gosec`, `govulncheck`,
+#                   `openapi` and `e2e` — the release bar.
 #   push -> main  : the same release bar, so main's HEAD carries its own result.
 # The main-only jobs are gated on `github.base_ref == 'main'` (populated on
 # pull_request only) or `github.ref == 'refs/heads/main'` (the push of the merge
 # commit), so they never queue on a dev PR but always run on what main actually
 # holds. Branch protection is per branch, so `dev` requires `test` and `main`
-# requires all seven.
+# requires all eight.
 
 on:
   pull_request:
@@ -34,6 +34,7 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
   GOSEC_VERSION: v2.28.0
   GOVULNCHECK_VERSION: v1.6.0
+  REDOCLY_VERSION: 2.46.2
   COVERAGE_FLOOR: 90
 
 jobs:
@@ -168,6 +169,29 @@ jobs:
 
       - name: gosec
         run: gosec ./...
+
+  # docs/openapi.yaml is the contract the client is generated from, and it is
+  # hand-maintained: no Go gate reads it, so nothing else in this workflow would
+  # notice it going malformed. This job is the floor — it proves the document
+  # still parses as OpenAPI 3.1 and passes redocly's recommended rules. It
+  # cannot check the document against the registered routes; that is still
+  # review's job, and CONTRIBUTING.md says so.
+  #
+  # Release bar rather than every dev PR: a spec fault cannot break a running
+  # agent, only a client generated from a release.
+  openapi:
+    name: openapi
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to the same version the Makefile names, so a local
+      # `make openapi-lint` and this job cannot disagree.
+      - name: redocly lint
+        run: npx --yes @redocly/cli@${REDOCLY_VERSION} lint docs/openapi.yaml
 
   # gosec and govulncheck answer different questions and neither substitutes for
   # the other: gosec looks for faults in the code written here, govulncheck for
