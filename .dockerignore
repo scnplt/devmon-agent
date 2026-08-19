@@ -1,0 +1,34 @@
+# Keep this list in sync with .gitignore: gitignored is not dockerignored, and
+# `COPY . .` in the Dockerfile would otherwise sweep an operator's runtime state
+# — CA private keys included — into the local build context and layer cache.
+
+# Version control and agent/editor metadata.
+.git/
+.gitattributes
+.gitignore
+.github/
+.claude/
+
+# Build output and local test artifacts.
+bin/
+coverage.out
+
+# Runtime state — never enters an image. Mirrors .gitignore; these are produced
+# on the operator's host under $DEVMON_STATE_DIR and contain device records and
+# private key material.
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.crt
+.env
+
+# Docs and policy files: not compiled, and every edit would bust the build cache.
+*.md
+docs/
+LICENSE
+compose.example.yaml
+install.sh
+Dockerfile
+.dockerignore
+Makefile
