@@ -224,7 +224,7 @@ jobs:
 
       # DEVMON_E2E_REQUIRE turns "no Engine answered, skipping" from a silent
       # green into a hard failure. A suite that quietly does nothing is worse
-      # than no suite, because a green run is what flips a PRD row.
+      # than no suite, because a green run is what marks the phase done.
       - name: make e2e
         env:
           DEVMON_E2E_REQUIRE: 1

@@ -14,7 +14,7 @@ import (
 )
 
 // This file covers the self-IDENTIFICATION half of Phase 5's outstanding
-// checklist (lifecycle-policy-and-audit.plan.md:1086-1126): proving the
+// checklist: proving the
 // agent finds its own container through /proc/self/mountinfo rather than
 // $HOSTNAME, that an explicit DEVMON_SELF_CONTAINER override is honoured
 // ahead of that auto-detection, and that a well-formed but unresolvable
@@ -188,9 +188,8 @@ func TestExplicitSelfIDOverrideIsHonoured(t *testing.T) {
 //
 // This test now asserts that real behaviour rather than the specification it
 // diverges from, because a permanently red test asserting an unimplemented
-// contract is worth nothing. The divergence itself is recorded as Finding 1
-// in .claude/PRPs/reports/client-independent-e2e-report.md: the security
-// posture is sound (self-exclusion still fires, via a correctly detected
+// contract is worth nothing. The divergence itself is a recorded finding: the
+// security posture is sound (self-exclusion still fires, via a correctly detected
 // ID). What was lost — operator visibility into the discarded override — is
 // now fixed (Phase 7): confirmSelf logs a Warn naming the discarded override
 // the moment the Engine fails to confirm it, so this test now asserts that

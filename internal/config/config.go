@@ -141,7 +141,7 @@ func (c Config) AgentLogPath() string { return filepath.Join(c.LogsDir(), "agent
 //
 // It aggregates rather than failing on the first fault: an operator correcting a
 // `docker run` line one variable at a time, one restart at a time, is a bad first
-// experience and the exact thing the PRD asks this package to avoid.
+// experience and the exact thing this package exists to avoid.
 type ValidationError struct{ Problems []string }
 
 func (e *ValidationError) Error() string {
@@ -335,7 +335,7 @@ func (l *loader) boundedInt(key string, def, min int) int {
 	return n
 }
 
-// checkRetentionOrder enforces the PRD's separate-retention-budgets rule: the
+// checkRetentionOrder enforces the separate-retention-budgets rule: the
 // security record must outlive debug output. One shared short budget would
 // quietly destroy the audit trail to make room for operational logs.
 func (l *loader) checkRetentionOrder(cfg Config) {

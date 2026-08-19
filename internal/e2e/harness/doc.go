@@ -4,8 +4,8 @@
 
 // Package harness runs the real devmon-agent against a real Docker Engine.
 //
-// It exists so the outstanding manual checklists from Phases 1-5 (PRD Phase
-// 6) can be replayed unattended: it builds the shipped binary, starts it with
+// It exists so the outstanding manual checklists from Phases 1-5 can be
+// replayed unattended: it builds the shipped binary, starts it with
 // a curated environment, pairs a device through the documented host-side
 // command path, and drives every route over mTLS. Nothing in this package is
 // imported outside internal/e2e (it lives under internal/, which is what
@@ -24,7 +24,7 @@
 //     skip its cleanups; `make e2e-clean` is that operation, and it is
 //     deliberately explicit. No code path in this package removes containers
 //     by label, because such a pass cannot distinguish a dead run's
-//     leftovers from a live run's fixtures (D11 of the phase plan).
+//     leftovers from a live run's fixtures (D11).
 //
 //  2. It never passes the ambient environment to the agent under test. The
 //     child process's environment is built from the test case alone, so a

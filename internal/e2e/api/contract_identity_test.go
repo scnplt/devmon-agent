@@ -24,12 +24,11 @@ import (
 // revocation, self-unpair under every policy mode, renewal keeping the old
 // certificate usable, and the two diagnostic signals a client uses to tell
 // "my code was already used" from "the server's identity changed under me".
-// identity-pairing-and-revocation.plan.md:908-922.
 //
 // What this file deliberately does NOT cover: the *timing* of proactive
 // renewal (renewing before expiry with no user interaction) and a genuinely
 // expired client certificate diagnosing itself — both are named client-side
-// in the phase plan's Coverage Map, because producing them needs a real
+// as client-side coverage, because producing them needs a real
 // wall-clock wait or a shortened certificate lifetime, and D19 forbids the
 // latter.
 

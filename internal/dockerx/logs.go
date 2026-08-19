@@ -165,8 +165,8 @@ func (c *Client) StreamContainerLogs(ctx context.Context, ref string, opts LogOp
 	// No callTimeout here, deliberately: it bounds the pre-stream inspect
 	// above and the historical fetch in ContainerLogs only. A 15s timeout on
 	// this call would kill every stream at 15 seconds — the stream's lifetime
-	// is bounded by ctx and nothing else, and the PRD's success signal is a
-	// 30-minute stream.
+	// is bounded by ctx and nothing else, and the success signal for this
+	// route is a 30-minute stream.
 	res, err := c.api.ContainerLogs(ctx, ref, engineOpts)
 	if err != nil {
 		return classify("stream container logs", err)

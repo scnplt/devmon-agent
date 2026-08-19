@@ -87,7 +87,7 @@ func (s *Server) recordAudit(ctx context.Context, entry *auditEntry) {
 // carries a real device — an unauthenticated caller is unattributable, and
 // letting one write rows would hand a scanner a way to flood the operator's
 // security record. It sits OUTSIDE requireOp, so refusals by policy are
-// recorded, which the PRD requires explicitly.
+// recorded, which is an explicit requirement.
 func (s *Server) withAudit(op policy.Operation, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		entry := &auditEntry{

@@ -18,7 +18,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// Environment variables read by the harness itself (D13 of the phase plan).
+// Environment variables read by the harness itself (D13).
 // They share the DEVMON_ prefix for discoverability, but they are NOT part of
 // the agent's own configuration surface: the agent's environment is built
 // explicitly for every subprocess (see buildAgentEnv in agent.go) and never
@@ -76,7 +76,7 @@ func EngineHost() (host, skipReason string) {
 
 // RequireEngine skips the calling test — or fails it, when DEVMON_E2E_REQUIRE=1
 // — when no Docker Engine answers a ping. A suite that quietly does nothing
-// is worse than no suite, because a green run is what flips a PRD row to
+// is worse than no suite, because a green run is what marks a phase
 // complete (D5).
 func RequireEngine(t *testing.T) *client.Client {
 	t.Helper()
@@ -135,7 +135,7 @@ func skipOrFail(t *testing.T, reason string) {
 // Only the actual version comparison — and an unparseable version string —
 // calls t.Skipf DIRECTLY, never skipOrFail: DEVMON_E2E_REQUIRE=1 exists to
 // turn "no Engine answered" into a hard failure so a silently-passing suite
-// cannot flip a PRD row (D5). An Engine that DID answer but predates the API
+// cannot mark a phase complete (D5). An Engine that DID answer but predates the API
 // version carrying the field under test is not a missing Engine — it is a
 // genuine capability gap in the Engine itself, and no amount of
 // DEVMON_E2E_REQUIRE=1 can make an old Engine speak a field it never sends.

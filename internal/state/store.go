@@ -24,8 +24,8 @@ import (
 )
 
 // Sentinel errors for the two conditions a caller must branch on. Both are fatal
-// at startup: the PRD asks for a loud, early, specific failure rather than an
-// obscure one at first query.
+// at startup, because a loud, early, specific failure beats an obscure one at
+// first query.
 var (
 	// ErrStateCorrupt means the file exists but is not a usable database — the
 	// realistic outcome of a botched restore or a truncated copy.
@@ -58,7 +58,7 @@ type Store struct {
 
 	// FirstRun is true when the database file did not exist before Open.
 	//
-	// Phase 2 hangs the PRD's "loud on missing identity" check off this: once a
+	// Phase 2 hangs the "loud on missing identity" check off this: once a
 	// CA exists, a first run on a mount that should already hold one means the
 	// operator lost their state directory, and the agent must say so rather than
 	// silently minting a new identity that unpairs every device.
@@ -257,7 +257,7 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 //
 // Age and row count are applied together, not as alternatives: whichever bites
 // first is the one that limits growth, which is what "bounded by both age and
-// size" means in the PRD.
+// size" means here.
 func (s *Store) PruneAudit(ctx context.Context, maxAge time.Duration, maxRows int) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

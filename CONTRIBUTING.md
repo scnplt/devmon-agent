@@ -9,10 +9,9 @@ suggests. Most of what follows is about making that bar cheap to clear.
 **Security issues do not go here.** See [SECURITY.md](SECURITY.md) and report
 privately.
 
-For anything else, open an issue first if the change is more than a fix. The
-project follows a written PRD and phase plans (`.claude/PRPs/`), and a feature
-that is deliberately out of scope is usually recorded there with the reasoning
-— it saves you writing something that will be declined on principle.
+For anything else, open an issue first if the change is more than a fix. Some
+features are deliberately out of scope, and asking first saves you writing
+something that will be declined on principle.
 
 ## Language
 

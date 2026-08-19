@@ -19,7 +19,6 @@ import (
 // unreachable-Engine startup path, graceful shutdown, the "certs/ deleted
 // under an intact database" identity fault, and the no-credential-material
 // sweep of the whole state directory.
-// secure-foundation-and-persistence.plan.md:1216-1229.
 
 // TestConfigFaultsReportedTogether asserts internal/config's aggregation
 // contract from the outside: an operator who typos three variables at once
@@ -76,9 +75,8 @@ func TestConfigFaultsReportedTogether(t *testing.T) {
 	})
 
 	// A zero DEVMON_RATE_GUARDED_PER_SEC is a configuration fault, not "no
-	// limit": internal/config's minRatePerX floor is 1 (hardening-and-oss-
-	// release.plan.md, Task 2's gotcha) precisely so no value can disable the
-	// limiter, and this proves that floor from the outside.
+	// limit": internal/config's minRatePerX floor is 1, precisely so no value
+	// can disable the limiter, and this proves that floor from the outside.
 	t.Run("zero DEVMON_RATE_GUARDED_PER_SEC is a configuration fault", func(t *testing.T) {
 		t.Parallel()
 

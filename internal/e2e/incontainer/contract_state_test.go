@@ -16,8 +16,7 @@ import (
 )
 
 // This file covers the state-survival half of Task 11 (the earlier phases'
-// persistence items, lifecycle-policy-and-audit.plan.md:1086-1126 and
-// secure-foundation-and-persistence.plan.md:1216-1229): pre-kill log lines
+// persistence items): pre-kill log lines
 // readable after a crash restart, both paired devices surviving a genuine
 // image rebuild and container recreation against the same bind mount, and
 // the negative case — a fresh state directory yields a different CA
@@ -94,7 +93,7 @@ func TestStateSurvivesCrashRestart(t *testing.T) {
 	}
 }
 
-// TestPairingsSurviveImageUpgrade is the PRD's "pairings surviving a
+// TestPairingsSurviveImageUpgrade is the "pairings surviving a
 // restart and an image upgrade: 100%" success signal. It rebuilds the image
 // with a different VERSION build arg and RECREATES the container — not a
 // restart, which shares the writable layer and would prove nothing about
