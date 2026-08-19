@@ -24,12 +24,17 @@ jobs:
     name: publish image
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 is what brings the other tags along; the `latest`
+      # decision below is a comparison against every released tag, and a
+      # single-ref checkout cannot see them.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # The git tag is vX.Y.Z; the image tag is X.Y.Z. README.md, the compose
       # example, and install.sh all name the unprefixed form, so stripping the
       # leading v here is what keeps them true.
-      - name: Derive version and build time
+      - name: Derive version, build time, and image tags
         id: meta
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -40,8 +45,35 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
+          # `latest` must only ever move forwards. Publishing a backport tag
+          # (v0.1.9 cut after v0.2.0 is already out) is a normal thing to do,
+          # and pushing `latest` unconditionally would silently roll every
+          # `:latest` consumer back onto the older release. So the tag is
+          # written only when this ref is the highest released version.
+          # The pattern keeps pre-release tags out of the comparison: only a
+          # strict vX.Y.Z counts as a release.
+          # `|| true` because the runner shell is `bash -eo pipefail`: a tag
+          # that is a pre-release (v1.0.0-rc1) leaves grep with no match, and
+          # an unguarded empty pipeline would fail the step rather than simply
+          # decline to move `latest`.
+          highest="$(git tag --list 'v*' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n 1 || true)"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${version}"
+            if [ "$highest" = "$GITHUB_REF_NAME" ]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$highest" != "$GITHUB_REF_NAME" ]; then
+            echo "$GITHUB_REF_NAME is not the highest released tag ($highest); not moving :latest"
+          fi
+
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -51,13 +83,13 @@ jobs:
       # share of self-hosted VPS and home-lab targets are ARM, and the build is
       # CGO_ENABLED=0 pure Go onto distroless/static, so cross-compiling costs
       # nothing beyond this setup step.
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # The same three build args the `image` job in ci.yml passes, so a
       # published binary reports its version the way a CI-built one does.
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -66,9 +98,7 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.meta.outputs.build_time }}
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
-            ${{ env.IMAGE }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
 
       # Proves both architectures actually landed in the manifest, rather than
       # trusting that buildx was configured correctly.
