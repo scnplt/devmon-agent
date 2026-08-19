@@ -48,7 +48,7 @@ E2E_PKGS := ./internal/e2e/...
 # failures.
 E2E_TESTFLAGS := -race -count=1 -v
 
-.PHONY: all build test test-race cover lint sec vuln shellcheck openapi-lint image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
+.PHONY: all build test test-race cover lint sec vuln shellcheck doc-citations openapi-lint image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
 
 all: build
 
@@ -102,7 +102,12 @@ vuln:
 # operator's host with sudo. -s sh, not the default, because the script is
 # POSIX sh: shellcheck would otherwise let a bashism through that dash rejects.
 shellcheck:
-	shellcheck -s sh install.sh
+	shellcheck -s sh install.sh scripts/check-doc-citations.sh
+
+# The prose docs cite README.md, install.sh and internal/**.go by anchor and by
+# line; this proves every one of them still resolves.
+doc-citations:
+	sh scripts/check-doc-citations.sh
 
 # docs/openapi.yaml is hand-maintained and no Go gate reads it, so this is the
 # only automated check that the contract file is well-formed and internally

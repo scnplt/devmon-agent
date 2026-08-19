@@ -53,6 +53,13 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # docs/THREAT-MODEL.md promises every claim traces back to a line of
+      # code, and docs/BACKUP.md quotes README.md and install.sh the same way.
+      # Those citations silently rot whenever a prose file grows (#48), so they
+      # are checked on every PR rather than only on the release bar.
+      - name: Check doc citations
+        run: sh scripts/check-doc-citations.sh
+
       # -race is implemented in cgo, so it needs CGO_ENABLED=1 even though the
       # shipped binary is built with CGO_ENABLED=0. gcc ships on ubuntu-latest.
       #
