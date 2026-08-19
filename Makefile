@@ -10,6 +10,10 @@ BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # local `make vuln` and the CI gate run the same scanner.
 GOVULNCHECK_VERSION ?= v1.6.0
 
+# Same contract for the OpenAPI linter: pinned here and in ci.yml so `make
+# openapi-lint` and the CI gate run the same rules against the same document.
+REDOCLY_VERSION ?= 2.46.2
+
 # Stamped into internal/version at link time. Defined once here so it is never retyped.
 LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Version=$(VERSION) \
@@ -44,7 +48,7 @@ E2E_PKGS := ./internal/e2e/...
 # failures.
 E2E_TESTFLAGS := -race -count=1 -v
 
-.PHONY: all build test test-race cover lint sec vuln shellcheck image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
+.PHONY: all build test test-race cover lint sec vuln shellcheck openapi-lint image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
 
 all: build
 
@@ -99,6 +103,17 @@ vuln:
 # POSIX sh: shellcheck would otherwise let a bashism through that dash rejects.
 shellcheck:
 	shellcheck -s sh install.sh
+
+# docs/openapi.yaml is hand-maintained and no Go gate reads it, so this is the
+# only automated check that the contract file is well-formed and internally
+# consistent. It does not — and cannot — verify the document against the
+# registered routes; that gap is still closed by review.
+#
+# Run through npx rather than a checked-in node_modules: this repository has no
+# other JavaScript, and a dependency tree for one linter is not worth carrying.
+# The rules come from redocly.yaml at the repository root.
+openapi-lint:
+	npx --yes @redocly/cli@$(REDOCLY_VERSION) lint docs/openapi.yaml
 
 # -race instruments the test binary only; the agent binary it builds and runs as
 # a child process is still built with CGO_ENABLED=0, matching the shipped

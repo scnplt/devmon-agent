@@ -73,6 +73,7 @@ go test ./internal/... -race -coverprofile=coverage.out
 go tool cover -func=coverage.out | tail -1   # floor is 90%
 
 shellcheck -s sh install.sh
+make openapi-lint                            # docs/openapi.yaml must lint clean
 ```
 
 The end-to-end suite runs against a real Docker Engine and is not part of the
@@ -116,8 +117,9 @@ Code written from memory will use the pre-v29 forms and will not compile.
 types and nothing checks it against them, so a change to a route, a status
 code, or a projection field is only half done until the spec carries it too.
 The `*FieldCount` tests will tell you a projection gained a field; they will
-not tell you this file was forgotten. Validate with
-`npx @redocly/cli lint docs/openapi.yaml`.
+not tell you this file was forgotten. `make openapi-lint` validates the
+document itself — it catches a malformed spec, not a spec that drifted from the
+routes. Only review catches the second.
 
 **3. Build with `CGO_ENABLED=0`.** `modernc.org/sqlite` is pure Go, which is
 what keeps the binary static so it runs on `distroless/static`. Its

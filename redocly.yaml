@@ -1,0 +1,12 @@
+# The ruleset behind `make openapi-lint` and the `openapi` CI job.
+#
+# Without this file redocly falls back to its built-in `recommended` set and
+# says so on every run. Naming it here makes the bar explicit and pins it to the
+# document rather than to whatever a given CLI build defaults to, so a local run
+# and the CI job fail on exactly the same rules.
+extends:
+  - recommended
+
+apis:
+  devmon-agent:
+    root: docs/openapi.yaml
