@@ -1,11 +1,15 @@
 name: CI
 
 # Two bars, scaled to the target branch:
-#   PR -> dev  : `test` only, for fast feedback on the integration branch.
-#   PR -> main : `test` plus `lint`, `image`, `shellcheck`, `gosec`, `govulncheck`
-#                and `e2e` — the release bar.
-# The main-only jobs are gated on `github.base_ref`, so they never queue on a dev PR.
-# Branch protection is per branch, so `dev` requires `test` and `main` requires all seven.
+#   PR -> dev     : `test` only, for fast feedback on the integration branch.
+#   PR -> main    : `test` plus `lint`, `image`, `shellcheck`, `gosec`, `govulncheck`
+#                   and `e2e` — the release bar.
+#   push -> main  : the same release bar, so main's HEAD carries its own result.
+# The main-only jobs are gated on `github.base_ref == 'main'` (populated on
+# pull_request only) or `github.ref == 'refs/heads/main'` (the push of the merge
+# commit), so they never queue on a dev PR but always run on what main actually
+# holds. Branch protection is per branch, so `dev` requires `test` and `main`
+# requires all seven.
 
 on:
   pull_request:
@@ -77,7 +81,9 @@ jobs:
 
   lint:
     name: lint
-    if: github.base_ref == 'main'
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -108,7 +114,9 @@ jobs:
 
   image:
     name: image
-    if: github.base_ref == 'main'
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -129,7 +137,9 @@ jobs:
   # needs no install step and no third-party action.
   shellcheck:
     name: shellcheck
-    if: github.base_ref == 'main'
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -139,7 +149,9 @@ jobs:
 
   gosec:
     name: gosec
-    if: github.base_ref == 'main'
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -169,7 +181,9 @@ jobs:
   # Installed from source and pinned, for the same supply-chain reason gosec is.
   govulncheck:
     name: govulncheck
-    if: github.base_ref == 'main'
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -193,7 +207,9 @@ jobs:
   # rather than taxing every integration PR into dev.
   e2e:
     name: e2e
-    if: github.base_ref == 'main'
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
