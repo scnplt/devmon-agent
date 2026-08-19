@@ -4,8 +4,14 @@
 # says so on every run. Naming it here makes the bar explicit and pins it to the
 # document rather than to whatever a given CLI build defaults to, so a local run
 # and the CI job fail on exactly the same rules.
+#
+# `recommended-strict`, not `recommended`: the two carry the same rules, but
+# the plain set leaves many of them at warning severity, and redocly exits 0 on
+# warnings. A gate that reports a fault and still goes green is not a gate — a
+# missing operationId, say, would have printed and passed. Strict promotes the
+# warnings to errors so the exit code matches what the run actually found.
 extends:
-  - recommended
+  - recommended-strict
 
 apis:
   devmon-agent:
