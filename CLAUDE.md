@@ -113,14 +113,17 @@ Never add a client-facing way to change policy mode or retention.
 delivered where it is read: in the session for local work, or as a comment on the PR it
 covers. It does not become a file in the repository.
 
-- Do not create `.claude/PRPs/reviews/` or any other committed review write-up. The path is
-  gitignored; if a scratch copy helps, write it to the session scratchpad instead.
+- Do not create `.claude/PRPs/reviews/` or any other committed review write-up. If a scratch
+  copy helps, write it to the session scratchpad instead.
 - A plan task that calls for a review means "perform it and report the verdict", never
   "produce a review document to commit".
-- Reports (`.claude/PRPs/reports/*.md`) still land in the repo — they record what a phase
-  shipped, not what a reviewer said.
+- Reports (`.claude/PRPs/reports/*.md`) are still written — they record what a phase shipped,
+  not what a reviewer said — but like the rest of `.claude/PRPs/` they stay local.
 
 ## Planning docs
+
+All of `.claude/PRPs/` is gitignored — these are local working documents, not repository
+content. They exist in the working tree but are never committed.
 
 - PRD: `.claude/PRPs/prds/devmon-agent.prd.md` — scope, decisions log, phase table
 - Plans: `.claude/PRPs/plans/*.plan.md` — one per phase; the plan is the implementation

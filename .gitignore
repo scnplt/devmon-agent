@@ -14,6 +14,6 @@
 coverage.out
 .env
 
-# Review write-ups are ephemeral working notes. Reviews are delivered in the
-# session or as PR comments, never committed.
-.claude/PRPs/reviews/
+# Planning artifacts (PRDs, phase plans, reports) and review write-ups are local
+# working notes. Reviews are delivered in the session or as PR comments.
+.claude/PRPs/
