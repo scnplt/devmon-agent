@@ -204,6 +204,138 @@ func TestRotatorRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestRotatorRunRotatesOnStartupWhenFileHasContent is the regression test for
+// issue #42: a Rotator that has just started must not wait a full interval
+// (24h in production) before its first pass, or DEVMON_LOG_MAX_AGE_DAYS is
+// never enforced on a host that restarts more often than that.
+func TestRotatorRunRotatesOnStartupWhenFileHasContent(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a real log line means the current file is non-empty, the
+	// shape a freshly booted agent's log is in by the time Run starts (see
+	// serve() in cmd/devmon-agent: several lines are logged before runAll
+	// starts the rotator).
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+	s.Logger.Info("line written before Run starts")
+
+	// Arrange — interval far longer than the test timeout proves any rotated
+	// backup found below cannot be explained by a tick firing.
+	r := NewRotator(s.lj, time.Hour, s.Logger)
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	done := make(chan struct{})
+
+	// Act
+	go func() {
+		defer close(done)
+		_ = r.Run(runCtx)
+	}()
+
+	// Assert
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, _ := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
+		if len(entries) > 0 {
+			cancel()
+			<-done
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Error("Run() never produced a rotated backup within the test window; the startup pass regressed")
+}
+
+// TestRotatorRunSkipsStartupRotationOnEmptyOrMissingFile guards against the
+// behavior the issue warned about: a crash-looping agent must not spray
+// empty rotated backups on every boot. lumberjack's Rotate (via openNew)
+// stats the current filename and, when it does not exist, creates it fresh
+// with no rename at all — that path alone is harmless. The unsafe case is a
+// current file that exists but is empty: Rotate would still rename it aside,
+// producing a useless backup file. Verified by reading
+// gopkg.in/natefinch/lumberjack.v2's openNew: it renames whenever os.Stat on
+// the current filename succeeds, regardless of size. The startup pass must
+// therefore skip rotation itself whenever the current file is missing or
+// zero bytes, rather than relying on lumberjack.
+func TestRotatorRunSkipsStartupRotationOnEmptyOrMissingFile(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a fresh sink whose current log file has not been written to
+	// yet, so it does not exist on disk (lumberjack opens lazily on first
+	// Write).
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+
+	r := NewRotator(s.lj, time.Hour, s.Logger)
+	runCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	done := make(chan struct{})
+
+	// Act
+	go func() {
+		defer close(done)
+		_ = r.Run(runCtx)
+	}()
+	<-runCtx.Done()
+	cancel()
+	<-done
+
+	// Assert — no current file and no backup: the startup pass must not have
+	// invented one.
+	entries, err := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("logs dir contains %v after a startup pass on an unwritten sink, want no files", entries)
+	}
+}
+
+// TestRotatorRunDoesNothingWhenContextAlreadyCancelled proves the startup
+// pass is skipped entirely when ctx is already dead on entry.
+func TestRotatorRunDoesNothingWhenContextAlreadyCancelled(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+	s.Logger.Info("line written before Run is ever called")
+
+	r := NewRotator(s.lj, time.Hour, s.Logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Act
+	err = r.Run(ctx)
+
+	// Assert
+	if err != context.Canceled {
+		t.Errorf("Run() = %v, want context.Canceled", err)
+	}
+	entries, globErr := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
+	if globErr != nil {
+		t.Fatalf("glob: %v", globErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("logs dir contains rotated backups %v, want none: Run() must not rotate when ctx is already cancelled", entries)
+	}
+}
+
 func TestRotatorRotatesOnTick(t *testing.T) {
 	t.Parallel()
 
