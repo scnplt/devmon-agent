@@ -62,6 +62,24 @@ func waitForRunAll(t *testing.T, ctx context.Context, components ...func(context
 	}
 }
 
+// waitForStartedCount polls started until it reaches want or deadline
+// elapses, so a test can synchronize on components actually having run
+// instead of sleeping a fixed amount of wall-clock time before cancelling.
+func waitForStartedCount(t *testing.T, started *atomic.Int32, want int32, deadline time.Duration) {
+	t.Helper()
+
+	giveUpAt := time.Now().Add(deadline)
+	for {
+		if got := started.Load(); got >= want {
+			return
+		}
+		if time.Now().After(giveUpAt) {
+			t.Fatalf("started count = %d after %s, want >= %d", started.Load(), deadline, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestRunAllReturnsNilOnCleanShutdown(t *testing.T) {
 	t.Parallel()
 
@@ -69,17 +87,27 @@ func TestRunAllReturnsNilOnCleanShutdown(t *testing.T) {
 	// as SIGTERM does in production.
 	var started atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// Act
+	done := make(chan error, 1)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		done <- runAll(ctx,
+			blockUntilCancelled(&started),
+			blockUntilCancelled(&started),
+			blockUntilCancelled(&started),
+		)
 	}()
-	err := waitForRunAll(t, ctx,
-		blockUntilCancelled(&started),
-		blockUntilCancelled(&started),
-		blockUntilCancelled(&started),
-	)
+
+	// Act — wait on the test's own goroutine (t.Fatal is unsafe from a
+	// spawned one) for all three components to have actually started before
+	// cancelling, rather than sleeping a fixed guess at how long that takes.
+	waitForStartedCount(t, &started, 3, 2*time.Second)
+	cancel()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(runAllTimeout):
+		t.Fatal("runAll did not return; the agent would hang instead of shutting down")
+	}
 
 	// Assert — context.Canceled is how a clean shutdown reaches these
 	// components. Surfacing it would make every SIGTERM exit non-zero and
@@ -164,14 +192,15 @@ func TestRunAllReportsFailureFromAnyPosition(t *testing.T) {
 func TestRunAllPrefersRealFailureOverCancellation(t *testing.T) {
 	t.Parallel()
 
-	// Arrange — the failing component is last, so the cancellation errors from
-	// its siblings are drained first.
+	// Arrange — the failing component is last. Ordering here does not depend
+	// on wall-clock timing: runAll sends a component's error to the shared
+	// errs channel before its own deferred cancel() runs, and the other two
+	// components are blocked on <-ctx.Done() until some component calls
+	// cancel(). So slowFail's error is always queued before the siblings'
+	// cancellation errors can be, regardless of how quickly it returns.
 	wantErr := errors.New("the real cause")
 	var started atomic.Int32
-	slowFail := func(ctx context.Context) error {
-		time.Sleep(50 * time.Millisecond)
-		return wantErr
-	}
+	slowFail := func(context.Context) error { return wantErr }
 
 	// Act
 	err := waitForRunAll(t, context.Background(),

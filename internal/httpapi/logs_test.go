@@ -689,6 +689,11 @@ func TestStreamKeepaliveIsRaceFree(t *testing.T) {
 				// Bounded, short sleep — not a wall-clock wait on the phase's
 				// real timings — giving the 2ms keepalive ticker room to race
 				// with this write on the shared underlying ResponseWriter.
+				// This is not a synchronization wait (issue #54): there is no
+				// observable signal to poll for here, since the goroutine
+				// under test writes into the same handler call this loop is
+				// blocking, and the assertion is race-freedom under `-race`,
+				// not any state this sleep could instead wait on.
 				time.Sleep(time.Millisecond)
 			}
 			return nil
@@ -729,7 +734,11 @@ func TestStreamKeepaliveGoroutineJoinedBeforeReturn(t *testing.T) {
 	fd := &fakeDocker{
 		streamContainerLogsFn: func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
 			// Return promptly while the 1ms keepalive ticker is still firing,
-			// so cancel() races the next tick.
+			// so cancel() races the next tick. Also not a synchronization
+			// wait (issue #54): the fake has no handle on the ticker or the
+			// ResponseWriter to poll, and the point of this sleep is to
+			// consume real wall-clock time so the ticker fires while the
+			// fake is still running.
 			time.Sleep(5 * time.Millisecond)
 			return nil
 		},
@@ -743,11 +752,19 @@ func TestStreamKeepaliveGoroutineJoinedBeforeReturn(t *testing.T) {
 	s.routes().ServeHTTP(rec, req)
 	lenAtReturn := rec.Body.Len()
 
-	// Assert — give any unjoined goroutine several tick intervals to write
-	// more before checking that nothing changed.
-	time.Sleep(20 * keepaliveInterval)
-	if got := rec.Body.Len(); got != lenAtReturn {
-		t.Errorf("body length grew from %d to %d after ServeHTTP returned; the keepalive goroutine was not joined", lenAtReturn, got)
+	// Assert — watch for several tick intervals rather than sleeping once
+	// and checking after the fact: this fails on the very first observed
+	// growth instead of only after the whole window has elapsed.
+	watchWindow := 20 * keepaliveInterval
+	giveUpAt := time.Now().Add(watchWindow)
+	for {
+		if got := rec.Body.Len(); got != lenAtReturn {
+			t.Fatalf("body length grew from %d to %d after ServeHTTP returned; the keepalive goroutine was not joined", lenAtReturn, got)
+		}
+		if time.Now().After(giveUpAt) {
+			return
+		}
+		time.Sleep(keepaliveInterval)
 	}
 }
 
@@ -778,16 +795,11 @@ func TestStreamGoroutineDoesNotLeak(t *testing.T) {
 	// Assert — a short settle loop rather than a bare sleep: the keepalive
 	// goroutine exits on ctx.Done(), which the scheduler may not have
 	// delivered the instant ServeHTTP returns.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if runtime.NumGoroutine() <= baseline {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("goroutine count = %d, want <= baseline %d", runtime.NumGoroutine(), baseline)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForCondition(t, 2*time.Second, 5*time.Millisecond,
+		func() bool { return runtime.NumGoroutine() <= baseline },
+		func() string {
+			return fmt.Sprintf("goroutine count = %d, want <= baseline %d", runtime.NumGoroutine(), baseline)
+		})
 }
 
 // TestLogRoutesRequireDevice asserts both log routes answer 401 with the

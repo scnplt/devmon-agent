@@ -36,6 +36,30 @@ func openStore(t *testing.T, path string) *Store {
 	return s
 }
 
+// waitForRowCount polls the audit table's row count until it equals want or
+// deadline elapses, so a test can synchronize on a background ticker's
+// observable effect (a pruned row) instead of sleeping a fixed multiple of
+// the ticker's interval.
+func waitForRowCount(t *testing.T, s *Store, want int, deadline time.Duration) {
+	t.Helper()
+
+	ctx := context.Background()
+	giveUpAt := time.Now().Add(deadline)
+	for {
+		var got int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit`).Scan(&got); err != nil {
+			t.Fatalf("count audit rows: %v", err)
+		}
+		if got == want {
+			return
+		}
+		if time.Now().After(giveUpAt) {
+			t.Fatalf("audit row count = %d after %s, want %d", got, deadline, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestOpenFirstRunCreatesSchema(t *testing.T) {
 	t.Parallel()
 

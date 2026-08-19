@@ -70,14 +70,17 @@ func runnableServer(t *testing.T, addr string) *Server {
 func TestRunShutsDownCleanly(t *testing.T) {
 	t.Parallel()
 
-	// Arrange — port 0 lets the OS pick, so parallel tests never collide.
-	s := runnableServer(t, "127.0.0.1:0")
+	// Arrange — a known port, reserved and released up front, so parallel
+	// tests never collide and this test can dial it to confirm the listener
+	// has actually bound before cancelling.
+	addr := freeTCPAddr(t)
+	s := runnableServer(t, addr)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 
 	// Act
 	go func() { done <- s.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond) // let the listener bind
+	waitForListening(t, addr, 2*time.Second)
 	cancel()
 
 	// Assert
@@ -245,7 +248,9 @@ func TestRunReturnsShutdownError(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() { done <- s.Run(ctx) }()
-	time.Sleep(50 * time.Millisecond) // let the listener bind
+	// The listener has to be bound before this test can dial it. Poll for a
+	// successful connect instead of sleeping a fixed 50ms (issue #54).
+	waitForListening(t, addr, 2*time.Second)
 
 	// A raw TLS connection that completes the handshake but never finishes
 	// sending request headers: the server is still waiting to read, so the
@@ -405,7 +410,7 @@ func TestShutdownEndsLiveStreamPromptlyAndReturnsNil(t *testing.T) {
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Run(runCtx) }()
-	time.Sleep(50 * time.Millisecond) // let the listener bind
+	waitForListening(t, addr, 2*time.Second)
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
