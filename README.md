@@ -756,6 +756,44 @@ trade.
 Reading this list while the agent runs is safe and expected — that is what WAL
 mode and the busy timeout were configured for.
 
+### Health
+
+The image carries a `HEALTHCHECK`, so `docker ps` reports a health state
+alongside the running state:
+
+```bash
+$ docker ps --filter name=devmon-agent --format '{{.Names}} {{.Status}}'
+devmon-agent    Up 4 hours (healthy)
+```
+
+It runs `devmon-agent health`, a third subcommand on the same binary — for the
+same reason as the two above, there is no shell and no curl in the image to
+run a probe with. The subcommand makes one HTTPS `GET /v1/status` against the
+agent's own listener on loopback and exits 0 or 1. `restart: unless-stopped`
+alone only reacts to the process exiting; this also catches a listener that is
+up but no longer answering.
+
+```bash
+$ docker exec devmon-agent /usr/local/bin/devmon-agent health
+healthy: GET /v1/status returned 200
+
+$ docker inspect -f '{{.State.Health.Status}}' devmon-agent
+healthy
+```
+
+A rate-limited answer (429) counts as healthy: it proves the listener is
+accepting connections and running the middleware chain, which is all this probe
+claims to measure. Lowering `DEVMON_RATE_STATUS_PER_MIN` therefore cannot make
+a working container report unhealthy. TLS verification is skipped, deliberately
+— the server certificate is issued for `DEVMON_PUBLIC_ADDR`'s SANs, which do
+not include loopback, and a process probing the listener from inside the
+container that owns it is not the place to re-establish who that listener is.
+It never reads `certs/`, for the same reason `device` and `audit` do not.
+
+One consequence worth knowing: the probe is a real request, so it writes a
+request log line every 30 seconds — about 2900 a day. Raise
+`DEVMON_LOG_MAX_TOTAL_MB` if that crowds out what you are actually reading.
+
 ### The audit log
 
 Every mutating request writes exactly **one** row — successes, refusals by
