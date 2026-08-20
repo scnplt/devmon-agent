@@ -58,4 +58,14 @@ COPY --from=build --chown=65532:65532 /out/state /var/lib/devmon
 USER nonroot:nonroot
 EXPOSE 8443
 
+# The exec form with an absolute path is mandatory: distroless/static has no
+# shell, so the shell form of CMD/HEALTHCHECK never runs there. `health`
+# (cmd/devmon-agent/health.go) exists specifically to give this instruction
+# something it can invoke without a shell or curl. --timeout=5s comfortably
+# exceeds the subcommand's own 3-second client timeout, so a slow-but-alive
+# listener is reported by the subcommand's own readable message rather than
+# by Docker's generic timeout kill.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/devmon-agent", "health"]
+
 ENTRYPOINT ["/usr/local/bin/devmon-agent"]

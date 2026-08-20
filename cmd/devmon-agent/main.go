@@ -86,6 +86,15 @@ func run() error {
 		return runAuditCommand(context.Background(), cfg, flag.Args()[1:])
 	}
 
+	// `health` (issue #56) backs the Dockerfile's HEALTHCHECK. It is
+	// dispatched here for the same reason as `device` and `audit`: it must
+	// never trigger state-dir prep, log-sink construction, or certificate
+	// loading meant only for the long-running agent — and doubly so here,
+	// since Docker invokes it every 30 seconds for the life of the container.
+	if flag.Arg(0) == "health" {
+		return runHealthCommand(context.Background(), cfg, flag.Args()[1:])
+	}
+
 	if err := prepareStateDir(cfg); err != nil {
 		return err
 	}
