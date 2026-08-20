@@ -3,13 +3,13 @@ name: CI
 # Two bars, scaled to the target branch:
 #   PR -> dev     : `test` only, for fast feedback on the integration branch.
 #   PR -> main    : `test` plus `lint`, `image`, `shellcheck`, `gosec`, `govulncheck`,
-#                   `openapi` and `e2e` — the release bar.
+#                   `openapi`, `e2e` and `e2e-health` — the release bar.
 #   push -> main  : the same release bar, so main's HEAD carries its own result.
 # The main-only jobs are gated on `github.base_ref == 'main'` (populated on
 # pull_request only) or `github.ref == 'refs/heads/main'` (the push of the merge
 # commit), so they never queue on a dev PR but always run on what main actually
 # holds. Branch protection is per branch, so `dev` requires `test` and `main`
-# requires all eight.
+# requires all nine.
 
 on:
   pull_request:
@@ -263,3 +263,78 @@ jobs:
 
       - name: e2e lint
         run: make e2e-lint
+
+  # The runner's own Engine cannot answer the one question this job asks.
+  # ContainerSummary.Health was added in Docker API v1.52 (Engine 29) and
+  # ubuntu-latest still ships API 1.48, so TestContainerListReportsHealth skips
+  # in the `e2e` job above and the shipped `health` key of GET /v1/containers
+  # has never been verified by CI (#15). This job gives that one test an Engine
+  # 29 daemon to run against.
+  #
+  # Scope is deliberately one test, not the whole suite: a dind daemon reached
+  # over tcp:// is a different environment from the runner's local socket, and
+  # the in-container group cannot run against it at all — it bind-mounts the
+  # daemon's socket, which a tcp:// endpoint has no local file for. The `e2e`
+  # job stays the suite's home; this is a single-assertion supplement.
+  e2e-health:
+    name: e2e-health
+    # Release bar. `base_ref` covers the PR into main; `ref` covers the push of
+    # the merge commit onto main, where `base_ref` is empty.
+    if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    services:
+      # Pinned for the same reason every other tool version here is: an upstream
+      # release must not be able to turn a protected branch red overnight.
+      # --privileged is what dind needs to run its own daemon, and an empty
+      # DOCKER_TLS_CERTDIR is what makes that daemon listen on plain 2375
+      # instead of TLS on 2376.
+      engine:
+        image: docker:29.7.2-dind
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: ""
+        ports:
+          - 2375:2375
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A service container counts as started as soon as its process is up; the
+      # daemon inside it answers a little later. Poll rather than sleep, and
+      # print the version that answered — the API version in that output is the
+      # premise this whole job rests on.
+      - name: Wait for the Engine 29 service
+        run: |
+          for _ in $(seq 1 30); do
+            if docker -H tcp://127.0.0.1:2375 version; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the dind service did not answer within 60s"
+          exit 1
+
+      # DEVMON_E2E_DOCKER_HOST points both the harness and the agent binary it
+      # starts at the service daemon instead of the runner's own.
+      #
+      # The grep is the point of the job. The version gate inside the test is a
+      # t.Skipf that DEVMON_E2E_REQUIRE=1 deliberately does not convert into a
+      # failure, so a run against an unexpectedly old daemon — or a renamed or
+      # deleted test — would otherwise report a bare `ok` and imply coverage it
+      # does not have, which is the exact failure #15 is about. Requiring the
+      # PASS line means only an assertion that actually ran can make this green.
+      - name: Verify the health projection against Engine 29
+        env:
+          DEVMON_E2E_REQUIRE: 1
+          DEVMON_E2E_DOCKER_HOST: tcp://127.0.0.1:2375
+        run: |
+          set -o pipefail
+          make e2e-health 2>&1 | tee e2e-health.log
+          if ! grep -q '^--- PASS: TestContainerListReportsHealth' e2e-health.log; then
+            echo "::error::TestContainerListReportsHealth did not run to a PASS; the health projection is still unverified"
+            exit 1
+          fi
