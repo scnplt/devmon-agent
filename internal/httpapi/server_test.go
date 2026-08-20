@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -235,12 +236,31 @@ func TestLogRoutePrecedence(t *testing.T) {
 }
 
 // TestRunReturnsShutdownError covers both shutdown's error branch and Run's
-// propagation of it: a connection stuck mid-request-headers counts as active
-// for http.Server.Shutdown's purposes, so Shutdown blocks until shutdown's
-// own fresh context expires after shutdownGrace and returns
-// context.DeadlineExceeded, which Run must surface rather than swallow.
+// propagation of it: a request still in flight when the grace window expires
+// makes http.Server.Shutdown return context.DeadlineExceeded, and Run must
+// surface that rather than swallow it.
+//
+// The branch is still reachable after #41: shutdown cancels lifecycleCtx —
+// the parent of every request context — before it drains, so a handler that
+// honours its context unwinds at once and Shutdown returns nil (that contract
+// is TestShutdownEndsLiveStreamPromptlyAndReturnsNil), but a handler that
+// ignores it for longer than shutdownGrace still holds the window open. The
+// blocking handler below stands in for one, since no production handler
+// ignores its context on purpose.
+//
+// It replaces a connection stalled mid-request-headers, whose premise was not
+// stable (issue #72). net/http counts a StateNew connection as idle once its
+// state stamp is more than five seconds old, and that stamp has one-second
+// granularity while shutdownGrace is itself five seconds: a connection
+// registered just before a second boundary crossed the threshold inside the
+// grace window, was closed as idle, and Shutdown returned nil; one registered
+// just after did not. Which side of the boundary it landed on was the coin
+// flip, and a probe confirms it — cancelling the base context first makes no
+// difference to the outcome, while delaying the shutdown by 1.2s flips it from
+// always-DeadlineExceeded to always-nil. A request sitting in a handler is
+// StateActive, is never promoted to idle, and so is not timing-dependent.
 func TestRunReturnsShutdownError(t *testing.T) {
-	// Not t.Parallel(): this test deliberately holds a connection open for
+	// Not t.Parallel(): this test deliberately holds a request open for
 	// shutdownGrace (5s) so its background goroutines do not skew
 	// TestStreamGoroutineDoesNotLeak's before/after count if the two run
 	// concurrently.
@@ -248,6 +268,22 @@ func TestRunReturnsShutdownError(t *testing.T) {
 	// Arrange — a known port, since this test dials the server itself.
 	addr := freeTCPAddr(t)
 	s := runnableServer(t, addr)
+
+	// The handler is swapped for a blocking one rather than reached through
+	// the real routes: the contract under test is Run and shutdown, not
+	// routing, and no production handler ignores its context on purpose.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s.http.Handler = http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		// Deliberately not selecting on r.Context().Done(): ignoring
+		// cancellation is the whole premise.
+		<-release
+	})
+	// Released after the assertion, so the handler goroutine and its
+	// connection unwind before the test ends.
+	t.Cleanup(func() { close(release) })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 
@@ -256,16 +292,22 @@ func TestRunReturnsShutdownError(t *testing.T) {
 	// successful connect instead of sleeping a fixed 50ms (issue #54).
 	waitForListening(t, addr, 2*time.Second)
 
-	// A raw TLS connection that completes the handshake but never finishes
-	// sending request headers: the server is still waiting to read, so the
-	// connection is active, not idle, when Shutdown is asked to drain it.
 	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // test-only, talks to our own ephemeral server
 	if err != nil {
 		t.Fatalf("dial server: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: example\r\n")); err != nil {
-		t.Fatalf("write partial request: %v", err)
+	if _, err := conn.Write([]byte("GET /v1/status HTTP/1.1\r\nHost: example\r\n\r\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	// Synchronize on the handler actually running, so the request is provably
+	// in flight — and therefore the connection provably active — before the
+	// grace window starts.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the handler")
 	}
 
 	// Act
@@ -275,7 +317,10 @@ func TestRunReturnsShutdownError(t *testing.T) {
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("Run() = nil, want a shutdown-timeout error with a connection still active")
+			t.Fatal("Run() = nil, want a shutdown-timeout error with a request still in flight")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
 		}
 		if !bodyContains(err.Error(), "shut down http server") {
 			t.Errorf("error %q does not identify the failing step", err)
