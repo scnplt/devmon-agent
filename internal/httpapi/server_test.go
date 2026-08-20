@@ -47,9 +47,13 @@ func freeTCPAddr(t *testing.T) string {
 
 func testTLSConfig(t *testing.T) *tls.Config {
 	t.Helper()
-	certPEM, keyPEM, err := certs.GenerateServerCert([]string{"localhost"}, time.Now())
+	ca, _, err := certs.LoadOrCreateCA(t.TempDir(), testLogger())
 	if err != nil {
-		t.Fatalf("generate test cert: %v", err)
+		t.Fatalf("load or create test CA: %v", err)
+	}
+	certPEM, keyPEM, err := ca.IssueServerCert([]string{"localhost"}, time.Now())
+	if err != nil {
+		t.Fatalf("issue test cert: %v", err)
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
@@ -371,9 +375,9 @@ func TestShutdownEndsLiveStreamPromptlyAndReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOrCreateCA: %v", err)
 	}
-	certPEM, keyPEM, err := certs.GenerateServerCert([]string{"127.0.0.1"}, time.Now())
+	certPEM, keyPEM, err := ca.IssueServerCert([]string{"127.0.0.1"}, time.Now())
 	if err != nil {
-		t.Fatalf("generate server cert: %v", err)
+		t.Fatalf("issue server cert: %v", err)
 	}
 	serverPair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {

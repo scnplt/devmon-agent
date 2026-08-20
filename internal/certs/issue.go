@@ -21,7 +21,7 @@ import (
 // the device (its ID). A CSR asking to be CN=admin does not get it.
 //
 // now is a parameter so tests can pin the validity window, matching
-// GenerateServerCert's convention.
+// IssueServerCert's convention.
 func (c *CA) IssueDeviceCert(csrDER []byte, commonName string, now time.Time) (certPEM []byte, serial string, notAfter time.Time, err error) {
 	csr, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil {
