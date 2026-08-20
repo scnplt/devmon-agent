@@ -45,6 +45,11 @@ services:
     container_name: devmon-agent
     restart: unless-stopped
 
+    # The image carries its own HEALTHCHECK (it runs `devmon-agent health`, a
+    # subcommand on the same binary — distroless has no shell or curl to probe
+    # with), so `docker ps` reports a health state here without any compose
+    # configuration. Override it below only if you want a different interval.
+
     # Hardening. This container holds the Docker socket, which makes it the most
     # valuable thing on the host to compromise; each line below narrows what a
     # foothold inside it is worth. None of them changes how the agent behaves.
