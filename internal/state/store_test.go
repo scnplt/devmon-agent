@@ -346,6 +346,166 @@ func TestPruneAudit(t *testing.T) {
 	}
 }
 
+// TestPruneAuditPerDeviceShareProtectsOtherDevices is the regression test for
+// issue #81: a compromised-but-authenticated device that floods admitted
+// mutations at the rate limit must not be able to evict another device's
+// audit rows by filling the global row budget. Device A writes far more rows
+// than its fair share while device B holds only a handful of old rows;
+// pruning with a small maxRows must leave every one of B's rows intact and
+// trim A down to its share instead.
+func TestPruneAuditPerDeviceShareProtectsOtherDevices(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — device B: 5 old rows. Device A: 90 rows flooding the table,
+	// all newer than B's rows, all well within the age cutoff.
+	s := openStore(t, tempDBPath(t))
+	ctx := context.Background()
+	now := time.Now()
+
+	insertAuditRow := func(device string, age time.Duration) {
+		t.Helper()
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO audit (occurred_at, device_id, operation, outcome) VALUES (?, ?, 'read', 'allowed')`,
+			now.Add(-age).Unix(), device,
+		)
+		if err != nil {
+			t.Fatalf("insert audit row for %s: %v", device, err)
+		}
+	}
+
+	for i := range 5 {
+		insertAuditRow("device-b", time.Duration(100-i)*time.Minute)
+	}
+	for i := range 90 {
+		insertAuditRow("device-a", time.Duration(90-i)*time.Minute)
+	}
+
+	// Act — maxRows=20 across 2 devices gives each a fair share of 10.
+	removed, err := s.PruneAudit(ctx, 365*24*time.Hour, 20)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("PruneAudit() unexpected error: %v", err)
+	}
+	if removed != 80 {
+		t.Errorf("PruneAudit() removed = %d, want 80 (95 total - 15 surviving across both shares)", removed)
+	}
+
+	var bRemaining int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit WHERE device_id = 'device-b'`,
+	).Scan(&bRemaining); err != nil {
+		t.Fatalf("count device-b rows: %v", err)
+	}
+	if bRemaining != 5 {
+		t.Errorf("device-b rows remaining = %d, want all 5 to survive a flood from device-a", bRemaining)
+	}
+
+	var aRemaining int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit WHERE device_id = 'device-a'`,
+	).Scan(&aRemaining); err != nil {
+		t.Fatalf("count device-a rows: %v", err)
+	}
+	if aRemaining != 10 {
+		t.Errorf("device-a rows remaining = %d, want it trimmed to its fair share of 10", aRemaining)
+	}
+}
+
+func TestPruneAuditNullDeviceIDIsOwnBucket(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — rows written outside a device context (device_id NULL/empty)
+	// must be capped as their own bucket, and must not be able to evict a
+	// named device's rows nor escape the cap themselves.
+	s := openStore(t, tempDBPath(t))
+	ctx := context.Background()
+	now := time.Now()
+
+	for i := range 3 {
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO audit (occurred_at, device_id, operation, outcome) VALUES (?, ?, 'read', 'allowed')`,
+			now.Add(-time.Duration(i)*time.Minute).Unix(), "device-x",
+		)
+		if err != nil {
+			t.Fatalf("insert device-x row: %v", err)
+		}
+	}
+	for i := range 50 {
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO audit (occurred_at, operation, outcome) VALUES (?, 'read', 'allowed')`,
+			now.Add(-time.Duration(i)*time.Minute).Unix(),
+		)
+		if err != nil {
+			t.Fatalf("insert null-device row: %v", err)
+		}
+	}
+
+	// Act — 2 buckets (device-x, NULL) share maxRows=10, so each gets 5.
+	_, err := s.PruneAudit(ctx, 365*24*time.Hour, 10)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("PruneAudit() unexpected error: %v", err)
+	}
+	var xRemaining int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit WHERE device_id = 'device-x'`,
+	).Scan(&xRemaining); err != nil {
+		t.Fatalf("count device-x rows: %v", err)
+	}
+	if xRemaining != 3 {
+		t.Errorf("device-x rows remaining = %d, want all 3 to survive the NULL bucket's flood", xRemaining)
+	}
+	var nullRemaining int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit WHERE device_id IS NULL`,
+	).Scan(&nullRemaining); err != nil {
+		t.Fatalf("count null-device rows: %v", err)
+	}
+	if nullRemaining != 5 {
+		t.Errorf("null-device rows remaining = %d, want it capped to its 5-row share", nullRemaining)
+	}
+}
+
+func TestPruneAuditNeverExceedsMaxRows(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — several devices, each with more rows than the eventual
+	// maxRows, to exercise the row-count backstop after the share pass.
+	s := openStore(t, tempDBPath(t))
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, device := range []string{"device-1", "device-2", "device-3"} {
+		for i := range 20 {
+			_, err := s.db.ExecContext(ctx,
+				`INSERT INTO audit (occurred_at, device_id, operation, outcome) VALUES (?, ?, 'read', 'allowed')`,
+				now.Add(-time.Duration(i)*time.Minute).Unix(), device,
+			)
+			if err != nil {
+				t.Fatalf("insert %s row: %v", device, err)
+			}
+		}
+	}
+
+	// Act
+	const maxRows = 10
+	_, err := s.PruneAudit(ctx, 365*24*time.Hour, maxRows)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("PruneAudit() unexpected error: %v", err)
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit`).Scan(&total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total > maxRows {
+		t.Errorf("total audit rows = %d, want at most maxRows=%d", total, maxRows)
+	}
+}
+
 func TestPruneAuditOnEmptyTable(t *testing.T) {
 	t.Parallel()
 
