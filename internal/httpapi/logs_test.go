@@ -898,22 +898,60 @@ func TestStreamKeepaliveGoroutineJoinedBeforeReturn(t *testing.T) {
 	}
 }
 
+// keepaliveGoroutineFrame is the stack-trace frame of the anonymous keepalive
+// goroutine started inside (*Server).handleStreamContainerLogs. It is used to
+// count only that goroutine rather than the whole process's goroutine count,
+// which runtime.NumGoroutine() reports and t.Parallel() makes unreliable:
+// unrelated goroutines from other parallel tests in this package can move
+// that number in either direction and either fail the test spuriously or
+// mask a real leak.
+const keepaliveGoroutineFrame = "internal/httpapi.(*Server).handleStreamContainerLogs.func1"
+
+// countGoroutinesMatching dumps every goroutine's stack via runtime.Stack and
+// counts how many contain frame. It grows the buffer until the dump fits
+// entirely: runtime.Stack silently truncates a dump that does not fit the
+// supplied buffer, and a truncated dump would undercount, making the
+// assertion in TestStreamGoroutineDoesNotLeak pass vacuously instead of
+// catching a real leak.
+func countGoroutinesMatching(frame string) int {
+	buf := make([]byte, 64*1024)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Count(string(buf[:n]), frame)
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
 // TestStreamGoroutineDoesNotLeak opens and closes 20 streams and asserts the
-// goroutine count returns to its baseline, proving the keepalive goroutine
-// and its ticker exit when the handler returns rather than leaking one per
-// stream.
+// count of keepalive goroutines returns to zero, proving the keepalive
+// goroutine and its ticker exit when the handler returns rather than leaking
+// one per stream. It counts matches of the keepalive goroutine's own stack
+// frame (via countGoroutinesMatching) rather than runtime.NumGoroutine():
+// this test runs with t.Parallel(), so the whole-process count is polluted
+// by unrelated goroutines from other parallel tests in this package, which
+// made the baseline-vs-after comparison flaky (observed in CI as "goroutine
+// count = 178, want <= baseline 143").
 func TestStreamGoroutineDoesNotLeak(t *testing.T) {
 	t.Parallel()
 
-	// Arrange
+	// Arrange — the keepalive goroutine is joined via wg.Wait() before
+	// ServeHTTP returns (see handleStreamContainerLogs), so the only place
+	// it can be observed running is from inside streamContainerLogsFn while
+	// the handler is still on the stack. ServeHTTP is called sequentially
+	// below, so a plain closure variable is safe without extra locking.
+	inFlightCount := 0
 	fd := &fakeDocker{
 		streamContainerLogsFn: func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
+			if got := countGoroutinesMatching(keepaliveGoroutineFrame); got > inFlightCount {
+				inFlightCount = got
+			}
 			return nil
 		},
 	}
 	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
 	serial := pairDeviceForRead(t, st)
-	baseline := runtime.NumGoroutine()
 
 	// Act
 	for i := 0; i < 20; i++ {
@@ -921,14 +959,21 @@ func TestStreamGoroutineDoesNotLeak(t *testing.T) {
 		rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
 		s.routes().ServeHTTP(rec, req)
 	}
+	// A renamed or moved keepalive goroutine must fail this assertion
+	// loudly instead of making the count-returns-to-zero check below pass
+	// vacuously with 0.
+	if inFlightCount == 0 {
+		t.Fatalf("keepaliveGoroutineFrame %q never matched a running goroutine; "+
+			"the frame name likely drifted from handleStreamContainerLogs.func1", keepaliveGoroutineFrame)
+	}
 
 	// Assert — a short settle loop rather than a bare sleep: the keepalive
 	// goroutine exits on ctx.Done(), which the scheduler may not have
 	// delivered the instant ServeHTTP returns.
 	waitForCondition(t, 2*time.Second, 5*time.Millisecond,
-		func() bool { return runtime.NumGoroutine() <= baseline },
+		func() bool { return countGoroutinesMatching(keepaliveGoroutineFrame) == 0 },
 		func() string {
-			return fmt.Sprintf("goroutine count = %d, want <= baseline %d", runtime.NumGoroutine(), baseline)
+			return fmt.Sprintf("keepalive goroutine count = %d, want 0", countGoroutinesMatching(keepaliveGoroutineFrame))
 		})
 }
 
