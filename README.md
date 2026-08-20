@@ -500,7 +500,8 @@ Failure modes shared by every read route:
 | Unparsable `?since=` timestamp | 400 | `{"error":"invalid since timestamp"}` |
 | No such object | 404 | `{"error":"not found"}` |
 | Engine unreachable, timed out, or otherwise failing | 502 | `{"error":"docker engine unavailable"}` |
-| All live stream slots in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
+| Calling device already holds its own stream cap (stream route only) | 503 | `{"error":"too many concurrent log streams for this device"}` |
+| Every stream slot on the host is in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
 
 The mutating routes add three of their own:
 
@@ -596,12 +597,17 @@ minified bundle — would otherwise be accumulated whole in agent memory before
 any line boundary arrived, which is the agent OOM-killing itself while reading
 logs.
 
-**Eight live streams at once**, after which the route answers 503 with
-`too many concurrent log streams`. Each stream holds a goroutine, an Engine
-connection, and a socket for its entire life, so an unbounded count is
-file-descriptor exhaustion the agent inflicts on the host it exists to protect.
-The limit is a constant rather than a setting, on the same reasoning as the rest
-of the configuration: every additional knob is surface the operator has to
+**Eight live streams per host, three per device**, after which the route answers
+503 — `too many concurrent log streams for this device` when the caller is at its
+own cap, `too many concurrent log streams` when the host's total is gone. Each
+stream holds a goroutine, an Engine connection, and a socket for its entire life,
+so an unbounded count is file-descriptor exhaustion the agent inflicts on the host
+it exists to protect. The per-device cap under that total is what stops one paired
+device — a phone with a stack of tabs, or a client that leaks streams on
+backgrounding — from denying live logs to every other paired device; the host-wide
+refusal is logged with the devices holding the slots, so the operator can tell the
+two apart. Both limits are constants rather than settings, on the same reasoning as
+the rest of the configuration: every additional knob is surface the operator has to
 understand at install time.
 
 If the container turns out not to exist, or the Engine is unreachable, the
