@@ -770,6 +770,13 @@ over the API**, in any policy mode — it is the one artifact whose value surviv
 a compromised device, and a phone that can read it can see what it would need to
 cover up. Host access is the authority here, exactly as it is for revocation.
 
+The row ceiling is spent **per device**, not first-come-first-served: pruning
+divides the budget evenly across the devices present in the table and trims each
+to its own share, so one device generating traffic at the rate limit cannot push
+another device's history out of the record. A device that overruns its own share
+still loses its own oldest rows — the table is finite on purpose — which
+`docs/THREAT-MODEL.md` states in full.
+
 ---
 
 ## Development

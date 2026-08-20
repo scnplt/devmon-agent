@@ -10,6 +10,7 @@ package state
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -260,13 +261,21 @@ func TestPruneAuditFailsWhenAuditTableMissing(t *testing.T) {
 	}
 }
 
-func TestPruneAuditByCountFailsWhenIDColumnRenamed(t *testing.T) {
+func TestPruneAuditByDeviceShareFailsWhenIDColumnRenamed(t *testing.T) {
 	t.Parallel()
 
 	// Arrange — the age-based DELETE never references id, so it still
-	// succeeds; only the count-based DELETE's subquery breaks.
+	// succeeds; the device-share pass runs before the row-count pass and is
+	// the first one whose window function and subquery reference id, so it
+	// is the one that breaks.
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit (occurred_at, operation, outcome) VALUES (?, 'read', 'allowed')`,
+		time.Now().Unix(),
+	); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit RENAME COLUMN id TO id_renamed`); err != nil {
 		t.Fatalf("rename column: %v", err)
 	}
@@ -277,6 +286,9 @@ func TestPruneAuditByCountFailsWhenIDColumnRenamed(t *testing.T) {
 	// Assert
 	if err == nil {
 		t.Fatal("PruneAudit() error = nil after the audit id column was renamed, want an error")
+	}
+	if !strings.Contains(err.Error(), "prune audit by device share") {
+		t.Fatalf("PruneAudit() error = %q, want it to name the device-share pass", err.Error())
 	}
 }
 
