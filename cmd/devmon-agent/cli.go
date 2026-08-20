@@ -266,7 +266,7 @@ func runAuditList(ctx context.Context, st *state.Store, w io.Writer, limit int) 
 	}
 	for _, e := range entries {
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.OccurredAt.Format(deviceTimeFormat), auditDeviceColumn(devices, e.DeviceID), e.Operation, e.Target, e.Outcome, e.Detail); err != nil {
+			e.OccurredAt.Format(deviceTimeFormat), auditDeviceColumn(devices, e.DeviceID), e.Operation, orDash(e.Target), e.Outcome, orDash(e.Detail)); err != nil {
 			return fmt.Errorf("write audit list row: %w", err)
 		}
 	}
@@ -286,4 +286,23 @@ func auditDeviceColumn(devices []state.Device, id string) string {
 		return id
 	}
 	return fmt.Sprintf("%s (%s)", id, name)
+}
+
+// auditEmptyColumn is printed in place of an empty TARGET or DETAIL cell.
+// Identity audit rows (pair, renew, unpair_self — internal/httpapi/audit.go)
+// leave one or both of those fields empty by design: pairing and renewal
+// have no container target, and a pair row has no detail to report. An empty
+// tabwriter cell between tab stops collapses visually and defeats column
+// counting, so every row always carries six visually distinct columns.
+const auditEmptyColumn = "-"
+
+// orDash returns auditEmptyColumn for an empty string and s unchanged
+// otherwise, keeping every `audit list` row at a fixed column count for both
+// human readers and the tabwriter-column parser in
+// internal/e2e/harness/cli.go.
+func orDash(s string) string {
+	if s == "" {
+		return auditEmptyColumn
+	}
+	return s
 }
