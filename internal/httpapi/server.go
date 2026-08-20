@@ -113,9 +113,10 @@ type Server struct {
 // renew device certificates from it; the status handler derives the public
 // fingerprint from it on each call. ca may be nil in tests that do not
 // exercise certificate issuance; handleStatus tolerates that by serving an
-// empty fingerprint. dc may likewise be nil in tests that do not exercise the
-// Docker read routes; every read handler tolerates that by serving 502
-// instead of panicking.
+// empty fingerprint, and handlePair and handleRenew tolerate it by answering
+// 500 through requireCA rather than panicking inside IssueDeviceCert. dc may
+// likewise be nil in tests that do not exercise the Docker read routes; every
+// read handler tolerates that by serving 502 instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: make(chan struct{}, maxConcurrentStreams)}
 	s.lifecycleCtx, s.cancelLifecycle = context.WithCancel(context.Background())
