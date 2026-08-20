@@ -46,7 +46,19 @@ const (
 	// host it exists to protect. A constant rather than an env var: every extra
 	// startup setting is surface the operator has to understand at install time,
 	// and eight concurrent log views on one phone is already beyond any real use.
+	// This global ceiling is unchanged by the per-device cap below (issue #80);
+	// only how the eight are shared across devices changes.
 	maxConcurrentStreams = 8
+
+	// maxStreamsPerDevice bounds how many of maxConcurrentStreams a single
+	// device may hold at once (issue #80). Without this, one device holding
+	// every stream slot answers 503 for every other paired device — the
+	// budget was global-only and had no notion of who was calling. Three is
+	// generous for a couple of log views open on one phone, while still
+	// keeping the global ceiling reachable in practice: three devices at
+	// their own cap sum past eight, so the host-wide limit stays meaningful
+	// and testable rather than becoming unreachable dead code.
+	maxStreamsPerDevice = 3
 )
 
 // Server owns the HTTPS listener and its routes.
@@ -57,11 +69,12 @@ type Server struct {
 	// dc is the Docker read surface the eight read routes depend on.
 	dc  DockerReader
 	log *slog.Logger
-	// streams bounds concurrent live log streams (D10). Buffered to
-	// maxConcurrentStreams and initialised here rather than lazily in the
-	// handler: a nil channel blocks forever on send and never succeeds on a
-	// non-blocking select, which would answer every stream request with 503.
-	streams chan struct{}
+	// streams bounds concurrent live log streams (D10), with a global
+	// ceiling and a per-device cap under it (issue #80). Built here rather
+	// than lazily in the handler: a nil *streamBudget would panic on first
+	// use, and this way construction failure is impossible by
+	// construction — NewServer always builds one.
+	streams *streamBudget
 
 	// unauthGlobal is the shared, unkeyed backstop bucket every
 	// pre-authentication request checks first (D8).
@@ -118,7 +131,7 @@ type Server struct {
 // likewise be nil in tests that do not exercise the Docker read routes; every
 // read handler tolerates that by serving 502 instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: make(chan struct{}, maxConcurrentStreams)}
+	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: newStreamBudget(maxConcurrentStreams, maxStreamsPerDevice)}
 	s.lifecycleCtx, s.cancelLifecycle = context.WithCancel(context.Background())
 
 	s.unauthGlobal = rate.NewLimiter(rate.Limit(unauthGlobalPerSec), unauthGlobalBurst)

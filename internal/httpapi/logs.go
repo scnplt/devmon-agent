@@ -38,10 +38,17 @@ const (
 	minTail = 1
 	maxTail = 2000
 
-	// msgTooManyStreams is served when every stream slot is in use. Unlike the
+	// msgTooManyStreams is served when the host's global stream ceiling is
+	// exhausted, regardless of which devices hold the slots. Unlike the
 	// other rejections this one is specific and actionable: the caller is an
 	// authenticated device and the fix is on its side — close a log view.
 	msgTooManyStreams = "too many concurrent log streams"
+
+	// msgTooManyDeviceStreams is served when the caller's own device is at
+	// maxStreamsPerDevice, distinct from msgTooManyStreams so a device that
+	// hit its own cap is told that, rather than being told the host is full
+	// when other devices may have slots to spare (issue #80).
+	msgTooManyDeviceStreams = "too many concurrent log streams for this device"
 
 	// msgInvalidSince is served for an unparsable resume cursor. Unlike tail,
 	// since is not defaulted on a parse failure: it reaches the Engine's
@@ -111,6 +118,11 @@ func (s *Server) handleContainerLogs(w http.ResponseWriter, r *http.Request) {
 // every path, including the 400 and 404 ones — a slot leaked on an error path
 // is permanent, and after eight bad requests the route would answer 503
 // forever until a restart.
+//
+// The slot is acquired per device (issue #80): a missing device in the
+// request context is a 500, the same reasoning withDeviceLimit gives — this
+// handler only ever runs behind requireDevice, and falling back to an
+// unkeyed slot would silently restore the bug being fixed.
 func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDocker(w) {
 		return
@@ -122,10 +134,25 @@ func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	select {
-	case s.streams <- struct{}{}:
-		defer func() { <-s.streams }()
-	default:
+	device, ok := DeviceFrom(r.Context())
+	if !ok {
+		s.log.Error("handleStreamContainerLogs ran without a resolved device in the request context")
+		s.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	release, outcome := s.streams.acquire(device.ID)
+	switch outcome {
+	case streamGranted:
+		defer release()
+	case streamDeviceFull:
+		s.log.Warn("too many concurrent log streams for device",
+			slog.String("device_id", device.ID), slog.Int("limit", maxStreamsPerDevice))
+		s.writeError(w, http.StatusServiceUnavailable, msgTooManyDeviceStreams)
+		return
+	case streamHostFull:
+		s.log.Warn("too many concurrent log streams for host",
+			slog.String("device_id", device.ID), slog.Any("holders", s.streams.holders()))
 		s.writeError(w, http.StatusServiceUnavailable, msgTooManyStreams)
 		return
 	}
