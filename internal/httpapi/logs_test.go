@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -539,9 +540,13 @@ func TestStreamTerminalFrameClientGoneFailureLogsDebug(t *testing.T) {
 }
 
 // TestStreamSlotExhaustion holds maxConcurrentStreams streams open
-// concurrently, asserts the next request is 503 with msgTooManyStreams, then
+// concurrently, spread across enough distinct devices to reach the global
+// ceiling without any one of them hitting maxStreamsPerDevice, asserts the
+// next request (from yet another device) is 503 with msgTooManyStreams, then
 // releases one and asserts the following request succeeds — proving the slot
-// is returned rather than leaked.
+// is returned rather than leaked. One stream per device keeps this a
+// host-wide-exhaustion test distinct from
+// TestStreamPerDeviceCapDoesNotLockOutOtherDevices below.
 func TestStreamSlotExhaustion(t *testing.T) {
 	t.Parallel()
 
@@ -559,10 +564,14 @@ func TestStreamSlotExhaustion(t *testing.T) {
 		},
 	}
 	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
-	serial := pairDeviceForRead(t, st)
+	serials := make([]*big.Int, maxConcurrentStreams)
+	for i := range serials {
+		serials[i] = pairDeviceForRead(t, st)
+	}
 
 	done := make(chan struct{}, maxConcurrentStreams)
-	for i := 0; i < maxConcurrentStreams; i++ {
+	for _, serial := range serials {
+		serial := serial
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -581,8 +590,11 @@ func TestStreamSlotExhaustion(t *testing.T) {
 		}
 	}
 
-	// Act — every slot is held, so the next request must be rejected.
-	probe := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	// Act — every slot is held across maxConcurrentStreams distinct devices,
+	// so the next request, from yet another device, must be rejected with
+	// the host-wide message rather than the per-device one.
+	probeSerial := pairDeviceForRead(t, st)
+	probe := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, probeSerial)
 	probeRec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
 	s.routes().ServeHTTP(probeRec, probe)
 
@@ -609,7 +621,7 @@ func TestStreamSlotExhaustion(t *testing.T) {
 	fd.streamContainerLogsFn = func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
 		return nil
 	}
-	nextReq := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	nextReq := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, probeSerial)
 	nextRec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
 	s.routes().ServeHTTP(nextRec, nextReq)
 
@@ -625,6 +637,124 @@ func TestStreamSlotExhaustion(t *testing.T) {
 	}
 	for i := 0; i < maxConcurrentStreams-1; i++ {
 		<-done
+	}
+}
+
+// TestStreamPerDeviceCapDoesNotLockOutOtherDevices is the issue's stated
+// verification: one device holding maxStreamsPerDevice streams is refused
+// its next one with msgTooManyDeviceStreams, while a second device — with
+// global capacity still free — still gets a stream. Before this change both
+// requests were served (or refused) from a single shared channel with no
+// notion of caller identity, so device A alone could have exhausted the
+// whole host budget.
+func TestStreamPerDeviceCapDoesNotLockOutOtherDevices(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	started := make(chan struct{}, maxStreamsPerDevice)
+	release := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(ctx context.Context, _ string, _ dockerx.LogOptions, _ func(dockerx.LogLine) error) error {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	deviceA := pairDeviceForRead(t, st)
+	deviceB := pairDeviceForRead(t, st)
+
+	done := make(chan struct{}, maxStreamsPerDevice)
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, deviceA).WithContext(ctx)
+			rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+			s.routes().ServeHTTP(rec, req)
+			done <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d device A streams reported started", i, maxStreamsPerDevice)
+		}
+	}
+
+	// Act — device A is at its own cap; its next request must be refused
+	// with the per-device message, not the host-wide one.
+	probeA := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, deviceA)
+	probeARec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	s.routes().ServeHTTP(probeARec, probeA)
+
+	// Assert
+	if probeARec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("device A status = %d, want 503; body: %s", probeARec.Code, probeARec.Body.String())
+	}
+	var bodyA errorBody
+	if err := json.NewDecoder(probeARec.Body).Decode(&bodyA); err != nil {
+		t.Fatalf("decode device A body: %v", err)
+	}
+	if bodyA.Error != msgTooManyDeviceStreams {
+		t.Errorf("device A error = %q, want %q", bodyA.Error, msgTooManyDeviceStreams)
+	}
+
+	// Act — device B, at zero streams, must still be served: this is the
+	// regression the issue is about.
+	fd.streamContainerLogsFn = func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
+		return nil
+	}
+	probeB := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, deviceB)
+	probeBRec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	s.routes().ServeHTTP(probeBRec, probeB)
+
+	// Assert
+	if probeBRec.Code != http.StatusOK {
+		t.Errorf("device B status = %d, want 200; body: %s", probeBRec.Code, probeBRec.Body.String())
+	}
+
+	// Cleanup: release device A's held streams so their goroutines exit
+	// before the test returns.
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		release <- struct{}{}
+	}
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		<-done
+	}
+}
+
+// TestStreamContainerLogsRejectsWithoutDeviceInContext mirrors
+// TestWithDeviceLimitRejectsWithoutDeviceInContext (ratelimit_test.go):
+// handleStreamContainerLogs only ever runs behind requireDevice. Called
+// directly — bypassing routes() and therefore requireDevice — with a
+// request that carries no resolved device, it must answer 500 rather than
+// silently falling back to an unkeyed slot, which would quietly restore the
+// bug this phase fixes.
+func TestStreamContainerLogsRejectsWithoutDeviceInContext(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
+			return nil
+		},
+	}
+	s, _ := testServerWithDocker(t, policy.ModeDefault, fd)
+	req := httptest.NewRequest(http.MethodGet, "/v1/containers/c1/logs/stream", nil)
+	rec := httptest.NewRecorder()
+
+	// Act — call the handler directly, skipping requireDevice.
+	s.handleStreamContainerLogs(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
 	}
 }
 

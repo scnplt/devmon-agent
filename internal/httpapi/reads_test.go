@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,6 +191,16 @@ func testServerWithDockerAndLogger(t *testing.T, mode policy.Mode, dc DockerRead
 	return NewServer(cfg, st, nil, dc, nil, log), st
 }
 
+// pairDeviceSerialCounter guarantees every serial pairDeviceForRead mints is
+// distinct across the whole test binary run, even when several calls land
+// in the same time.Now() tick — on Windows the wall clock's granularity is
+// coarse enough (commonly ~15ms) that a tight loop of calls, which the
+// per-device stream budget tests now make routinely, can otherwise produce
+// two identical UnixNano() values and collide on the certificate table's
+// UNIQUE constraint on serial. A package-level monotonic counter sidesteps
+// clock resolution entirely.
+var pairDeviceSerialCounter atomic.Int64
+
 // pairDeviceForRead creates and records an active device in st, returning
 // the serial of the certificate that authenticates it, for driving
 // requireDevice without a real TLS handshake — the same technique
@@ -201,7 +212,7 @@ func pairDeviceForRead(t *testing.T, st *state.Store) *big.Int {
 	if err != nil {
 		t.Fatalf("CreateDevice: %v", err)
 	}
-	serial := big.NewInt(time.Now().UnixNano())
+	serial := big.NewInt(pairDeviceSerialCounter.Add(1))
 	now := time.Now()
 	if err := st.RecordDeviceCert(ctx, device.ID, serial.Text(16), now, now.Add(90*24*time.Hour)); err != nil {
 		t.Fatalf("RecordDeviceCert: %v", err)

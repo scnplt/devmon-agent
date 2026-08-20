@@ -165,9 +165,10 @@ func TestStreamEnduranceThirtyMinutes(t *testing.T) {
 
 // retentionMaxBackups mirrors internal/logging's unexported maxBackups
 // constant (D4-style duplication, the same reasoning contract_logs_test.go's
-// maxConcurrentStreams applies to a server-side limit): the suite must be
-// able to notice a change to how many rotated files are kept, which it
-// cannot do by importing the value it exists to check.
+// maxConcurrentStreams and maxStreamsPerDevice apply to the stream route's
+// global and per-device limits): the suite must be able to notice a change
+// to how many rotated files are kept, which it cannot do by importing the
+// value it exists to check.
 const retentionMaxBackups = 3
 
 // retentionBudgetMB is DEVMON_LOG_MAX_TOTAL_MB for this test's agent — the
