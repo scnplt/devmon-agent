@@ -34,9 +34,11 @@ cd devmon-agent
 That resolves the docker socket GID from the host, creates and chowns the state
 directory, writes a `compose.yaml`, starts the agent, waits for it to answer,
 and prints the CA fingerprint and your first pairing code. Pass `--dry-run` to
-see the compose file and every command it would run without touching the host,
-and `--help` for the full flag list — every prompt is also settable by flag or
-environment variable, so it works unattended.
+see the compose file and every command it would run without touching the host —
+that works from a workstation with no Docker daemon of its own, so you can read
+the file before running the installer on the server — and `--help` for the full
+flag list. Every prompt is also settable by flag or environment variable, so it
+works unattended.
 
 The installer refuses to touch a state directory that already exists and is not
 empty. Upgrading an existing installation is `docker compose pull && docker
