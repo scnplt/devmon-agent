@@ -421,7 +421,7 @@ func TestStreamSlotExhaustion(t *testing.T) {
 	deviceB := harness.PairDevice(t, a, "logs-stream-slots-b")
 	deviceC := harness.PairDevice(t, a, "logs-stream-slots-c")
 	devices := []*harness.Device{deviceA, deviceB, deviceC}
-	perDevice := []int{3, 3, 2}
+	perDevice := []int{maxStreamsPerDevice, maxStreamsPerDevice, 2}
 
 	streams := make([]*harness.Stream, 0, maxConcurrentStreams)
 	defer func() {
