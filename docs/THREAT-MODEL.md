@@ -80,6 +80,26 @@ made it.
   [`internal/state/pruner.go:11-14`](../internal/state/pruner.go) and
   [`internal/state/pruner.go:44-56`](../internal/state/pruner.go).
 
+**What the trail does and does not guarantee under a compromised device.** It
+is not append-only: the table is bounded by both `DEVMON_AUDIT_MAX_AGE_DAYS`
+and `DEVMON_AUDIT_MAX_ROWS`, and the row bound exists so the agent can never
+fill a small VPS's disk. `PruneAudit` therefore divides the row budget evenly
+across the device buckets present in the table before it trims anything
+([`internal/state/store.go`, `pruneAuditByDeviceShare`](../internal/state/store.go)):
+
+- **Guaranteed:** one device can never evict another device's rows. An
+  attacker holding one device credential cannot erase what the operator's
+  other devices did, no matter how much traffic it generates.
+- **Not guaranteed:** that a device keeps everything it wrote. A device which
+  exceeds its own share loses its own oldest rows first, so a compromised
+  device can still push its earliest activity out of its own slice — it just
+  cannot reach anyone else's. The residual window is bounded by the share, not
+  by the whole table.
+- The share shrinks as more distinct devices accumulate rows, including
+  unpaired or revoked devices whose historical rows remain. More buckets means
+  a smaller slice each; that is the fairness trade-off, chosen over letting one
+  device's volume decide whose history survives.
+
 ### The Docker socket
 
 `/var/run/docker.sock`, mounted read-only into the agent's container in the
