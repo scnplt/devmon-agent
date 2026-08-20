@@ -25,7 +25,7 @@ $DEVMON_STATE_DIR/                 bind mount — not a named volume        0700
     └── agent-….log.gz             rotated and compressed                 0600
 ```
 
-— [`README.md:310-329`](../README.md) (`## State directory`).
+— [`README.md`, `## State directory`](../README.md#state-directory).
 
 `logs/` is operational output, not identity, and does not need to survive a
 restore for the agent to run — but back it up anyway if you are diagnosing
@@ -54,7 +54,7 @@ In the README's own words, which this document does not restate differently:
 > the host and restart. The agent then creates a new CA, every paired device
 > is unpaired, and the fingerprint changes.
 >
-> — [`README.md:331-340`](../README.md)
+> — [`README.md`, `## State directory`](../README.md#state-directory)
 
 Concretely, that means:
 
@@ -88,9 +88,9 @@ sudo tar czf devmon-backup.tgz -C / var/lib/devmon
 docker start devmon-agent
 ```
 
-— [`README.md:346-355`](../README.md). This checkpoints the write-ahead log
-before the copy runs, so the archive holds a single consistent state rather
-than a snapshot mid-write.
+— [`README.md`, `### Backup`](../README.md#backup). This checkpoints the
+write-ahead log before the copy runs, so the archive holds a single consistent
+state rather than a snapshot mid-write.
 
 If your `$DEVMON_STATE_DIR` is not `/var/lib/devmon`, substitute it — but keep
 `-C /` and the mount's absolute path, so the archive extracts back to an
@@ -104,7 +104,7 @@ it prepares a fresh state directory:
 
 ```bash
 # NONROOT_UID='65532', NONROOT_GID='65532'
-# — install.sh:30-31
+# — install.sh, NONROOT_UID / NONROOT_GID
 ```
 
 Extract to the target path, then set ownership and mode exactly as a fresh
@@ -125,17 +125,17 @@ The directory and file modes mirror the layout table above and
 `install.sh`'s own `prepare_state_dir` step: "the image runs as UID
 `$NONROOT_UID`, so the directory must be owned by it," followed by `chown` and
 `chmod 700` on the state directory
-([`install.sh:438-444`](../install.sh)). A wrong owner fails startup at
-`MkdirAll` with "permission denied," which reads as an agent bug rather than a
-restore step that was skipped — get ownership right before starting the
-container, not after.
+([`install.sh`, `prepare_state_dir`](../install.sh)). A wrong owner fails
+startup at `MkdirAll` with "permission denied," which reads as an agent bug
+rather than a restore step that was skipped — get ownership right before
+starting the container, not after.
 
 Once ownership and modes are correct, start the agent normally. It validates
 the restored database is a readable, uncorrupted SQLite file at open —
 "Restore by extracting to the same path with the same ownership. The agent
 detects a truncated or corrupt `devmon.db` at startup and refuses to run
 rather than failing obscurely at the first query."
-([`README.md:357-359`](../README.md)).
+([`README.md`, `### Backup`](../README.md#backup)).
 
 ## If `certs/` is lost
 

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/natefinch/lumberjack.v2"
+
 	"github.com/scnplt/devmon-agent/internal/config"
 )
 
@@ -21,6 +23,29 @@ func testConfig(t *testing.T, totalMB int) config.Config {
 		LogLevel:      slog.LevelInfo,
 		LogMaxAge:     24 * time.Hour,
 		LogMaxTotalMB: totalMB,
+	}
+}
+
+// waitForGlobMatch polls pattern until it matches at least one file or
+// deadline elapses, so a test can synchronize on a background ticker's
+// observable effect (a rotated file appearing on disk) instead of sleeping
+// a fixed amount of wall-clock time.
+func waitForGlobMatch(t *testing.T, pattern string, deadline time.Duration) []string {
+	t.Helper()
+
+	giveUpAt := time.Now().Add(deadline)
+	for {
+		entries, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %q: %v", pattern, err)
+		}
+		if len(entries) > 0 {
+			return entries
+		}
+		if time.Now().After(giveUpAt) {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -202,6 +227,334 @@ func TestRotatorRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// writeLogLineWithTime appends one line to path using slog's own TextHandler
+// encoding, so a crafted timestamp lands in exactly the format startupRotate
+// must parse. Building the fixture through the real encoder — rather than
+// hand-writing a "time=..." string — keeps these tests from silently drifting
+// out of sync with NewSink's actual output shape.
+func writeLogLineWithTime(t *testing.T, path string, ts time.Time, msg string) {
+	t.Helper()
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	h := slog.NewTextHandler(f, nil)
+	rec := slog.NewRecord(ts, slog.LevelInfo, msg, 0)
+	if err := h.Handle(context.Background(), rec); err != nil {
+		t.Fatalf("write log line: %v", err)
+	}
+}
+
+// TestStartupRotate exercises startupRotate directly across every content
+// shape it must decide on, isolated from the ticker and from Run's
+// context-cancellation handling.
+func TestStartupRotate(t *testing.T) {
+	t.Parallel()
+
+	const maxAge = 24 * time.Hour
+
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, path string) // no-op leaves the file missing
+		wantRotated bool
+	}{
+		{
+			name: "fresh first line is not rotated",
+			setup: func(t *testing.T, path string) {
+				writeLogLineWithTime(t, path, time.Now(), "line written just now")
+			},
+			wantRotated: false,
+		},
+		{
+			name: "stale first line is rotated",
+			setup: func(t *testing.T, path string) {
+				writeLogLineWithTime(t, path, time.Now().Add(-(maxAge + time.Hour)), "line from a previous boot")
+			},
+			wantRotated: true,
+		},
+		{
+			name: "empty file is untouched",
+			setup: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatalf("write empty file: %v", err)
+				}
+			},
+			wantRotated: false,
+		},
+		{
+			name:        "missing file is untouched",
+			setup:       func(t *testing.T, path string) {},
+			wantRotated: false,
+		},
+		{
+			name: "unparsable first line is rotated",
+			setup: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, []byte("not a slog line at all\n"), 0o600); err != nil {
+					t.Fatalf("write corrupt file: %v", err)
+				}
+			},
+			wantRotated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent.log")
+			var before []byte
+			tt.setup(t, path)
+			if data, err := os.ReadFile(path); err == nil {
+				before = data
+			}
+
+			lj := &lumberjack.Logger{Filename: path}
+			// Rotate's openNew keeps the freshly created current file open in
+			// lj for future writes; on Windows an unclosed handle blocks
+			// t.TempDir's cleanup.
+			t.Cleanup(func() { _ = lj.Close() })
+			log, _ := newCapturingLoggerForTest()
+			r := NewRotator(lj, time.Hour, maxAge, log)
+
+			// Act
+			r.startupRotate()
+
+			// Assert
+			entries, err := filepath.Glob(filepath.Join(dir, "agent-*"))
+			if err != nil {
+				t.Fatalf("glob: %v", err)
+			}
+			if gotRotated := len(entries) > 0; gotRotated != tt.wantRotated {
+				t.Errorf("rotated = %v, want %v (backups: %v)", gotRotated, tt.wantRotated, entries)
+			}
+			if !tt.wantRotated && before != nil {
+				after, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read %s after startupRotate: %v", path, err)
+				}
+				if string(after) != string(before) {
+					t.Errorf("content changed for a file that should not have been rotated: before %q, after %q", before, after)
+				}
+			}
+		})
+	}
+}
+
+// TestStartupRotateNeverRotatesWhenMaxAgeIsZero covers the defensive
+// zero-disables-the-pass path documented on NewRotator. Production config
+// (internal/config/config.go, minDays) floors DEVMON_LOG_MAX_AGE_DAYS at 1
+// day, so this is not reachable through NewSink; it guards a Rotator built
+// directly, and the behaviour it locks in — zero means "never startup-rotate"
+// — is the one NewSink relies on being safe to fall back to.
+func TestStartupRotateNeverRotatesWhenMaxAgeIsZero(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a file stale enough that a positive maxAge would certainly
+	// rotate it.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.log")
+	writeLogLineWithTime(t, path, time.Now().Add(-30*24*time.Hour), "ancient line")
+
+	lj := &lumberjack.Logger{Filename: path}
+	log, _ := newCapturingLoggerForTest()
+	r := NewRotator(lj, time.Hour, 0, log)
+
+	// Act
+	r.startupRotate()
+
+	// Assert
+	entries, err := filepath.Glob(filepath.Join(dir, "agent-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("logs dir contains %v, want no rotation when maxAge is 0 (disabled)", entries)
+	}
+}
+
+// TestRotatorRunSkipsStartupRotationWhenFileIsFresh is the regression test
+// for issue #99: a Rotator started right after the sink begins writing must
+// not rotate away this boot's own opening lines. Before #99 the startup pass
+// rotated on content alone (any non-empty file), so the sink's earliest
+// lines — self-identification, "agent listening" — were always moved into a
+// backup by the time anything could read them from agent.log.
+func TestRotatorRunSkipsStartupRotationWhenFileIsFresh(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a real log line timestamped now, the shape a freshly booted
+	// agent's log is in by the time Run starts (see serve() in
+	// cmd/devmon-agent: several lines are logged before runAll starts the
+	// rotator).
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+	s.Logger.Info("agent listening", slog.String("marker", "startup-line"))
+
+	r := NewRotator(s.lj, time.Hour, cfg.LogMaxAge, s.Logger)
+	runCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	done := make(chan struct{})
+
+	// Act
+	go func() {
+		defer close(done)
+		_ = r.Run(runCtx)
+	}()
+	<-runCtx.Done()
+	cancel()
+	<-done
+
+	// Assert — no rotated backup, and the startup line is still there.
+	entries, err := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("logs dir contains rotated backups %v, want none: a fresh startup line must not be rotated away", entries)
+	}
+
+	data, err := os.ReadFile(cfg.AgentLogPath())
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), "startup-line") {
+		t.Error("agent.log no longer contains the startup line; it was rotated away")
+	}
+}
+
+// TestRotatorRunRotatesOnStartupWhenFileIsStale is the regression test for
+// issue #42, narrowed by #99: a Rotator that has just started must not wait a
+// full interval (24h in production) before enforcing DEVMON_LOG_MAX_AGE_DAYS
+// on an agent restarted more often than that — but only once the existing
+// content is actually older than the configured max age, not merely because
+// the file is non-empty.
+func TestRotatorRunRotatesOnStartupWhenFileIsStale(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a log line timestamped well before cfg.LogMaxAge, standing in
+	// for agent.log carried over from a much earlier boot.
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+	writeLogLineWithTime(t, s.lj.Filename, time.Now().Add(-(cfg.LogMaxAge + time.Hour)), "line from a previous boot")
+
+	// Arrange — interval far longer than the test timeout proves any rotated
+	// backup found below cannot be explained by a tick firing.
+	r := NewRotator(s.lj, time.Hour, cfg.LogMaxAge, s.Logger)
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	done := make(chan struct{})
+
+	// Act
+	go func() {
+		defer close(done)
+		_ = r.Run(runCtx)
+	}()
+
+	// Assert
+	entries := waitForGlobMatch(t, filepath.Join(cfg.LogsDir(), "agent-*"), 2*time.Second)
+	cancel()
+	<-done
+	if len(entries) == 0 {
+		t.Error("Run() never produced a rotated backup for a stale file within the test window; the startup pass regressed")
+	}
+}
+
+// TestRotatorRunSkipsStartupRotationOnEmptyOrMissingFile guards against the
+// behavior the issue warned about: a crash-looping agent must not spray
+// empty rotated backups on every boot. lumberjack's Rotate (via openNew)
+// stats the current filename and, when it does not exist, creates it fresh
+// with no rename at all — that path alone is harmless. The unsafe case is a
+// current file that exists but is empty: Rotate would still rename it aside,
+// producing a useless backup file. Verified by reading
+// gopkg.in/natefinch/lumberjack.v2's openNew: it renames whenever os.Stat on
+// the current filename succeeds, regardless of size. The startup pass must
+// therefore skip rotation itself whenever the current file is missing or
+// zero bytes, rather than relying on lumberjack.
+func TestRotatorRunSkipsStartupRotationOnEmptyOrMissingFile(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a fresh sink whose current log file has not been written to
+	// yet, so it does not exist on disk (lumberjack opens lazily on first
+	// Write).
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+
+	r := NewRotator(s.lj, time.Hour, cfg.LogMaxAge, s.Logger)
+	runCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	done := make(chan struct{})
+
+	// Act
+	go func() {
+		defer close(done)
+		_ = r.Run(runCtx)
+	}()
+	<-runCtx.Done()
+	cancel()
+	<-done
+
+	// Assert — no current file and no backup: the startup pass must not have
+	// invented one.
+	entries, err := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("logs dir contains %v after a startup pass on an unwritten sink, want no files", entries)
+	}
+}
+
+// TestRotatorRunDoesNothingWhenContextAlreadyCancelled proves the startup
+// pass is skipped entirely when ctx is already dead on entry.
+func TestRotatorRunDoesNothingWhenContextAlreadyCancelled(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	cfg := testConfig(t, 8)
+	s, err := NewSink(cfg)
+	if err != nil {
+		t.Fatalf("NewSink() unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.lj.Compress = false
+	s.Logger.Info("line written before Run is ever called")
+
+	r := NewRotator(s.lj, time.Hour, cfg.LogMaxAge, s.Logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Act
+	err = r.Run(ctx)
+
+	// Assert
+	if err != context.Canceled {
+		t.Errorf("Run() = %v, want context.Canceled", err)
+	}
+	entries, globErr := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
+	if globErr != nil {
+		t.Fatalf("glob: %v", globErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("logs dir contains rotated backups %v, want none: Run() must not rotate when ctx is already cancelled", entries)
+	}
+}
+
 func TestRotatorRotatesOnTick(t *testing.T) {
 	t.Parallel()
 
@@ -220,9 +573,12 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 	// behaviour under test here (the ticker driving rotation is), so turn it
 	// off.
 	s.lj.Compress = false
+	// Timestamped now, so the startup pass (a fresh file) does not itself
+	// account for the rotated file this test looks for below; only the
+	// ticker should be able to produce one.
 	s.Logger.Info("seed line so there is something to rotate")
 
-	r := NewRotator(s.lj, 10*time.Millisecond, s.Logger)
+	r := NewRotator(s.lj, 10*time.Millisecond, cfg.LogMaxAge, s.Logger)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	// The test returns as soon as it sees one rotated file, but the ticker
 	// keeps firing until it is told to stop. Cancelling is not enough: a tick
@@ -242,15 +598,88 @@ func TestRotatorRotatesOnTick(t *testing.T) {
 	}()
 
 	// Assert
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		entries, _ := filepath.Glob(filepath.Join(cfg.LogsDir(), "agent-*"))
-		if len(entries) > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if entries := waitForGlobMatch(t, filepath.Join(cfg.LogsDir(), "agent-*"), 2*time.Second); len(entries) == 0 {
+		t.Error("ticker never produced a rotated file; age-based retention would never apply")
 	}
-	t.Error("ticker never produced a rotated file; age-based retention would never apply")
+}
+
+// TestRotateOnceLogsErrorWhenRotateFails covers rotateOnce's error branch.
+// lumberjack.Logger.Rotate opens its target with os.MkdirAll(dir, ...) first;
+// pointing Filename at a path whose parent segment is an ordinary file — not
+// a missing or extra directory — makes that MkdirAll fail identically on
+// every OS, unlike a directory-as-filename trick which some platforms
+// silently work around by renaming the directory itself. rotateOnce must log
+// the failure and return without panicking or attempting
+// tightenPermissions.
+func TestRotateOnceLogsErrorWhenRotateFails(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — blocker is a regular file, so the "sub" directory Rotate
+	// needs to create underneath it can never exist.
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	lj := &lumberjack.Logger{Filename: filepath.Join(blocker, "sub", "agent.log")}
+	log, buf := newCapturingLoggerForTest()
+	r := NewRotator(lj, defaultRotateInterval, defaultRotateInterval, log)
+
+	// Act — must not panic.
+	r.rotateOnce()
+
+	// Assert
+	if !strings.Contains(buf.String(), "log rotation failed") {
+		t.Errorf("log = %q, want it to mention the rotation failure", buf.String())
+	}
+}
+
+// TestTightenPermissionsIgnoresMissingFile covers tightenPermissions'
+// success-on-absence branch: a rotated-away file that no longer exists is
+// not an error worth reporting, since the mode only matters for the file
+// that currently exists.
+func TestTightenPermissionsIgnoresMissingFile(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	missing := filepath.Join(t.TempDir(), "does-not-exist.log")
+
+	// Act
+	err := tightenPermissions(missing)
+
+	// Assert
+	if err != nil {
+		t.Errorf("tightenPermissions(%q) error = %v, want nil for a missing file", missing, err)
+	}
+}
+
+// TestTightenPermissionsWrapsRealChmodFailure covers tightenPermissions'
+// error branch: a path Chmod rejects for a reason other than "does not
+// exist" — here, an embedded NUL byte, which every OS's path syscalls reject
+// as invalid rather than as a missing file — must return a wrapped error
+// naming the path.
+func TestTightenPermissionsWrapsRealChmodFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	invalid := filepath.Join(t.TempDir(), "bad\x00name.log")
+
+	// Act
+	err := tightenPermissions(invalid)
+
+	// Assert
+	if err == nil {
+		t.Fatal("tightenPermissions() error = nil, want a failure for an invalid path")
+	}
+	if !strings.Contains(err.Error(), "tighten permissions") {
+		t.Errorf("error %q does not identify the failing step", err)
+	}
+}
+
+// newCapturingLoggerForTest mirrors the pattern used across this repo's other
+// packages: a text-handler logger writing into a buffer a test can inspect.
+func newCapturingLoggerForTest() (*slog.Logger, *strings.Builder) {
+	var buf strings.Builder
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
 func TestNewSinkFailsOnUncreatableLogsDir(t *testing.T) {

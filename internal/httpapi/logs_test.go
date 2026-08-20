@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -213,6 +214,71 @@ func TestHistoricalTailBounds(t *testing.T) {
 		if gotTail[i] != want[i] {
 			t.Errorf("call %d (%q): tail = %d, want %d", i, queries[i], gotTail[i], want[i])
 		}
+	}
+}
+
+// TestTailParamAcceptsInRangeValue is tailParam's missing positive case: a
+// value inside [minTail, maxTail] must pass through unchanged rather than
+// falling back to the route's default, which every other tailParam test
+// exercises.
+func TestTailParamAcceptsInRangeValue(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	var gotTail int
+	fd := &fakeDocker{
+		containerLogsFn: func(_ context.Context, _ string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error) {
+			gotTail = opts.Tail
+			return dockerx.ListResult[dockerx.LogLine]{}, nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs?tail=50", nil, serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotTail != 50 {
+		t.Errorf("tail = %d, want 50 (an in-range value passed through unchanged)", gotTail)
+	}
+}
+
+// TestSinceParamAcceptsValidTimestamp is sinceParam's missing positive case:
+// a well-formed RFC3339Nano value must reach the Engine's request options
+// unchanged, rather than falling into the error branch every other
+// sinceParam test exercises.
+func TestSinceParamAcceptsValidTimestamp(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const since = "2026-08-08T10:02:11.441Z"
+	var gotSince string
+	fd := &fakeDocker{
+		containerLogsFn: func(_ context.Context, _ string, opts dockerx.LogOptions) (dockerx.ListResult[dockerx.LogLine], error) {
+			gotSince = opts.Since
+			return dockerx.ListResult[dockerx.LogLine]{}, nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs?since="+since, nil, serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if gotSince != since {
+		t.Errorf("since = %q, want %q", gotSince, since)
 	}
 }
 
@@ -474,9 +540,13 @@ func TestStreamTerminalFrameClientGoneFailureLogsDebug(t *testing.T) {
 }
 
 // TestStreamSlotExhaustion holds maxConcurrentStreams streams open
-// concurrently, asserts the next request is 503 with msgTooManyStreams, then
+// concurrently, spread across enough distinct devices to reach the global
+// ceiling without any one of them hitting maxStreamsPerDevice, asserts the
+// next request (from yet another device) is 503 with msgTooManyStreams, then
 // releases one and asserts the following request succeeds — proving the slot
-// is returned rather than leaked.
+// is returned rather than leaked. One stream per device keeps this a
+// host-wide-exhaustion test distinct from
+// TestStreamPerDeviceCapDoesNotLockOutOtherDevices below.
 func TestStreamSlotExhaustion(t *testing.T) {
 	t.Parallel()
 
@@ -494,10 +564,14 @@ func TestStreamSlotExhaustion(t *testing.T) {
 		},
 	}
 	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
-	serial := pairDeviceForRead(t, st)
+	serials := make([]*big.Int, maxConcurrentStreams)
+	for i := range serials {
+		serials[i] = pairDeviceForRead(t, st)
+	}
 
 	done := make(chan struct{}, maxConcurrentStreams)
-	for i := 0; i < maxConcurrentStreams; i++ {
+	for _, serial := range serials {
+		serial := serial
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -516,8 +590,11 @@ func TestStreamSlotExhaustion(t *testing.T) {
 		}
 	}
 
-	// Act — every slot is held, so the next request must be rejected.
-	probe := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	// Act — every slot is held across maxConcurrentStreams distinct devices,
+	// so the next request, from yet another device, must be rejected with
+	// the host-wide message rather than the per-device one.
+	probeSerial := pairDeviceForRead(t, st)
+	probe := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, probeSerial)
 	probeRec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
 	s.routes().ServeHTTP(probeRec, probe)
 
@@ -544,7 +621,7 @@ func TestStreamSlotExhaustion(t *testing.T) {
 	fd.streamContainerLogsFn = func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
 		return nil
 	}
-	nextReq := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	nextReq := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, probeSerial)
 	nextRec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
 	s.routes().ServeHTTP(nextRec, nextReq)
 
@@ -560,6 +637,124 @@ func TestStreamSlotExhaustion(t *testing.T) {
 	}
 	for i := 0; i < maxConcurrentStreams-1; i++ {
 		<-done
+	}
+}
+
+// TestStreamPerDeviceCapDoesNotLockOutOtherDevices is the issue's stated
+// verification: one device holding maxStreamsPerDevice streams is refused
+// its next one with msgTooManyDeviceStreams, while a second device — with
+// global capacity still free — still gets a stream. Before this change both
+// requests were served (or refused) from a single shared channel with no
+// notion of caller identity, so device A alone could have exhausted the
+// whole host budget.
+func TestStreamPerDeviceCapDoesNotLockOutOtherDevices(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	started := make(chan struct{}, maxStreamsPerDevice)
+	release := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(ctx context.Context, _ string, _ dockerx.LogOptions, _ func(dockerx.LogLine) error) error {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	deviceA := pairDeviceForRead(t, st)
+	deviceB := pairDeviceForRead(t, st)
+
+	done := make(chan struct{}, maxStreamsPerDevice)
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, deviceA).WithContext(ctx)
+			rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+			s.routes().ServeHTTP(rec, req)
+			done <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d device A streams reported started", i, maxStreamsPerDevice)
+		}
+	}
+
+	// Act — device A is at its own cap; its next request must be refused
+	// with the per-device message, not the host-wide one.
+	probeA := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, deviceA)
+	probeARec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	s.routes().ServeHTTP(probeARec, probeA)
+
+	// Assert
+	if probeARec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("device A status = %d, want 503; body: %s", probeARec.Code, probeARec.Body.String())
+	}
+	var bodyA errorBody
+	if err := json.NewDecoder(probeARec.Body).Decode(&bodyA); err != nil {
+		t.Fatalf("decode device A body: %v", err)
+	}
+	if bodyA.Error != msgTooManyDeviceStreams {
+		t.Errorf("device A error = %q, want %q", bodyA.Error, msgTooManyDeviceStreams)
+	}
+
+	// Act — device B, at zero streams, must still be served: this is the
+	// regression the issue is about.
+	fd.streamContainerLogsFn = func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
+		return nil
+	}
+	probeB := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, deviceB)
+	probeBRec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	s.routes().ServeHTTP(probeBRec, probeB)
+
+	// Assert
+	if probeBRec.Code != http.StatusOK {
+		t.Errorf("device B status = %d, want 200; body: %s", probeBRec.Code, probeBRec.Body.String())
+	}
+
+	// Cleanup: release device A's held streams so their goroutines exit
+	// before the test returns.
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		release <- struct{}{}
+	}
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		<-done
+	}
+}
+
+// TestStreamContainerLogsRejectsWithoutDeviceInContext mirrors
+// TestWithDeviceLimitRejectsWithoutDeviceInContext (ratelimit_test.go):
+// handleStreamContainerLogs only ever runs behind requireDevice. Called
+// directly — bypassing routes() and therefore requireDevice — with a
+// request that carries no resolved device, it must answer 500 rather than
+// silently falling back to an unkeyed slot, which would quietly restore the
+// bug this phase fixes.
+func TestStreamContainerLogsRejectsWithoutDeviceInContext(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
+			return nil
+		},
+	}
+	s, _ := testServerWithDocker(t, policy.ModeDefault, fd)
+	req := httptest.NewRequest(http.MethodGet, "/v1/containers/c1/logs/stream", nil)
+	rec := httptest.NewRecorder()
+
+	// Act — call the handler directly, skipping requireDevice.
+	s.handleStreamContainerLogs(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -624,6 +819,11 @@ func TestStreamKeepaliveIsRaceFree(t *testing.T) {
 				// Bounded, short sleep — not a wall-clock wait on the phase's
 				// real timings — giving the 2ms keepalive ticker room to race
 				// with this write on the shared underlying ResponseWriter.
+				// This is not a synchronization wait (issue #54): there is no
+				// observable signal to poll for here, since the goroutine
+				// under test writes into the same handler call this loop is
+				// blocking, and the assertion is race-freedom under `-race`,
+				// not any state this sleep could instead wait on.
 				time.Sleep(time.Millisecond)
 			}
 			return nil
@@ -664,7 +864,11 @@ func TestStreamKeepaliveGoroutineJoinedBeforeReturn(t *testing.T) {
 	fd := &fakeDocker{
 		streamContainerLogsFn: func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
 			// Return promptly while the 1ms keepalive ticker is still firing,
-			// so cancel() races the next tick.
+			// so cancel() races the next tick. Also not a synchronization
+			// wait (issue #54): the fake has no handle on the ticker or the
+			// ResponseWriter to poll, and the point of this sleep is to
+			// consume real wall-clock time so the ticker fires while the
+			// fake is still running.
 			time.Sleep(5 * time.Millisecond)
 			return nil
 		},
@@ -678,30 +882,76 @@ func TestStreamKeepaliveGoroutineJoinedBeforeReturn(t *testing.T) {
 	s.routes().ServeHTTP(rec, req)
 	lenAtReturn := rec.Body.Len()
 
-	// Assert — give any unjoined goroutine several tick intervals to write
-	// more before checking that nothing changed.
-	time.Sleep(20 * keepaliveInterval)
-	if got := rec.Body.Len(); got != lenAtReturn {
-		t.Errorf("body length grew from %d to %d after ServeHTTP returned; the keepalive goroutine was not joined", lenAtReturn, got)
+	// Assert — watch for several tick intervals rather than sleeping once
+	// and checking after the fact: this fails on the very first observed
+	// growth instead of only after the whole window has elapsed.
+	watchWindow := 20 * keepaliveInterval
+	giveUpAt := time.Now().Add(watchWindow)
+	for {
+		if got := rec.Body.Len(); got != lenAtReturn {
+			t.Fatalf("body length grew from %d to %d after ServeHTTP returned; the keepalive goroutine was not joined", lenAtReturn, got)
+		}
+		if time.Now().After(giveUpAt) {
+			return
+		}
+		time.Sleep(keepaliveInterval)
+	}
+}
+
+// keepaliveGoroutineFrame is the stack-trace frame of the anonymous keepalive
+// goroutine started inside (*Server).handleStreamContainerLogs. It is used to
+// count only that goroutine rather than the whole process's goroutine count,
+// which runtime.NumGoroutine() reports and t.Parallel() makes unreliable:
+// unrelated goroutines from other parallel tests in this package can move
+// that number in either direction and either fail the test spuriously or
+// mask a real leak.
+const keepaliveGoroutineFrame = "internal/httpapi.(*Server).handleStreamContainerLogs.func1"
+
+// countGoroutinesMatching dumps every goroutine's stack via runtime.Stack and
+// counts how many contain frame. It grows the buffer until the dump fits
+// entirely: runtime.Stack silently truncates a dump that does not fit the
+// supplied buffer, and a truncated dump would undercount, making the
+// assertion in TestStreamGoroutineDoesNotLeak pass vacuously instead of
+// catching a real leak.
+func countGoroutinesMatching(frame string) int {
+	buf := make([]byte, 64*1024)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Count(string(buf[:n]), frame)
+		}
+		buf = make([]byte, 2*len(buf))
 	}
 }
 
 // TestStreamGoroutineDoesNotLeak opens and closes 20 streams and asserts the
-// goroutine count returns to its baseline, proving the keepalive goroutine
-// and its ticker exit when the handler returns rather than leaking one per
-// stream.
+// count of keepalive goroutines returns to zero, proving the keepalive
+// goroutine and its ticker exit when the handler returns rather than leaking
+// one per stream. It counts matches of the keepalive goroutine's own stack
+// frame (via countGoroutinesMatching) rather than runtime.NumGoroutine():
+// this test runs with t.Parallel(), so the whole-process count is polluted
+// by unrelated goroutines from other parallel tests in this package, which
+// made the baseline-vs-after comparison flaky (observed in CI as "goroutine
+// count = 178, want <= baseline 143").
 func TestStreamGoroutineDoesNotLeak(t *testing.T) {
 	t.Parallel()
 
-	// Arrange
+	// Arrange — the keepalive goroutine is joined via wg.Wait() before
+	// ServeHTTP returns (see handleStreamContainerLogs), so the only place
+	// it can be observed running is from inside streamContainerLogsFn while
+	// the handler is still on the stack. ServeHTTP is called sequentially
+	// below, so a plain closure variable is safe without extra locking.
+	inFlightCount := 0
 	fd := &fakeDocker{
 		streamContainerLogsFn: func(context.Context, string, dockerx.LogOptions, func(dockerx.LogLine) error) error {
+			if got := countGoroutinesMatching(keepaliveGoroutineFrame); got > inFlightCount {
+				inFlightCount = got
+			}
 			return nil
 		},
 	}
 	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
 	serial := pairDeviceForRead(t, st)
-	baseline := runtime.NumGoroutine()
 
 	// Act
 	for i := 0; i < 20; i++ {
@@ -709,20 +959,22 @@ func TestStreamGoroutineDoesNotLeak(t *testing.T) {
 		rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
 		s.routes().ServeHTTP(rec, req)
 	}
+	// A renamed or moved keepalive goroutine must fail this assertion
+	// loudly instead of making the count-returns-to-zero check below pass
+	// vacuously with 0.
+	if inFlightCount == 0 {
+		t.Fatalf("keepaliveGoroutineFrame %q never matched a running goroutine; "+
+			"the frame name likely drifted from handleStreamContainerLogs.func1", keepaliveGoroutineFrame)
+	}
 
 	// Assert — a short settle loop rather than a bare sleep: the keepalive
 	// goroutine exits on ctx.Done(), which the scheduler may not have
 	// delivered the instant ServeHTTP returns.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if runtime.NumGoroutine() <= baseline {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("goroutine count = %d, want <= baseline %d", runtime.NumGoroutine(), baseline)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForCondition(t, 2*time.Second, 5*time.Millisecond,
+		func() bool { return countGoroutinesMatching(keepaliveGoroutineFrame) == 0 },
+		func() string {
+			return fmt.Sprintf("keepalive goroutine count = %d, want 0", countGoroutinesMatching(keepaliveGoroutineFrame))
+		})
 }
 
 // TestLogRoutesRequireDevice asserts both log routes answer 401 with the

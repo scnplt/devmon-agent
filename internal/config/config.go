@@ -141,7 +141,7 @@ func (c Config) AgentLogPath() string { return filepath.Join(c.LogsDir(), "agent
 //
 // It aggregates rather than failing on the first fault: an operator correcting a
 // `docker run` line one variable at a time, one restart at a time, is a bad first
-// experience and the exact thing the PRD asks this package to avoid.
+// experience and the exact thing this package exists to avoid.
 type ValidationError struct{ Problems []string }
 
 func (e *ValidationError) Error() string {
@@ -235,6 +235,7 @@ func (l *loader) publicAddrs() []string {
 	}
 
 	addrs := make([]string, 0, strings.Count(raw, ",")+1)
+	hadInvalidEntry := false
 	for _, part := range strings.Split(raw, ",") {
 		e := strings.TrimSpace(part)
 		if e == "" {
@@ -242,11 +243,17 @@ func (l *loader) publicAddrs() []string {
 		}
 		if !isValidSAN(e) {
 			l.fail(envPublicAddr, "%q is not a valid DNS name or IP address", e)
+			hadInvalidEntry = true
 			continue
 		}
 		addrs = append(addrs, e)
 	}
-	if len(addrs) == 0 && len(l.problems) == 0 {
+	// Only report the missing-address problem when nothing in raw was even
+	// attempted (e.g. it was all commas and blanks) — an invalid entry already
+	// reports its own problem above, and reporting is a per-field decision, so
+	// it must never key off the loader's overall problem count from unrelated
+	// fields such as DEVMON_STATE_DIR.
+	if len(addrs) == 0 && !hadInvalidEntry {
 		l.fail(envPublicAddr, "must list at least one address")
 	}
 	return addrs
@@ -287,7 +294,7 @@ func (l *loader) selfContainer() string {
 		return ""
 	}
 	if !containerRefPattern.MatchString(ref) {
-		l.fail(envSelfContainer, "%q is not a valid container name or ID (want a container name or a 12/64-character hex ID)", ref)
+		l.fail(envSelfContainer, "%q is not a valid container name or ID (want two or more characters matching [a-zA-Z0-9][a-zA-Z0-9_.-])", ref)
 	}
 	return ref
 }
@@ -335,7 +342,7 @@ func (l *loader) boundedInt(key string, def, min int) int {
 	return n
 }
 
-// checkRetentionOrder enforces the PRD's separate-retention-budgets rule: the
+// checkRetentionOrder enforces the separate-retention-budgets rule: the
 // security record must outlive debug output. One shared short budget would
 // quietly destroy the audit trail to make room for operational logs.
 func (l *loader) checkRetentionOrder(cfg Config) {

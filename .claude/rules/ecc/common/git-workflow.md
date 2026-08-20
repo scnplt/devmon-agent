@@ -48,5 +48,5 @@ When creating PRs:
 4. Include test plan with TODOs
 5. Push with `-u` flag if new branch
 
-> For the full development process (planning, TDD, code review) before git operations,
-> see [development-workflow.md](./development-workflow.md).
+> For the development process before git operations — model routing, commit cadence,
+> and the gates every change must pass — see `CLAUDE.md`, which is the authority.

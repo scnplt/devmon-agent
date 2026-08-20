@@ -23,11 +23,11 @@ import (
 // weekly is code that rots. `make e2e-endurance` sets the variable and the
 // longer -timeout (45m) both tests need room inside.
 //
-// TestStreamEnduranceThirtyMinutes closes the PRD's Phase 4 success signal:
-// logs-and-live-streaming-report.md:178-190 records that only a 70-second run
-// was ever performed against a real host, proving the write-deadline fix but
-// not the 30-minute claim itself. TestLogRetentionBoundsDiskUse closes the
-// PRD's Phase 1 retention signal: that the agent's own log volume stays
+// TestStreamEnduranceThirtyMinutes closes Phase 4's success signal: only a
+// 70-second run was ever performed against a real host, proving the
+// write-deadline fix but not the 30-minute claim itself.
+// TestLogRetentionBoundsDiskUse closes Phase 1's retention signal: that the
+// agent's own log volume stays
 // bounded by DEVMON_LOG_MAX_TOTAL_MB rather than growing without limit, and
 // that this bound is enforced with no client-facing way to change it — every
 // knob here is a DEVMON_* startup variable read once by the agent process,
@@ -56,15 +56,15 @@ func requireEndurance(t *testing.T) {
 }
 
 // enduranceLogLinesCmd writes one numbered line per second, forever — the
-// PRD's 30-minute stream needs a fixture that keeps producing for the whole
+// 30-minute stream needs a fixture that keeps producing for the whole
 // window without racing its own startup the way logLinesCmd's 0.2s interval
 // (contract_logs_test.go) would at this scale.
 var enduranceLogLinesCmd = []string{"sh", "-c", `i=0; while true; do echo "line $i"; i=$((i+1)); sleep 1; done`}
 
 // TestStreamEnduranceThirtyMinutes holds a single live log stream open for 30
 // minutes against a fixture writing one line per second, and asserts every
-// line arrived, in order, with no gap and no reconnect — the PRD's Phase 4
-// success signal that logs-and-live-streaming-report.md left unticked.
+// line arrived, in order, with no gap and no reconnect — Phase 4's success
+// signal, which no earlier run ticked.
 //
 // The sequence is tracked by the fixture's own printed counter (decoded out
 // of each frame's data.line field), never by wall-clock arithmetic: a
@@ -165,9 +165,10 @@ func TestStreamEnduranceThirtyMinutes(t *testing.T) {
 
 // retentionMaxBackups mirrors internal/logging's unexported maxBackups
 // constant (D4-style duplication, the same reasoning contract_logs_test.go's
-// maxConcurrentStreams applies to a server-side limit): the suite must be
-// able to notice a change to how many rotated files are kept, which it
-// cannot do by importing the value it exists to check.
+// maxConcurrentStreams and maxStreamsPerDevice apply to the stream route's
+// global and per-device limits): the suite must be able to notice a change
+// to how many rotated files are kept, which it cannot do by importing the
+// value it exists to check.
 const retentionMaxBackups = 3
 
 // retentionBudgetMB is DEVMON_LOG_MAX_TOTAL_MB for this test's agent — the
@@ -180,7 +181,7 @@ const retentionBudgetMB = 8
 // DEVMON_LOG_LEVEL=debug to force the agent's own log file to rotate more
 // than once, then asserts the logs directory stays within a generous
 // headroom of its configured budget and that compressed backups exist —
-// the PRD's Phase 1 retention success signal, and proof that retention is
+// Phase 1's retention success signal, and proof that retention is
 // enforced with no client-facing knob: DEVMON_LOG_MAX_TOTAL_MB is read once
 // at agent startup (internal/config), and nothing this suite's mTLS client
 // can reach changes it afterward.

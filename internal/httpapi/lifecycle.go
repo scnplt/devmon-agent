@@ -31,9 +31,11 @@ type ContainerController interface {
 //
 // Success carries no body (D8): every Engine lifecycle call is asynchronous
 // at the edges, so any state returned here would already be stale. That
-// includes the Engine's "already in the requested state" answer (D9), which
-// this SDK version treats as a nil error at the client layer — there is no
-// separate branch to write because the success path already covers it.
+// includes the Engine's "already in the requested state" answer (D9): this
+// SDK version treats it as a nil error at the client layer, so it reaches
+// the success path below, and writeDockerError's dockerx.ErrNotModified
+// branch answers the same 204 if a future SDK version ever surfaces it as an
+// error instead.
 func (s *Server) handleLifecycle(op string, act func(context.Context, string) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.requireDocker(w) {

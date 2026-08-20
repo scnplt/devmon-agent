@@ -17,7 +17,7 @@ type AuditEntry struct {
 	Operation  string // policy.Operation value: start, restart, stop, kill, delete
 	Target     string // the reference as the device supplied it (D21)
 	Outcome    string // one of the Outcome* constants below
-	Detail     string // resolved container ID, or a short reason; never an Engine message
+	Detail     string // short fixed reason for the outcome when one adds information, else ""; never an Engine message or attacker-supplied text
 }
 
 const (
@@ -29,6 +29,11 @@ const (
 	OutcomeConflict     = "conflict"
 	OutcomeUnavailable  = "unavailable" // self ID unknown (D3)
 	OutcomeEngineError  = "engine_error"
+	// OutcomeInternalError covers a failure on the agent's own side that is
+	// neither the caller's fault nor a Docker Engine error — for example a
+	// store write that failed while issuing or recording a device
+	// certificate during pairing or renewal.
+	OutcomeInternalError = "internal_error"
 )
 
 // AppendAudit records one mutating operation. It is called once per mutating

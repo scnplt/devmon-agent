@@ -394,6 +394,30 @@ func TestLineSplitterFlush(t *testing.T) {
 	}
 }
 
+// TestLineSplitterFlushPropagatesEmitError covers flush's own error path:
+// emit failing on the buffered remainder must abort flush and surface the
+// error unchanged, the same contract push already honors mid-stream.
+func TestLineSplitterFlushPropagatesEmitError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s := newLineSplitter()
+	noopEmit := func(LogLine) error { return nil }
+	if err := s.push(streamStdout, []byte("unterminated remainder"), noopEmit); err != nil {
+		t.Fatalf("push() error = %v, want nil", err)
+	}
+	wantErr := errors.New("client gone")
+	failingEmit := func(LogLine) error { return wantErr }
+
+	// Act
+	err := s.flush(failingEmit)
+
+	// Assert
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("flush() error = %v, want %v", err, wantErr)
+	}
+}
+
 func TestTimestampExtraction(t *testing.T) {
 	t.Parallel()
 

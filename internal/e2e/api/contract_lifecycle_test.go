@@ -19,13 +19,13 @@ import (
 // idempotent start, kill refused, delete refused in default mode; then, in
 // full mode, delete-while-running conflicts, stop, then delete succeeds — plus
 // the invalid/unknown-reference, Engine-unavailable, and wrong-method cells
-// of the same checklist. lifecycle-policy-and-audit.plan.md:1086-1126.
+// of the same checklist.
 //
 // What this file deliberately does NOT cover: the three-mode × operation
 // matrix lives in contract_policy_test.go, one row of which
 // (TestDeleteRunningContainerConflicts here) it deliberately does not repeat;
 // the audit trail these same requests leave behind is contract_audit_test.go
-// (Task 8); and the self-exclusion guarantee — the PRD's headline metric —
+// (Task 8); and the self-exclusion guarantee — the headline metric —
 // needs a containerised agent and lives in internal/e2e/incontainer
 // (Tasks 9-11).
 
@@ -66,7 +66,7 @@ func waitContainerRunning(t *testing.T, engine *client.Client, id string) {
 // TestLifecycleHappyPath reproduces the default-mode half of the curl script
 // verbatim: restart, stop, start, a second (idempotent) start, kill refused,
 // delete refused — against a DEFAULT-mode agent started with
-// DEVMON_POLICY_MODE absent, not set to "default": the PRD metric is about
+// DEVMON_POLICY_MODE absent, not set to "default": the metric is about
 // the operator who configures nothing, and setting the variable would test a
 // different claim (Task 7's gotcha; the explicit value is covered by
 // TestPolicyMatrix's "default" row in contract_policy_test.go).

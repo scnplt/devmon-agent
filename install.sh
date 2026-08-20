@@ -22,7 +22,7 @@ set -eu
 # They must stay in step with README.md and compose.example.yaml, which name
 # the same tag.
 IMAGE_REPO='ghcr.io/scnplt/devmon-agent'
-IMAGE_TAG='0.2.0'
+IMAGE_TAG='0.3.0'
 
 # NONROOT_UID is the UID the distroless/static:nonroot image runs as. The state
 # directory must be owned by it or startup fails at MkdirAll with "permission
@@ -53,6 +53,12 @@ READY_POLL_SECONDS='2'
 # MAX_PORT is the highest TCP port a value may name.
 MAX_PORT='65535'
 
+# SOCKET_GID_PLACEHOLDER stands in for the socket group under --dry-run on a
+# host that has no Docker socket to read one from. It is deliberately not a
+# number, so a previewed compose file can never be mistaken for one that is
+# ready to `up -d`.
+SOCKET_GID_PLACEHOLDER='<docker-socket-gid>'
+
 # Defaults, each matching internal/config/config.go so the installer never
 # writes a value that differs from what the agent would have chosen anyway.
 DEFAULT_POLICY_MODE='default'
@@ -80,6 +86,16 @@ die() {
 	exit 1
 }
 
+# require_value guards the `shift 2` that every value-taking option performs.
+# Called as `require_value "$@"`, it sees the flag and whatever follows it —
+# on a flag that is the last word on the command line, that is one argument,
+# and POSIX `shift 2` with `$#` of 1 is a fatal shell error. Unguarded, `set
+# -eu` aborts on dash's raw "can't shift that many", bypassing every message
+# this script otherwise takes care to write.
+require_value() {
+	[ "$#" -ge 2 ] || die "$1 needs a value (try --help)"
+}
+
 # run prints a command before executing it, so an operator can see exactly what
 # was done to their host — and, under --dry-run, executes nothing at all.
 run() {
@@ -103,14 +119,14 @@ ASSUME_YES='no'
 # initial value; a flag overrides it; an empty value falls through to a prompt.
 PUBLIC_ADDR="${DEVMON_PUBLIC_ADDR:-}"
 POLICY_MODE="${DEVMON_POLICY_MODE:-}"
-PORT="${DEVMON_PORT:-}"
+PORT="${DEVMON_INSTALL_PORT:-}"
 STATE_DIR="${DEVMON_STATE_DIR:-}"
 LOG_MAX_AGE_DAYS="${DEVMON_LOG_MAX_AGE_DAYS:-}"
 LOG_MAX_TOTAL_MB="${DEVMON_LOG_MAX_TOTAL_MB:-}"
 AUDIT_MAX_AGE_DAYS="${DEVMON_AUDIT_MAX_AGE_DAYS:-}"
 AUDIT_MAX_ROWS="${DEVMON_AUDIT_MAX_ROWS:-}"
 INSTALL_DIR="${DEVMON_INSTALL_DIR:-}"
-DEVICE_NAME="${DEVMON_DEVICE_NAME:-}"
+DEVICE_NAME="${DEVMON_INSTALL_DEVICE_NAME:-}"
 
 usage() {
 	cat <<'EOF'
@@ -120,6 +136,11 @@ Usage: ./install.sh [options]
 
 Options (each also settable by the environment variable in brackets):
 
+  The DEVMON_INSTALL_* variables configure this installer and nothing else —
+  the agent does not read them. In particular DEVMON_INSTALL_PORT is the host
+  port the container's 8443 is published on; the agent's own listen address is
+  DEVMON_LISTEN_ADDR and is not set from here.
+
   --public-addr ADDR      Hostname or IP the phone will reach this host at.
                           Required. Comma-separated for several. No scheme and
                           no port — "vps.example.com", not "https://vps:8443".
@@ -127,7 +148,8 @@ Options (each also settable by the environment variable in brackets):
   --policy-mode MODE      read-only | default | full. Fixed at startup and
                           immutable thereafter; a client can never widen it.
                           Default: default. [DEVMON_POLICY_MODE]
-  --port PORT             Host port to publish. Default: 8443. [DEVMON_PORT]
+  --port PORT             Host port to publish. Default: 8443.
+                          [DEVMON_INSTALL_PORT]
   --state-dir DIR         Host directory holding the agent's identity and
                           audit record. Default: /var/lib/devmon.
                           [DEVMON_STATE_DIR]
@@ -144,7 +166,7 @@ Options (each also settable by the environment variable in brackets):
   --install-dir DIR       Where compose.yaml is written. Default: the current
                           directory. [DEVMON_INSTALL_DIR]
   --device-name NAME      Name for the first paired device. Default: my-phone.
-                          [DEVMON_DEVICE_NAME]
+                          [DEVMON_INSTALL_DEVICE_NAME]
 
   --dry-run               Print the compose file and every command, execute
                           nothing, and touch no file on this host.
@@ -163,43 +185,53 @@ EOF
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--public-addr)
-		PUBLIC_ADDR="${2:-}"
+		require_value "$@"
+		PUBLIC_ADDR="$2"
 		shift 2
 		;;
 	--policy-mode)
-		POLICY_MODE="${2:-}"
+		require_value "$@"
+		POLICY_MODE="$2"
 		shift 2
 		;;
 	--port)
-		PORT="${2:-}"
+		require_value "$@"
+		PORT="$2"
 		shift 2
 		;;
 	--state-dir)
-		STATE_DIR="${2:-}"
+		require_value "$@"
+		STATE_DIR="$2"
 		shift 2
 		;;
 	--log-max-age-days)
-		LOG_MAX_AGE_DAYS="${2:-}"
+		require_value "$@"
+		LOG_MAX_AGE_DAYS="$2"
 		shift 2
 		;;
 	--log-max-total-mb)
-		LOG_MAX_TOTAL_MB="${2:-}"
+		require_value "$@"
+		LOG_MAX_TOTAL_MB="$2"
 		shift 2
 		;;
 	--audit-max-age-days)
-		AUDIT_MAX_AGE_DAYS="${2:-}"
+		require_value "$@"
+		AUDIT_MAX_AGE_DAYS="$2"
 		shift 2
 		;;
 	--audit-max-rows)
-		AUDIT_MAX_ROWS="${2:-}"
+		require_value "$@"
+		AUDIT_MAX_ROWS="$2"
 		shift 2
 		;;
 	--install-dir)
-		INSTALL_DIR="${2:-}"
+		require_value "$@"
+		INSTALL_DIR="$2"
 		shift 2
 		;;
 	--device-name)
-		DEVICE_NAME="${2:-}"
+		require_value "$@"
+		DEVICE_NAME="$2"
 		shift 2
 		;;
 	--dry-run)
@@ -264,8 +296,16 @@ is_valid_port() {
 # true`, or a bind mount of `/` — to a file this script then hands to `docker
 # compose up -d`. The agent already holds the Docker socket, so that is a host
 # compromise rather than a malformed config file.
+#
+# Matched with `case` rather than `tr` in a command substitution, which had a
+# hole where the boundary must not: `$()` strips trailing newlines, so a value
+# of "a<LF>b" reduced to a lone newline and then to the empty string, and was
+# reported safe. No subshell either.
 has_unsafe_chars() {
-	[ -n "$(printf '%s' "$1" | tr -d 'A-Za-z0-9._:/-')" ]
+	case "$1" in
+	*[!A-Za-z0-9._:/-]*) return 0 ;;
+	esac
+	return 1
 }
 
 is_absolute_path() {
@@ -368,23 +408,38 @@ prompt() {
 
 COMPOSE_CMD=''
 
+# preflight_fail downgrades a missing prerequisite to a warning under
+# --dry-run. Previewing the compose file from a workstation is most of what
+# --dry-run is for, and none of these checks guards anything a dry run does:
+# `run` executes nothing, and every step that talks to the agent returns early.
+preflight_fail() {
+	[ "$DRY_RUN" = 'yes' ] || die "$*"
+	warn "$* (--dry-run: continuing anyway)"
+}
+
 preflight() {
 	step 'Checking prerequisites'
 
-	command -v docker >/dev/null 2>&1 ||
-		die 'docker is not on PATH. Install it first: https://docs.docker.com/engine/install/'
-	info '  docker: found'
-
-	docker info >/dev/null 2>&1 ||
-		die 'the Docker daemon did not answer "docker info". Start it, or add this user to the docker group, and try again.'
-	info '  docker daemon: responding'
+	if command -v docker >/dev/null 2>&1; then
+		info '  docker: found'
+		if docker info >/dev/null 2>&1; then
+			info '  docker daemon: responding'
+		else
+			preflight_fail 'the Docker daemon did not answer "docker info". Start it, or add this user to the docker group, and try again.'
+		fi
+	else
+		preflight_fail 'docker is not on PATH. Install it first: https://docs.docker.com/engine/install/'
+	fi
 
 	if docker compose version >/dev/null 2>&1; then
 		COMPOSE_CMD='docker compose'
 	elif command -v docker-compose >/dev/null 2>&1; then
 		COMPOSE_CMD='docker-compose'
 	else
-		die 'neither "docker compose" nor "docker-compose" is available. Install the Compose plugin: https://docs.docker.com/compose/install/'
+		preflight_fail 'neither "docker compose" nor "docker-compose" is available. Install the Compose plugin: https://docs.docker.com/compose/install/'
+		# Only reachable under --dry-run, where this names the command the
+		# preview's comments and next-steps text quote.
+		COMPOSE_CMD='docker compose'
 	fi
 	info "  compose: $COMPOSE_CMD"
 }
@@ -393,21 +448,32 @@ preflight() {
 # must equal it, or the agent's startup ping fails with "permission denied" on
 # the socket. 999 is right on Debian and Ubuntu and wrong elsewhere, so this is
 # resolved rather than assumed — and the script fails loudly rather than
-# guessing when neither stat dialect works.
+# guessing when neither stat dialect works. The one exception is --dry-run,
+# which has no host to resolve anything from and prints a placeholder instead.
 resolve_socket_gid() {
-	[ -S "$SOCKET_PATH" ] ||
-		die "$SOCKET_PATH is not a socket. This installer sets up an agent that talks to the local Docker daemon over that path."
+	if [ -S "$SOCKET_PATH" ]; then
+		if gid="$(stat -c '%g' "$SOCKET_PATH" 2>/dev/null)" && [ -n "$gid" ]; then
+			printf '%s' "$gid"
+			return 0
+		fi
+		# BSD stat (macOS, some minimal images) spells the same thing
+		# differently.
+		if gid="$(stat -f '%g' "$SOCKET_PATH" 2>/dev/null)" && [ -n "$gid" ]; then
+			printf '%s' "$gid"
+			return 0
+		fi
+		[ "$DRY_RUN" = 'yes' ] ||
+			die "could not read the group of $SOCKET_PATH with either \`stat -c\` or \`stat -f\`. Find it by hand and set group_add in compose.yaml yourself."
+	else
+		[ "$DRY_RUN" = 'yes' ] ||
+			die "$SOCKET_PATH is not a socket. This installer sets up an agent that talks to the local Docker daemon over that path."
+	fi
 
-	if gid="$(stat -c '%g' "$SOCKET_PATH" 2>/dev/null)" && [ -n "$gid" ]; then
-		printf '%s' "$gid"
-		return 0
-	fi
-	# BSD stat (macOS, some minimal images) spells the same thing differently.
-	if gid="$(stat -f '%g' "$SOCKET_PATH" 2>/dev/null)" && [ -n "$gid" ]; then
-		printf '%s' "$gid"
-		return 0
-	fi
-	die "could not read the group of $SOCKET_PATH with either \`stat -c\` or \`stat -f\`. Find it by hand and set group_add in compose.yaml yourself."
+	# --dry-run on a host with no local Docker socket — a workstation
+	# previewing the file it will install elsewhere. The placeholder goes into
+	# the preview so the operator can see the one line they have to fill in.
+	warn "the GID of $SOCKET_PATH could not be resolved; the preview leaves group_add as $SOCKET_GID_PLACEHOLDER."
+	printf '%s' "$SOCKET_GID_PLACEHOLDER"
 }
 
 # as_root runs a command with sudo only when not already root, and prints it
@@ -425,6 +491,26 @@ as_root() {
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
+
+# check_compose_path refuses to overwrite an existing compose.yaml before
+# anything on this host has been touched. It is separate from
+# write_compose_file, which used to hold this check and runs three steps later
+# — by which point prepare_state_dir had already created, chown'd and chmod'd
+# the state directory, so a re-run the installer declined had still changed the
+# host.
+check_compose_path() {
+	step "Checking $COMPOSE_PATH"
+
+	if [ ! -e "$COMPOSE_PATH" ]; then
+		info '  does not exist yet; it will be created'
+		return 0
+	fi
+
+	[ "$FORCE" = 'yes' ] ||
+		die "$COMPOSE_PATH already exists. Re-run with --force to overwrite it, or pass --install-dir to write somewhere else."
+
+	info '  exists; --force was given, so it will be overwritten'
+}
 
 check_state_dir() {
 	step "Checking the state directory ($STATE_DIR)"
@@ -479,6 +565,35 @@ services:
     container_name: $SERVICE_NAME
     restart: unless-stopped
 
+    # The image carries its own HEALTHCHECK — it runs \`devmon-agent health\`,
+    # a subcommand on the same binary, because distroless has no shell or curl
+    # to probe with. \`docker ps\` therefore reports a health state with no
+    # configuration here.
+
+    # Hardening. This container holds the Docker socket, which makes it the
+    # most valuable thing on the host to compromise; each line below narrows
+    # what a foothold inside it is worth, and none changes how the agent
+    # behaves. no-new-privileges is the most important of them: it stops any
+    # setuid binary in the container from ever raising privileges.
+    security_opt:
+      - no-new-privileges:true
+
+    # The agent needs no capabilities at all — 8443 is above 1024, so not even
+    # NET_BIND_SERVICE is required.
+    cap_drop:
+      - ALL
+
+    # Every write goes to the state bind mount below, which stays writable
+    # under read_only. /tmp is a tmpfs because SQLite falls back to it for
+    # spill files.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # A ceiling on threads, not processes: one Go binary, no children, and
+    # Linux counts threads here. Idle sits around a dozen.
+    pids_limit: 256
+
     ports:
       - "$PORT:8443"
 
@@ -521,12 +636,10 @@ services:
 EOF
 }
 
+# The refusal to overwrite an existing file lives in check_compose_path, which
+# runs before anything on this host has been touched.
 write_compose_file() {
 	step "Writing $COMPOSE_PATH"
-
-	if [ -e "$COMPOSE_PATH" ] && [ "$FORCE" != 'yes' ]; then
-		die "$COMPOSE_PATH already exists. Re-run with --force to overwrite it, or pass --install-dir to write somewhere else."
-	fi
 
 	if [ "$DRY_RUN" = 'yes' ]; then
 		info '  --dry-run: the file below would be written, and was not'
@@ -589,8 +702,18 @@ wait_ready() {
 # json_field pulls one string field out of the status payload. The payload is
 # a flat object of known keys — its field allowlist is a security boundary, so
 # it does not nest — which makes a jq dependency unnecessary.
+#
+# The object is split one field per line first, and the pattern is anchored to
+# both ends of that line — the braces of the outermost object are the only
+# thing allowed beside the field. A single `s/.*"key".*/` pattern is greedy and
+# reports the *last* occurrence of the key; this path prints the CA
+# fingerprint, the operator's trust anchor, so it takes the first field whose
+# key matches exactly and nothing else.
 json_field() {
-	printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+	printf '%s' "$1" |
+		tr ',' '\n' |
+		sed -n 's/^[[:space:]]*[{]*[[:space:]]*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)"[[:space:]]*[}]*[[:space:]]*$/\1/p' |
+		head -n 1
 }
 
 print_fingerprint() {
@@ -666,7 +789,12 @@ EOF
        fingerprint shown before it. The code is single-use and expires.
     2. Do not expose this port to the open internet without a VPN or a
        firewall in front of it. docs/THREAT-MODEL.md says what the agent does
-       and does not defend against.
+       and does not defend against. Note that a host firewall alone may not
+       be doing what you think: Docker's published ports install DNAT rules
+       that are evaluated before the chains UFW and firewalld manage, so port
+       $PORT stays reachable even with a \`ufw deny $PORT\` rule in place.
+       Restrict it where Docker honours it — bind the published port to one
+       interface in $COMPOSE_PATH, or write the rule into DOCKER-USER.
     3. Back up $STATE_DIR. It is the agent's identity, and the backup is
        itself a credential. See docs/BACKUP.md.
 
@@ -710,6 +838,8 @@ if [ "$AUDIT_MAX_AGE_DAYS" -lt "$LOG_MAX_AGE_DAYS" ]; then
 fi
 
 COMPOSE_PATH="$INSTALL_DIR/compose.yaml"
+
+check_compose_path
 
 SOCKET_GID="$(resolve_socket_gid)"
 info "  docker socket GID: $SOCKET_GID (resolved from $SOCKET_PATH)"

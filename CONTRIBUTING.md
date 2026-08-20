@@ -9,10 +9,9 @@ suggests. Most of what follows is about making that bar cheap to clear.
 **Security issues do not go here.** See [SECURITY.md](SECURITY.md) and report
 privately.
 
-For anything else, open an issue first if the change is more than a fix. The
-project follows a written PRD and phase plans (`.claude/PRPs/`), and a feature
-that is deliberately out of scope is usually recorded there with the reasoning
-— it saves you writing something that will be declined on principle.
+For anything else, open an issue first if the change is more than a fix. Some
+features are deliberately out of scope, and asking first saves you writing
+something that will be declined on principle.
 
 ## Language
 
@@ -71,9 +70,10 @@ make vuln                                    # govulncheck; must report none
 
 go test ./internal/... -race                 # always -race
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 80%
+go tool cover -func=coverage.out | tail -1   # floor is 90%
 
 shellcheck -s sh install.sh
+make openapi-lint                            # docs/openapi.yaml must lint clean
 ```
 
 The end-to-end suite runs against a real Docker Engine and is not part of the
@@ -95,7 +95,7 @@ under test rather than the function:
 func TestLoadRejectsZeroRateGuardedPerSec(t *testing.T) { ... }
 ```
 
-Coverage over `./internal/...` must stay at or above 80%. The e2e suite does
+Coverage over `./internal/...` must stay at or above 90%. The e2e suite does
 not count toward that number — it asserts the wire contract, deliberately
 sharing no production code with what it tests.
 
@@ -117,8 +117,9 @@ Code written from memory will use the pre-v29 forms and will not compile.
 types and nothing checks it against them, so a change to a route, a status
 code, or a projection field is only half done until the spec carries it too.
 The `*FieldCount` tests will tell you a projection gained a field; they will
-not tell you this file was forgotten. Validate with
-`npx @redocly/cli lint docs/openapi.yaml`.
+not tell you this file was forgotten. `make openapi-lint` validates the
+document itself — it catches a malformed spec, not a spec that drifted from the
+routes. Only review catches the second.
 
 **3. Build with `CGO_ENABLED=0`.** `modernc.org/sqlite` is pure Go, which is
 what keeps the binary static so it runs on `distroless/static`. Its

@@ -10,6 +10,10 @@ BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # local `make vuln` and the CI gate run the same scanner.
 GOVULNCHECK_VERSION ?= v1.6.0
 
+# Same contract for the OpenAPI linter: pinned here and in ci.yml so `make
+# openapi-lint` and the CI gate run the same rules against the same document.
+REDOCLY_VERSION ?= 2.46.2
+
 # Stamped into internal/version at link time. Defined once here so it is never retyped.
 LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Version=$(VERSION) \
@@ -44,7 +48,7 @@ E2E_PKGS := ./internal/e2e/...
 # failures.
 E2E_TESTFLAGS := -race -count=1 -v
 
-.PHONY: all build test test-race cover lint sec vuln shellcheck image fmt clean e2e e2e-container e2e-endurance e2e-lint e2e-clean
+.PHONY: all build test test-race cover lint sec vuln shellcheck doc-citations openapi-lint image fmt clean e2e e2e-container e2e-endurance e2e-health e2e-lint e2e-clean
 
 all: build
 
@@ -67,12 +71,23 @@ fmt:
 	gofmt -l -w .
 
 # golangci-lint is preferred. When it is not installed, `go vet` is the minimum bar.
+# Both steps need an explicit conditional: `gofmt -l` exits 0 even when it lists
+# files, so the output is what fails (the same guard ci.yml uses), and
+# `A && B || C` would print the not-installed message on B's failure rather
+# than A's, swallowing every golangci-lint finding.
 lint:
-	gofmt -l .
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "these files are not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 	go vet ./...
-	@command -v golangci-lint >/dev/null 2>&1 \
-		&& golangci-lint run ./... \
-		|| echo "golangci-lint not installed — go vet was the only lint run"
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not installed — go vet was the only lint run"; \
+	fi
 
 sec:
 	gosec ./...
@@ -87,7 +102,23 @@ vuln:
 # operator's host with sudo. -s sh, not the default, because the script is
 # POSIX sh: shellcheck would otherwise let a bashism through that dash rejects.
 shellcheck:
-	shellcheck -s sh install.sh
+	shellcheck -s sh install.sh scripts/check-doc-citations.sh
+
+# The prose docs cite README.md, install.sh and internal/**.go by anchor and by
+# line; this proves every one of them still resolves.
+doc-citations:
+	sh scripts/check-doc-citations.sh
+
+# docs/openapi.yaml is hand-maintained and no Go gate reads it, so this is the
+# only automated check that the contract file is well-formed and internally
+# consistent. It does not — and cannot — verify the document against the
+# registered routes; that gap is still closed by review.
+#
+# Run through npx rather than a checked-in node_modules: this repository has no
+# other JavaScript, and a dependency tree for one linter is not worth carrying.
+# The rules come from redocly.yaml at the repository root.
+openapi-lint:
+	npx --yes @redocly/cli@$(REDOCLY_VERSION) lint docs/openapi.yaml
 
 # -race instruments the test binary only; the agent binary it builds and runs as
 # a child process is still built with CGO_ENABLED=0, matching the shipped
@@ -105,10 +136,21 @@ e2e-container:
 e2e-endurance:
 	DEVMON_E2E_ENDURANCE=1 CGO_ENABLED=1 go test -tags e2e ./internal/e2e/api/... $(E2E_TESTFLAGS) -timeout 45m
 
-# `make lint` already covers the e2e files with gofmt, which ignores build tags.
-# go vet and golangci-lint do not, which is the only reason this target exists.
-# Do not fold `--build-tags e2e` into `lint`: it would pull the e2e packages into
-# every ordinary lint run and slow the fast dev-PR path for no benefit.
+# The one assertion in the suite no ubuntu-latest runner can make for itself.
+# ContainerSummary.Health arrived in Docker API v1.52 (Engine 29); the runners
+# still ship API 1.48, where /containers/json never sends the field, so
+# TestContainerListReportsHealth skips there and the shipped `health` key of
+# GET /v1/containers goes unverified (#15). Point this target at an Engine 29+
+# endpoint — CI uses a dind service, a developer can use their own daemon —
+# and it runs that single test and nothing else.
+#
+# The gate inside the test is a skip, not a failure, and DEVMON_E2E_REQUIRE=1
+# deliberately does not convert it: no flag makes an old Engine speak a field
+# it never sends. So the caller, not this target, is what proves the assertion
+# actually ran — CI greps the log for its --- PASS line.
+e2e-health:
+	CGO_ENABLED=1 go test -tags e2e ./internal/e2e/api/... $(E2E_TESTFLAGS) -run '^TestContainerListReportsHealth$$' -timeout 5m
+
 # Removes containers a run that crashed hard enough to skip its own t.Cleanup
 # left behind. Deliberately an EXPLICIT operator action and never automatic:
 # the label matches every run's containers, so an implicit version could not
@@ -122,11 +164,17 @@ e2e-clean:
 		echo "no com.devmon.e2e containers to remove"; \
 	fi
 
+# `make lint` already covers the e2e files with gofmt, which ignores build tags.
+# go vet and golangci-lint do not, which is the only reason this target exists.
+# Do not fold `--build-tags e2e` into `lint`: it would pull the e2e packages into
+# every ordinary lint run and slow the fast dev-PR path for no benefit.
 e2e-lint:
 	go vet -tags e2e ./...
-	@command -v golangci-lint >/dev/null 2>&1 \
-		&& golangci-lint run --build-tags e2e $(E2E_PKGS) \
-		|| echo "golangci-lint not installed — go vet -tags e2e was the only lint run"
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run --build-tags e2e $(E2E_PKGS); \
+	else \
+		echo "golangci-lint not installed — go vet -tags e2e was the only lint run"; \
+	fi
 
 image:
 	docker build \

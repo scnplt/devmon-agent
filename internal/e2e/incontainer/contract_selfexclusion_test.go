@@ -17,7 +17,7 @@ import (
 	"github.com/scnplt/devmon-agent/internal/e2e/harness"
 )
 
-// This file is the PRD's headline metric — "agent surviving a delete attempt
+// This file is the project's headline metric — "agent surviving a delete attempt
 // in the most permissive mode, 100%" — and the reason self-exclusion needs a
 // containerised agent to test at all: the rule (internal/dockerx/lifecycle.go
 // resolveTarget) compares the request's resolved container ID against the ID
@@ -25,7 +25,6 @@ import (
 // (internal/dockerx/self.go), which is only non-empty when the agent
 // genuinely runs as a container. A host-binary agent (internal/e2e/api) has
 // no container of its own to protect, so it can never exercise this path.
-// lifecycle-policy-and-audit.plan.md:1086-1126.
 //
 // What this file deliberately does NOT cover: hostname-override and
 // unresolvable-override self-identification variants — proving the *right*
@@ -127,7 +126,7 @@ func waitFixtureRunning(t *testing.T, e *client.Client, id string) {
 // containers are plain busybox processes, not the agent itself.
 const containerReadinessTimeoutForFixtures = 20 * time.Second
 
-// TestAgentRefusesToActOnItself is the PRD's headline metric: a full-mode
+// TestAgentRefusesToActOnItself is the headline metric: a full-mode
 // agent — the most permissive policy tier there is — refuses all five
 // lifecycle routes against its own container, by every one of the three
 // reference forms a client could plausibly send, and is still running,
@@ -165,7 +164,7 @@ func TestAgentRefusesToActOnItself(t *testing.T) {
 		}
 	}
 
-	// The PRD metric itself: still running, no restart, still answering —
+	// The metric itself: still running, no restart, still answering —
 	// asked of the ENGINE, never the agent (Task 10's GOTCHA). An agent that
 	// answered 403 fifteen times and then died would pass a version of this
 	// assertion that only asked the agent's own HTTP port.

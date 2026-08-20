@@ -11,11 +11,18 @@ management bug"; it is a host compromise. Reports are treated accordingly.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
-| < 0.1.0 | No — pre-release, never published |
+| Latest published minor version | Yes |
+| Any earlier version | No |
 
 Only the latest published minor version receives fixes. There is no long-term
 support branch.
+
+This table names no number on purpose: which minor is current changes on every
+release, and a hardcoded one silently tells readers the wrong thing between
+releases. The authoritative answer is the
+[latest release](https://github.com/scnplt/devmon-agent/releases/latest);
+`CHANGELOG.md` records what each one contained. Builds before 0.1.0 were
+pre-release and never published.
 
 ## Reporting a vulnerability
 

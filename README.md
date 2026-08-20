@@ -4,7 +4,7 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
 paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.2.0 — the full surface.** The agent is its own certificate
+**Status: 0.3.0 — the full surface.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -15,8 +15,9 @@ read historical logs and follow a live stream; and start, restart, stop, kill
 and delete containers — as far as the host's startup policy mode permits, and
 never against the agent's own container. Every mutating attempt is recorded in
 an audit table that outlives the operational log. The listening port is rate
-limited in two tiers, and an executable contract suite runs the real binary
-against a real Docker Engine.
+limited in two pre-authentication tiers, plus a per-device tier behind the
+handshake and a global backstop, and an executable contract suite runs the real
+binary against a real Docker Engine.
 
 License: [AGPL-3.0-only](LICENSE). Changes by version: [CHANGELOG.md](CHANGELOG.md).
 
@@ -33,9 +34,11 @@ cd devmon-agent
 That resolves the docker socket GID from the host, creates and chowns the state
 directory, writes a `compose.yaml`, starts the agent, waits for it to answer,
 and prints the CA fingerprint and your first pairing code. Pass `--dry-run` to
-see the compose file and every command it would run without touching the host,
-and `--help` for the full flag list — every prompt is also settable by flag or
-environment variable, so it works unattended.
+see the compose file and every command it would run without touching the host —
+that works from a workstation with no Docker daemon of its own, so you can read
+the file before running the installer on the server — and `--help` for the full
+flag list. Every prompt is also settable by flag or environment variable, so it
+works unattended.
 
 The installer refuses to touch a state directory that already exists and is not
 empty. Upgrading an existing installation is `docker compose pull && docker
@@ -67,18 +70,36 @@ docker run -d --name devmon-agent \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL \
+  --read-only --tmpfs /tmp \
+  --pids-limit 256 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.2.0
+  ghcr.io/scnplt/devmon-agent:0.3.0
 ```
 
-See `compose.example.yaml` for the equivalent Compose file and a reference for
-every configuration knob.
+The four hardening flags are not needed to run the agent and none of them
+changes how it behaves — they narrow what a foothold inside a container that
+holds the Docker socket is worth. `no-new-privileges` is the one to keep if you
+keep only one. `--read-only` covers the image's own filesystem; the state bind
+mount stays writable, and `/tmp` is a tmpfs because SQLite falls back to it for
+spill files.
+
+A published port is reachable from anywhere the host is, and a host firewall
+alone does not change that: Docker installs DNAT rules that are evaluated before
+the chains UFW and firewalld manage, so a `ufw deny 8443` is never consulted.
+Restrict it where Docker honours it — publish to one interface
+(`-p 127.0.0.1:8443:8443`, behind a VPN), or write the rule into `DOCKER-USER`.
+
+See `compose.example.yaml` for the equivalent Compose file. It carries the knobs
+worth setting by hand, not all of them — the full list is the environment table
+below.
 
 Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.2.0","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.3.0","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 
@@ -193,7 +214,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_PUBLIC_ADDR` | comma list | *(required)* | ≥1 entry; each a DNS name or IP; used as server-certificate SANs |
 | `DEVMON_POLICY_MODE` | enum | `default` | One of `read-only`, `default`, `full` |
 | `DEVMON_DOCKER_HOST` | URL | `unix:///var/run/docker.sock` | Scheme `unix` or `tcp` |
-| `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | A Docker container name, or a 12/64-character hex ID |
+| `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | Docker's own name grammar: `[a-zA-Z0-9][a-zA-Z0-9_.-]+` (two characters or more). Hex container IDs satisfy it too |
 | `DEVMON_LOG_LEVEL` | enum | `info` | One of `debug`, `info`, `warn`, `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | int | `1` | ≥1 |
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
@@ -479,7 +500,8 @@ Failure modes shared by every read route:
 | Unparsable `?since=` timestamp | 400 | `{"error":"invalid since timestamp"}` |
 | No such object | 404 | `{"error":"not found"}` |
 | Engine unreachable, timed out, or otherwise failing | 502 | `{"error":"docker engine unavailable"}` |
-| All live stream slots in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
+| Calling device already holds its own stream cap (stream route only) | 503 | `{"error":"too many concurrent log streams for this device"}` |
+| Every stream slot on the host is in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
 
 The mutating routes add three of their own:
 
@@ -575,12 +597,17 @@ minified bundle — would otherwise be accumulated whole in agent memory before
 any line boundary arrived, which is the agent OOM-killing itself while reading
 logs.
 
-**Eight live streams at once**, after which the route answers 503 with
-`too many concurrent log streams`. Each stream holds a goroutine, an Engine
-connection, and a socket for its entire life, so an unbounded count is
-file-descriptor exhaustion the agent inflicts on the host it exists to protect.
-The limit is a constant rather than a setting, on the same reasoning as the rest
-of the configuration: every additional knob is surface the operator has to
+**Eight live streams per host, three per device**, after which the route answers
+503 — `too many concurrent log streams for this device` when the caller is at its
+own cap, `too many concurrent log streams` when the host's total is gone. Each
+stream holds a goroutine, an Engine connection, and a socket for its entire life,
+so an unbounded count is file-descriptor exhaustion the agent inflicts on the host
+it exists to protect. The per-device cap under that total is what stops one paired
+device — a phone with a stack of tabs, or a client that leaks streams on
+backgrounding — from denying live logs to every other paired device; the host-wide
+refusal is logged with the devices holding the slots, so the operator can tell the
+two apart. Both limits are constants rather than settings, on the same reasoning as
+the rest of the configuration: every additional knob is surface the operator has to
 understand at install time.
 
 If the container turns out not to exist, or the Engine is unreachable, the
@@ -737,6 +764,44 @@ trade.
 Reading this list while the agent runs is safe and expected — that is what WAL
 mode and the busy timeout were configured for.
 
+### Health
+
+The image carries a `HEALTHCHECK`, so `docker ps` reports a health state
+alongside the running state:
+
+```bash
+$ docker ps --filter name=devmon-agent --format '{{.Names}} {{.Status}}'
+devmon-agent    Up 4 hours (healthy)
+```
+
+It runs `devmon-agent health`, a third subcommand on the same binary — for the
+same reason as the two above, there is no shell and no curl in the image to
+run a probe with. The subcommand makes one HTTPS `GET /v1/status` against the
+agent's own listener on loopback and exits 0 or 1. `restart: unless-stopped`
+alone only reacts to the process exiting; this also catches a listener that is
+up but no longer answering.
+
+```bash
+$ docker exec devmon-agent /usr/local/bin/devmon-agent health
+healthy: GET /v1/status returned 200
+
+$ docker inspect -f '{{.State.Health.Status}}' devmon-agent
+healthy
+```
+
+A rate-limited answer (429) counts as healthy: it proves the listener is
+accepting connections and running the middleware chain, which is all this probe
+claims to measure. Lowering `DEVMON_RATE_STATUS_PER_MIN` therefore cannot make
+a working container report unhealthy. TLS verification is skipped, deliberately
+— the server certificate is issued for `DEVMON_PUBLIC_ADDR`'s SANs, which do
+not include loopback, and a process probing the listener from inside the
+container that owns it is not the place to re-establish who that listener is.
+It never reads `certs/`, for the same reason `device` and `audit` do not.
+
+One consequence worth knowing: the probe is a real request, so it writes a
+request log line every 30 seconds — about 2900 a day. Raise
+`DEVMON_LOG_MAX_TOTAL_MB` if that crowds out what you are actually reading.
+
 ### The audit log
 
 Every mutating request writes exactly **one** row — successes, refusals by
@@ -768,6 +833,13 @@ over the API**, in any policy mode — it is the one artifact whose value surviv
 a compromised device, and a phone that can read it can see what it would need to
 cover up. Host access is the authority here, exactly as it is for revocation.
 
+The row ceiling is spent **per device**, not first-come-first-served: pruning
+divides the budget evenly across the devices present in the table and trims each
+to its own share, so one device generating traffic at the rate limit cannot push
+another device's history out of the record. A device that overruns its own share
+still loses its own oldest rows — the table is finite on purpose — which
+`docs/THREAT-MODEL.md` states in full.
+
 ---
 
 ## Development
@@ -776,7 +848,7 @@ cover up. Host access is the authority here, exactly as it is for revocation.
 make build          # -> bin/devmon-agent
 make test           # unit tests
 make test-race      # with -race (needs a C toolchain)
-make cover          # coverage; the floor is 80% over ./internal/...
+make cover          # prints total coverage over ./internal/...; CI enforces the 90% floor
 make lint           # gofmt + go vet + golangci-lint when installed
 make sec            # gosec
 make image          # docker build
@@ -859,18 +931,24 @@ branch a pull request targets:
 
 | Job | Runs on | What it does |
 |---|---|---|
-| `test` | every PR, and pushes to `dev`/`main` | `go build ./...`, race tests over the whole module, and the 80% coverage floor over `./internal/...` |
-| `lint` | PRs into `main` only | `gofmt`, `go vet`, `golangci-lint` |
-| `image` | PRs into `main` only | `docker build` of the release image |
-| `gosec` | PRs into `main` only | `gosec ./...` |
-| `govulncheck` | PRs into `main` only | `govulncheck ./...` — known vulnerabilities in the dependencies and the Go toolchain, which `gosec` does not look for |
-| `shellcheck` | PRs into `main` only | `shellcheck -s sh install.sh` |
-| `e2e` | PRs into `main` only | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
+| `test` | every PR, and pushes to `main` | `go build ./...`, race tests over the whole module, and the 90% coverage floor over `./internal/...` |
+| `lint` | PRs into `main`, and pushes to `main` | `gofmt`, `go vet`, `golangci-lint` |
+| `image` | PRs into `main`, and pushes to `main` | `docker build` of the release image |
+| `gosec` | PRs into `main`, and pushes to `main` | `gosec ./...` |
+| `govulncheck` | PRs into `main`, and pushes to `main` | `govulncheck ./...` — known vulnerabilities in the dependencies and the Go toolchain, which `gosec` does not look for |
+| `shellcheck` | PRs into `main`, and pushes to `main` | `shellcheck -s sh install.sh` |
+| `e2e` | PRs into `main`, and pushes to `main` | `make e2e` against the runner's Docker Engine, with `DEVMON_E2E_REQUIRE=1`, plus `make e2e-lint` |
 
 `dev` is the integration branch, so a PR into it gets fast feedback from `test`
 alone; the full release bar applies on the way into `main`. The six
-`main`-only jobs are gated on `github.base_ref` and are skipped, not queued, on
-a `dev` PR.
+`main`-only jobs are gated on `github.base_ref == 'main'`, which GitHub
+populates for `pull_request` events only, **or** `github.ref ==
+'refs/heads/main'`, which covers the push of the merge commit. Neither is true
+on a `dev` PR, so they are skipped there — not queued. The second half of the
+gate is what makes `main`'s HEAD carry its own release-bar result: `main`'s
+ruleset is not strict, so the merge commit can differ from the tree the PR
+tested, and without it that commit would only ever have been checked by
+`test`.
 
 Toolchain versions come from `go.mod`, and the linter and scanner versions are
 pinned in the workflow's `env` block — bump them there, deliberately, rather

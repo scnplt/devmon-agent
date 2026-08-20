@@ -49,6 +49,23 @@ func TestNewUnreachableEngine(t *testing.T) {
 	}
 }
 
+// TestClientClose proves Close releases the underlying Engine connection and
+// reports no error for an ordinary in-process transport.
+func TestClientClose(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	c, _ := newFakeEngine(t, nil)
+
+	// Act
+	err := c.Close()
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+}
+
 func TestNewRejectsMalformedHost(t *testing.T) {
 	t.Parallel()
 

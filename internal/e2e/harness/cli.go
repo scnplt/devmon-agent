@@ -112,6 +112,17 @@ func parseDeviceRows(t *testing.T, out string) []DeviceRow {
 	return result
 }
 
+// auditEmptyColumn is cmd/devmon-agent/cli.go's orDash placeholder: an
+// identity audit row (pair, renew, unpair_self) leaves TARGET and/or DETAIL
+// empty, and the CLI prints "-" there instead so every row keeps six
+// visually distinct columns for both a human reader and this parser. "-" is
+// never a valid container reference or a real detail value in this system
+// (references are hex device/container IDs or Docker names; details are
+// either empty or a short server-generated tag), so mapping it back to ""
+// here is unambiguous and lets existing assertions keep comparing against
+// real refs or genuine empties.
+const auditEmptyColumn = "-"
+
 // parseAuditRows parses `audit list`'s tabwriter table into AuditRow values.
 // Shared by the host-side (ListAudit) and in-container (ListAuditInContainer)
 // call sites so their assertions never drift apart.
@@ -125,12 +136,21 @@ func parseAuditRows(t *testing.T, out string) []AuditRow {
 			OccurredAt: f[0],
 			Device:     f[1],
 			Operation:  f[2],
-			Target:     f[3],
+			Target:     undash(f[3]),
 			Outcome:    f[4],
-			Detail:     f[5],
+			Detail:     undash(f[5]),
 		})
 	}
 	return result
+}
+
+// undash maps the CLI's "-" placeholder back to the empty string it stands
+// in for, leaving every other value unchanged.
+func undash(s string) string {
+	if s == auditEmptyColumn {
+		return ""
+	}
+	return s
 }
 
 // parseTable splits a tabwriter table's stdout into rows of exactly

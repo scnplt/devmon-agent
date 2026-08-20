@@ -19,7 +19,6 @@ import (
 // exactly the documented allowlist, POST is rejected, and no route leaks
 // anything to a caller with no client certificate" — the one endpoint every
 // scanner on the internet can already reach.
-// secure-foundation-and-persistence.plan.md:1216-1229.
 
 // unauthenticatedClient builds an http.Client that trusts only the CA an
 // already-paired Device was pinned to, but presents no client certificate of

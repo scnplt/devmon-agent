@@ -19,9 +19,8 @@ import (
 // log is deliberately unreachable over the HTTPS API, so this file drives
 // every assertion through harness.ListAudit, never SQLite and never a route
 // this agent does not register).
-// lifecycle-policy-and-audit.plan.md:1086-1126, specifically the "audit list
-// shows one row per attempt..." and "revoke the device... audit list gains
-// no row" checklist items.
+// It covers specifically the "audit list shows one row per attempt..." and
+// "revoke the device... audit list gains no row" checklist items.
 //
 // What this file deliberately does NOT cover: the exact HTTP status per
 // operation is contract_lifecycle_test.go and contract_policy_test.go's job;
@@ -45,6 +44,34 @@ import (
 // own freshly started agent, can assert an EXACT row count rather than
 // searching a long list for its own rows.
 const auditListLimit = 50
+
+// identityAuditOperations names the operation column values withPairAudit
+// and withIdentityAudit write (internal/httpapi/audit.go's opPair, opRenew,
+// opUnpairSelf). Since #69, harness.PairDevice's own pairing request writes
+// one of these (a "pair" row) before a test's scripted sequence ever runs,
+// so a test that asserts an exact row count for its own scripted calls must
+// exclude identity rows to stay meaningful regardless of how many pairing or
+// renewal events its setup happens to produce.
+var identityAuditOperations = map[string]bool{
+	"pair":        true,
+	"renew":       true,
+	"unpair_self": true,
+}
+
+// nonIdentityAuditRows filters rows down to the ones NOT written by identity
+// bootstrapping (see identityAuditOperations), preserving order. Used by
+// every test in this file that asserts an exact count of rows its own
+// scripted container-lifecycle calls produced, so the assertion does not
+// silently over-count the pairing row PairDevice always writes.
+func nonIdentityAuditRows(rows []harness.AuditRow) []harness.AuditRow {
+	result := make([]harness.AuditRow, 0, len(rows))
+	for _, row := range rows {
+		if !identityAuditOperations[row.Operation] {
+			result = append(result, row)
+		}
+	}
+	return result
+}
 
 // TestAuditRowPerMutatingRequest replays a small scripted sequence — a
 // restart that succeeds, a kill refused by default policy, and a delete of a
@@ -86,9 +113,12 @@ func TestAuditRowPerMutatingRequest(t *testing.T) {
 		t.Fatalf("step 3, restart of an unknown container: status = %d, want %d; body = %s", status, http.StatusNotFound, raw)
 	}
 
-	rows := harness.ListAudit(t, a, auditListLimit)
+	// Excludes the pair row d's own PairDevice call writes (identityAuditOperations
+	// doc comment: since #69, pairing itself is audited), so this count stays
+	// exactly the three scripted lifecycle calls below.
+	rows := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(rows) != 3 {
-		t.Fatalf("audit list holds %d rows, want exactly 3: %+v", len(rows), rows)
+		t.Fatalf("audit list holds %d non-identity rows, want exactly 3: %+v", len(rows), rows)
 	}
 
 	// Newest first: the unknown-container restart lands last and is listed first.
@@ -125,8 +155,8 @@ func TestAuditRowPerMutatingRequest(t *testing.T) {
 	}
 }
 
-// TestAuditRecordsRefusals is the PRD's explicit requirement stated on its
-// own: a call the host's policy refuses still leaves a row, with outcome
+// TestAuditRecordsRefusals states one explicit requirement on its own: a
+// call the host's policy refuses still leaves a row, with outcome
 // denied_policy, not silence. TestAuditRowPerMutatingRequest already proves
 // this as one cell of a sequence; this test isolates it so a reader searching
 // for "does a refusal get logged" finds a single, minimal answer.
@@ -145,9 +175,12 @@ func TestAuditRecordsRefusals(t *testing.T) {
 		t.Fatalf("POST .../kill under default policy: status = %d, want %d; body = %s", status, http.StatusForbidden, raw)
 	}
 
-	rows := harness.ListAudit(t, a, auditListLimit)
+	// Excludes the pair row PairDevice's own call writes (identityAuditOperations
+	// doc comment: since #69, pairing itself is audited), so this count stays
+	// exactly the one refused request under test.
+	rows := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(rows) != 1 {
-		t.Fatalf("audit list holds %d rows after one refused request, want exactly 1: %+v", len(rows), rows)
+		t.Fatalf("audit list holds %d non-identity rows after one refused request, want exactly 1: %+v", len(rows), rows)
 	}
 	if rows[0].Outcome != "denied_policy" {
 		t.Errorf("refused request's row outcome = %q, want %q", rows[0].Outcome, "denied_policy")
@@ -159,8 +192,8 @@ func TestAuditRecordsRefusals(t *testing.T) {
 
 // TestReadsWriteNoAuditRows drives all eight read routes and both log routes
 // against a freshly started agent, then asserts the audit table is still
-// empty: only mutating routes carry withAudit
-// (lifecycle-policy-and-audit.plan.md D17), and a suite that never checked
+// empty: only mutating routes carry withAudit (D17), and a suite that never
+// checked
 // this would not notice a future route accidentally gaining the middleware.
 func TestReadsWriteNoAuditRows(t *testing.T) {
 	t.Parallel()
@@ -193,9 +226,13 @@ func TestReadsWriteNoAuditRows(t *testing.T) {
 		}
 	}
 
-	rows := harness.ListAudit(t, a, auditListLimit)
+	// PairDevice's own call writes one identity "pair" row (identityAuditOperations
+	// doc comment: since #69, pairing itself is audited); that row is expected
+	// and excluded here, so what remains must genuinely be zero — the read and
+	// log routes under test.
+	rows := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(rows) != 0 {
-		t.Errorf("audit list holds %d rows after only read and log requests, want 0: %+v", len(rows), rows)
+		t.Errorf("audit list holds %d non-identity rows after only read and log requests, want 0: %+v", len(rows), rows)
 	}
 }
 
@@ -220,9 +257,12 @@ func TestRevokedDeviceWritesNoAuditRow(t *testing.T) {
 	if status != http.StatusNoContent {
 		t.Fatalf("sanity restart before revocation: status = %d, want %d; body = %s", status, http.StatusNoContent, raw)
 	}
-	before := harness.ListAudit(t, a, auditListLimit)
+	// Excludes the pair row PairDevice's own call wrote before the sanity
+	// restart (identityAuditOperations doc comment: since #69, pairing itself
+	// is audited), so "before" is exactly the one legitimate mutating request.
+	before := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(before) != 1 {
-		t.Fatalf("audit list before revocation holds %d rows, want exactly 1: %+v", len(before), before)
+		t.Fatalf("audit list before revocation holds %d non-identity rows, want exactly 1: %+v", len(before), before)
 	}
 
 	harness.RevokeDevice(t, a, d.ID)
@@ -232,9 +272,9 @@ func TestRevokedDeviceWritesNoAuditRow(t *testing.T) {
 		t.Fatalf("revoked device POST .../stop: status = %d, want %d; body = %s", status, http.StatusUnauthorized, raw)
 	}
 
-	after := harness.ListAudit(t, a, auditListLimit)
+	after := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(after) != len(before) {
-		t.Errorf("audit list after a revoked device's retry holds %d rows, want unchanged from %d: %+v", len(after), len(before), after)
+		t.Errorf("audit list after a revoked device's retry holds %d non-identity rows, want unchanged from %d: %+v", len(after), len(before), after)
 	}
 }
 
@@ -278,9 +318,12 @@ func TestAuditRecordsEngineUnavailable(t *testing.T) {
 		t.Fatalf("POST .../restart with the Engine severed: status = %d, want %d; body = %s", status, http.StatusBadGateway, raw)
 	}
 
-	rows := harness.ListAudit(t, a, auditListLimit)
+	// Excludes the pair row d's own PairDevice call writes (identityAuditOperations
+	// doc comment: since #69, pairing itself is audited), so this count stays
+	// exactly the one Engine-unavailable attempt under test.
+	rows := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(rows) != 1 {
-		t.Fatalf("audit list after one Engine-unavailable attempt holds %d rows, want exactly 1: %+v", len(rows), rows)
+		t.Fatalf("audit list after one Engine-unavailable attempt holds %d non-identity rows, want exactly 1: %+v", len(rows), rows)
 	}
 	if rows[0].Outcome != "engine_error" {
 		t.Errorf("row outcome with the Engine severed = %q, want %q", rows[0].Outcome, "engine_error")
@@ -340,9 +383,12 @@ func TestAuditDetailCarriesNoEngineText(t *testing.T) {
 	}
 	proxy.Restore(t)
 
-	rows := harness.ListAudit(t, a, auditListLimit)
+	// Excludes the pair row d's own PairDevice call writes (identityAuditOperations
+	// doc comment: since #69, pairing itself is audited), so this count stays
+	// exactly the four scripted outcomes below.
+	rows := nonIdentityAuditRows(harness.ListAudit(t, a, auditListLimit))
 	if len(rows) != 4 {
-		t.Fatalf("audit list holds %d rows after the four scripted outcomes, want exactly 4: %+v", len(rows), rows)
+		t.Fatalf("audit list holds %d non-identity rows after the four scripted outcomes, want exactly 4: %+v", len(rows), rows)
 	}
 
 	forbidden := []string{
@@ -378,17 +424,20 @@ func TestAuditSurvivesAgentRestart(t *testing.T) {
 		t.Fatalf("restart before agent restart: status = %d, want %d; body = %s", status, http.StatusNoContent, raw)
 	}
 
-	before := harness.ListAudit(t, a1, auditListLimit)
+	// Excludes the pair row d1's own PairDevice call wrote (identityAuditOperations
+	// doc comment: since #69, pairing itself is audited), so "before" is
+	// exactly the one restart under test.
+	before := nonIdentityAuditRows(harness.ListAudit(t, a1, auditListLimit))
 	if len(before) != 1 {
-		t.Fatalf("audit list before the agent restart holds %d rows, want exactly 1: %+v", len(before), before)
+		t.Fatalf("audit list before the agent restart holds %d non-identity rows, want exactly 1: %+v", len(before), before)
 	}
 
 	a1.Stop(t)
 	a2 := harness.StartAgent(t, harness.AgentOptions{StateDir: stateDir})
 
-	after := harness.ListAudit(t, a2, auditListLimit)
+	after := nonIdentityAuditRows(harness.ListAudit(t, a2, auditListLimit))
 	if len(after) != len(before) {
-		t.Fatalf("audit list after the agent restart holds %d rows, want unchanged from %d: %+v", len(after), len(before), after)
+		t.Fatalf("audit list after the agent restart holds %d non-identity rows, want unchanged from %d: %+v", len(after), len(before), after)
 	}
 	if after[0] != before[0] {
 		t.Errorf("audit row after restart = %+v, want unchanged from %+v", after[0], before[0])

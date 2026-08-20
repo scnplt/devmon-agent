@@ -1,5 +1,8 @@
 /bin/
 
+# Keep the runtime-state patterns below in sync with .dockerignore: gitignored
+# is not dockerignored, and the Dockerfile copies the whole tree.
+
 # Runtime state — never commit. These are produced on the operator's host under
 # $DEVMON_STATE_DIR and contain device records and private key material.
 *.db
@@ -10,3 +13,7 @@
 
 coverage.out
 .env
+
+# Planning artifacts (PRDs, phase plans, reports) and review write-ups are local
+# working notes. Reviews are delivered in the session or as PR comments.
+.claude/PRPs/

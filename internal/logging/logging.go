@@ -3,7 +3,7 @@
 // Package logging builds the agent's structured logger over a size- and
 // age-bounded file on the state mount, teed to stderr.
 //
-// Two guarantees this package exists to keep, both PRD requirements:
+// Two guarantees this package exists to keep, both of them requirements:
 //
 //   - Log lines written before a crash are readable after a restart. That is why
 //     the sink is a file on the bind-mounted state directory and not only stderr.
@@ -68,8 +68,14 @@ func NewSink(cfg config.Config) (*Sink, error) {
 	logger := slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
 	return &Sink{
-		Logger:  logger,
-		rotator: NewRotator(lj, defaultRotateInterval, logger),
+		Logger: logger,
+		// cfg.LogMaxAge is the same budget lj.MaxAge above was derived from,
+		// so the startup pass judges staleness against exactly the operator's
+		// configured DEVMON_LOG_MAX_AGE_DAYS. config.Load floors it at 1 day
+		// (internal/config/config.go, minDays), so in production this is
+		// never zero; NewRotator treats zero as "startup pass disabled" only
+		// as a defensive default for callers that build a Rotator directly.
+		rotator: NewRotator(lj, defaultRotateInterval, cfg.LogMaxAge, logger),
 		lj:      lj,
 	}, nil
 }

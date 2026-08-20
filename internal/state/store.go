@@ -24,8 +24,8 @@ import (
 )
 
 // Sentinel errors for the two conditions a caller must branch on. Both are fatal
-// at startup: the PRD asks for a loud, early, specific failure rather than an
-// obscure one at first query.
+// at startup, because a loud, early, specific failure beats an obscure one at
+// first query.
 var (
 	// ErrStateCorrupt means the file exists but is not a usable database — the
 	// realistic outcome of a botched restore or a truncated copy.
@@ -58,7 +58,7 @@ type Store struct {
 
 	// FirstRun is true when the database file did not exist before Open.
 	//
-	// Phase 2 hangs the PRD's "loud on missing identity" check off this: once a
+	// Phase 2 hangs the "loud on missing identity" check off this: once a
 	// CA exists, a first run on a mount that should already hold one means the
 	// operator lost their state directory, and the agent must say so rather than
 	// silently minting a new identity that unpairs every device.
@@ -252,12 +252,28 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
-// PruneAudit enforces both retention bounds in one transaction and returns the
-// number of rows removed.
+// PruneAudit enforces three retention bounds in one transaction and returns
+// the number of rows removed: age, per-device fair share, and total row
+// count, applied in that order.
 //
-// Age and row count are applied together, not as alternatives: whichever bites
-// first is the one that limits growth, which is what "bounded by both age and
-// size" means in the PRD.
+// The row cap alone bounds the table's size but not *whose* rows are evicted
+// from it: without a fair-share pass, a single authenticated device flooding
+// admitted mutations at the rate limit could push every other device's
+// history — and even its own earlier activity — out of the table well before
+// the age bound would ever trim it (see issue #81). The fair-share pass fixes
+// that: it divides maxRows evenly across the distinct device buckets still
+// present after the age pass, so one device can never evict another device's
+// rows.
+//
+// It does NOT guarantee that a device keeps everything it wrote. A device
+// that exceeds its own share still loses its own oldest rows once it is over
+// budget, because the table is finite by design — that backstop is what the
+// final, unchanged row-count pass exists to enforce, and it must stay last so
+// the fair-share pass can never weaken the hard disk-budget guarantee it
+// gives operators on a small VPS. The share itself also shrinks as more
+// distinct devices accumulate rows in the table — including unpaired or
+// revoked devices whose historical rows remain — which is the intended
+// fairness trade-off: more buckets, smaller slice per bucket.
 func (s *Store) PruneAudit(ctx context.Context, maxAge time.Duration, maxRows int) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -269,6 +285,11 @@ func (s *Store) PruneAudit(ctx context.Context, maxAge time.Duration, maxRows in
 	byAge, err := tx.ExecContext(ctx, `DELETE FROM audit WHERE occurred_at < ?`, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("prune audit by age: %w", err)
+	}
+
+	byShare, err := pruneAuditByDeviceShare(ctx, tx, maxRows)
+	if err != nil {
+		return 0, err
 	}
 
 	byCount, err := tx.ExecContext(ctx,
@@ -285,7 +306,48 @@ func (s *Store) PruneAudit(ctx context.Context, maxAge time.Duration, maxRows in
 
 	ageRows, _ := byAge.RowsAffected()
 	countRows, _ := byCount.RowsAffected()
-	return ageRows + countRows, nil
+	return ageRows + byShare + countRows, nil
+}
+
+// pruneAuditByDeviceShare caps each distinct device_id bucket (NULL/empty
+// counted as one bucket of its own) to an even fair share of maxRows, so a
+// single flooding device cannot evict another device's rows. It runs after
+// the age pass and before the row-count backstop, and returns the number of
+// rows it removed.
+func pruneAuditByDeviceShare(ctx context.Context, tx *sql.Tx, maxRows int) (int64, error) {
+	var buckets int
+	err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT COALESCE(device_id, '')) FROM audit`,
+	).Scan(&buckets)
+	if err != nil {
+		return 0, fmt.Errorf("count audit device buckets: %w", err)
+	}
+	if buckets == 0 {
+		return 0, nil
+	}
+
+	perDevice := maxRows / buckets
+	if perDevice < 1 {
+		perDevice = 1
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		DELETE FROM audit WHERE id IN (
+			SELECT id FROM (
+				SELECT id, ROW_NUMBER() OVER (
+					PARTITION BY COALESCE(device_id, '') ORDER BY id DESC
+				) AS rn
+				FROM audit
+			) WHERE rn > ?
+		)`,
+		perDevice,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("prune audit by device share: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	return rows, nil
 }
 
 // Close releases the database handle.

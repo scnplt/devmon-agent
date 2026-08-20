@@ -26,7 +26,6 @@ import (
 // projections, freshness with no caching layer, invalid and unknown
 // references, the Engine-unavailable 502 path with recovery (D16's proxy),
 // and read-only mode permitting every one of them.
-// read-operations.plan.md:894-907.
 //
 // What this file deliberately does NOT cover: revocation losing read access
 // is TestRevokedDeviceLosesAccessImmediately in contract_identity_test.go —
@@ -50,7 +49,7 @@ const readContractTimeout = 30 * time.Second
 // PERMITTED superset, never promised: a container with no healthcheck omits
 // "health" entirely, one with a healthcheck does not. Writing down which list
 // is which, rather than asserting one blanket set, is itself part of the
-// contract a client needs (Task 5's gotcha in the phase plan).
+// contract a client needs.
 func assertKeySet(t *testing.T, obj map[string]any, required, optional []string) {
 	t.Helper()
 
@@ -439,8 +438,7 @@ func TestReadsAreNotCached(t *testing.T) {
 // Engine) and 404 for a well-formed but nonexistent one.
 //
 // The invalid-ref probes are percent-encoded ("%2e%2e", not a literal ".."),
-// mirroring what Phase 3's manual validation confirmed
-// (read-operations-report.md's End-to-End Validation section): a literal
+// mirroring what Phase 3's manual validation confirmed: a literal
 // ".." in the request path is collapsed by net/http.ServeMux's own path
 // cleaning BEFORE the pattern ever matches, which answers with a redirect,
 // not the documented 400 — a probe that never reaches this agent's own
@@ -599,8 +597,7 @@ func TestReadsAnswer502WhenEngineIsGone(t *testing.T) {
 // r.URL.Path verbatim (method/path/status/duration only), and a read route's
 // path IS the object reference the caller supplied — a GET to
 // /v1/containers/<ref> logs <ref> as part of "path". This was confirmed
-// during Phase 3's manual validation (read-operations-report.md, "Confirmed
-// review finding M4 with evidence") and is a recorded, un-fixed observation,
+// during Phase 3's manual validation and is a recorded, un-fixed observation,
 // not something this task may correct (D19: no production code changes).
 //
 // What the checklist item's underlying security concern actually protects

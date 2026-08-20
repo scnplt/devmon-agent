@@ -9,10 +9,9 @@ cannot be traced to a line of code, it does not appear — see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) if you find one that no longer
 resolves.
 
-This document does not contradict [`README.md`](../README.md) or the
-[PRD](../.claude/PRPs/prds/devmon-agent.prd.md). Where the README already
-states a security property, this document repeats its wording rather than
-rephrasing it.
+This document does not contradict [`README.md`](../README.md). Where the
+README already states a security property, this document repeats its wording
+rather than rephrasing it.
 
 ---
 
@@ -76,10 +75,30 @@ made it.
   logs, and the five mutating routes:
   [`internal/httpapi/server.go:149-208`](../internal/httpapi/server.go)
   (`routes`). It is read only through the host-side CLI
-  (`device audit list`), which is host access, not API access.
+  (`audit list`), which is host access, not API access.
 - Retention is enforced on a fixed interval, independent of request traffic:
   [`internal/state/pruner.go:11-14`](../internal/state/pruner.go) and
   [`internal/state/pruner.go:44-56`](../internal/state/pruner.go).
+
+**What the trail does and does not guarantee under a compromised device.** It
+is not append-only: the table is bounded by both `DEVMON_AUDIT_MAX_AGE_DAYS`
+and `DEVMON_AUDIT_MAX_ROWS`, and the row bound exists so the agent can never
+fill a small VPS's disk. `PruneAudit` therefore divides the row budget evenly
+across the device buckets present in the table before it trims anything
+([`internal/state/store.go`, `pruneAuditByDeviceShare`](../internal/state/store.go)):
+
+- **Guaranteed:** one device can never evict another device's rows. An
+  attacker holding one device credential cannot erase what the operator's
+  other devices did, no matter how much traffic it generates.
+- **Not guaranteed:** that a device keeps everything it wrote. A device which
+  exceeds its own share loses its own oldest rows first, so a compromised
+  device can still push its earliest activity out of its own slice — it just
+  cannot reach anyone else's. The residual window is bounded by the share, not
+  by the whole table.
+- The share shrinks as more distinct devices accumulate rows, including
+  unpaired or revoked devices whose historical rows remain. More buckets means
+  a smaller slice each; that is the fairness trade-off, chosen over letting one
+  device's volume decide whose history survives.
 
 ### The Docker socket
 
@@ -89,13 +108,12 @@ documented deployment.
 - `install.sh` mounts it `:ro`: "`:ro` does not prevent writes through the
   Docker API — the API is request/response over the socket — but it does
   prevent the socket file itself being replaced, and it states intent."
-  ([`install.sh:465-468`](../install.sh)).
+  ([`install.sh`, `compose_file_contents`](../install.sh)).
 - The agent talks to it through `github.com/moby/moby/client`, constructed
   once at startup from `DEVMON_DOCKER_HOST`:
   [`internal/dockerx/client.go:42-46`](../internal/dockerx/client.go).
 - The socket's GID is resolved from the host, not assumed, because it varies
-  per distribution: [`install.sh:371-390`](../install.sh)
-  (`resolve_socket_gid`).
+  per distribution: [`install.sh`, `resolve_socket_gid`](../install.sh).
 
 ---
 
@@ -253,7 +271,7 @@ substance, because the two documents describe the same boundary:
 - **An operator who exposes the port to the internet with no VPN or firewall
   in front of it.** `install.sh`'s own closing message says so directly: "Do
   not expose this port to the open internet without a VPN or a firewall in
-  front of it." ([`install.sh:622-623`](../install.sh)).
+  front of it." ([`install.sh`, `print_next_steps`](../install.sh)).
 - **A deployment that terminates TLS in front of the agent.** The agent
   authenticates from the connection it terminates itself; an HTTPS reverse
   proxy or tunnel ingress is not a supported configuration and is outside this
@@ -281,13 +299,12 @@ substance, because the two documents describe the same boundary:
 > by nothing else. It is therefore present, in the clear, in every host backup
 > and every VPS snapshot of this directory.
 >
-> — [`README.md:331-340`](../README.md)
+> — [`README.md`, `## State directory`](../README.md#state-directory)
 
-The PRD records this as an accepted risk rather than a defect: "CA private key
-readable in host backups and VPS snapshots" is Likelihood M, mitigated by
-"restrictive file permissions" with encryption revisited "only if a credible
-unlocking mechanism exists"
-([`.claude/PRPs/prds/devmon-agent.prd.md:184`](../.claude/PRPs/prds/devmon-agent.prd.md)).
+This is an accepted risk rather than a defect. A CA private key readable in
+host backups and VPS snapshots is judged medium likelihood and mitigated by
+restrictive file permissions; encryption at rest will be revisited only if a
+credible unlocking mechanism exists.
 
 **No RBAC — every paired device has the same powers.** Policy is a single
 mode fixed for the whole install, not a per-device grant: `requireOp` checks
@@ -296,21 +313,19 @@ only `s.cfg.PolicyMode`, the same value for every device
 The README states the same property from the operator's side: "The mode is
 fixed at startup and read once. No client can widen it... Changing the mode
 means changing `DEVMON_POLICY_MODE` on the host and restarting the agent."
-([`README.md:203-206`](../README.md)). A general operator-defined per-device
-permission set is out of scope for this release
-([`.claude/PRPs/prds/devmon-agent.prd.md:164`](../.claude/PRPs/prds/devmon-agent.prd.md)).
+([`README.md`, `### Policy modes`](../README.md#policy-modes)). A general
+operator-defined per-device permission set is out of scope for this release.
 
 **Root-equivalent blast radius if the agent is compromised.** From
 `SECURITY.md`: "Anything that can drive its API can start, stop, and delete
 containers on the host, and — through Docker — reach root-equivalent power
 over that host. A vulnerability here is not a 'container management bug'; it
 is a host compromise."
-([`SECURITY.md:5-8`](../SECURITY.md)). The PRD's Technical Risks table records
-the same as the first row: "Agent compromise equals host root compromise
-(Docker socket access is root-equivalent)," mitigated by "narrow enumerated
-API surface rather than a socket proxy; mTLS with per-device credentials;
-audit logging; treat security review as a release gate"
-([`.claude/PRPs/prds/devmon-agent.prd.md:178`](../.claude/PRPs/prds/devmon-agent.prd.md)).
+([`SECURITY.md:5-8`](../SECURITY.md)). This is the project's first-ranked
+technical risk — agent compromise equals host root compromise, because Docker
+socket access is root-equivalent — and it is mitigated by a narrow enumerated
+API surface rather than a socket proxy, mTLS with per-device credentials,
+audit logging, and treating security review as a release gate.
 
 ---
 

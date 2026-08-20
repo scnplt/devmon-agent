@@ -8,10 +8,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -56,6 +58,26 @@ func generateCSRPEM(t *testing.T, subjectCN string) string {
 	}, key)
 	if err != nil {
 		t.Fatalf("create CSR: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+}
+
+// generateRSACSRPEM builds a PEM-encoded PKCS#10 CSR from a fresh RSA key,
+// for tests that drive IssueDeviceCert's "not ECDSA" rejection: decodeCSRPEM
+// only checks the PEM block type, never the key algorithm inside it, so a
+// well-formed non-ECDSA CSR reaches pairDevice/renewDevice and fails one step
+// later than a malformed CSR does.
+func generateRSACSRPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA CSR key: %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "irrelevant"},
+	}, key)
+	if err != nil {
+		t.Fatalf("create RSA CSR: %v", err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
@@ -188,6 +210,369 @@ func TestHandlePairMalformedCSRFails(t *testing.T) {
 	}
 	if respBody.Error != msgPairFailed {
 		t.Errorf("error = %q, want the terse %q", respBody.Error, msgPairFailed)
+	}
+}
+
+// TestHandlePairIssueCertFailureIsInternalError drives pairDevice's
+// IssueDeviceCert error branch: an RSA-keyed CSR is a well-formed PEM
+// "CERTIFICATE REQUEST" block, so it passes decodeCSRPEM, but IssueDeviceCert
+// rejects it one step later for not being ECDSA. This is also the
+// deleteOrphanedDevice cleanup path: the device row CreateDevice made must
+// not survive a failed pairing attempt.
+func TestHandlePairIssueCertFailureIsInternalError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	body, err := json.Marshal(pairRequest{PairingCode: code, CSRPEM: generateRSACSRPEM(t)})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	var respBody errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if respBody.Error != msgPairInternalError {
+		t.Errorf("error = %q, want %q", respBody.Error, msgPairInternalError)
+	}
+
+	devices, err := st.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Errorf("devices = %+v after a failed pairing attempt, want the orphaned row deleted", devices)
+	}
+}
+
+// TestDeleteOrphanedDeviceLogsSecondFailure covers deleteOrphanedDevice's own
+// error branch: when the cleanup DELETE itself fails (here, because the store
+// is already closed), it must only log — never panic or propagate — since the
+// caller has already logged the original failure that triggered the cleanup.
+func TestDeleteOrphanedDeviceLogsSecondFailure(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	log, buf := newCapturingLogger()
+	s, st, _ := testServerForPairing(t)
+	s.log = log
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Act — must not panic despite the closed store.
+	s.deleteOrphanedDevice("orphan-id")
+
+	// Assert
+	if !bodyContains(buf.String(), "delete orphaned device after failed pairing") {
+		t.Errorf("log = %q, want it to mention the failed cleanup", buf.String())
+	}
+}
+
+// TestPairDeviceRollbackSurvivesCanceledContext reproduces GH-40: a client
+// that aborts the connection right after CreateDevice commits must not leave
+// a "pending" device row behind, even though the request context it handed
+// pairDevice is already dead by the time the rollback runs.
+//
+// afterCreateHook lets this test land the cancellation at the exact
+// interleaving point a real disconnect would, deterministically and on the
+// same goroutine — racing the SQL layer with a sleep cannot guarantee
+// RedeemPairingCode observes a canceled context instead of simply winning the
+// race and succeeding. The hook lives on this test's own Server instance, so
+// it carries no risk to any other, parallel test.
+func TestPairDeviceRollbackSurvivesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	csrDER, ok := decodeCSRPEM(generateCSRPEM(t, "irrelevant"))
+	if !ok {
+		t.Fatal("decodeCSRPEM() rejected a well-formed CSR")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.afterCreateHook = cancel
+
+	// Act — CreateDevice runs on a live context and succeeds; the hook then
+	// cancels ctx before RedeemPairingCode, which pairDevice calls next with
+	// the very same ctx, ever runs.
+	_, err = s.pairDevice(ctx, code, csrDER)
+
+	// Assert
+	if err == nil {
+		t.Fatal("pairDevice() error = nil, want a redeem failure from the canceled context")
+	}
+	if errors.Is(err, state.ErrPairingCodeInvalid) {
+		t.Fatalf("pairDevice() error = %v, want a context failure, not ErrPairingCodeInvalid", err)
+	}
+
+	devices, err := st.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Errorf("devices = %+v after a pairing attempt whose request context died mid-flight, want the orphaned row deleted", devices)
+	}
+}
+
+// testServerForPairingWithRate mirrors testServerForPairing but lets a test
+// set a deliberately tiny RatePairPerMin, for driving the pair rate limiter
+// to exhaustion without dozens of requests.
+func testServerForPairingWithRate(t *testing.T, pairPerMin int) (*Server, *state.Store, *certs.CA) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Config{
+		StateDir:       dir,
+		ListenAddr:     ":8443",
+		PolicyMode:     policy.ModeDefault,
+		RatePairPerMin: pairPerMin,
+	}
+	st, err := state.Open(context.Background(), filepath.Join(dir, "devmon.db"), testLogger())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ca, _, err := certs.LoadOrCreateCA(t.TempDir(), testLogger())
+	if err != nil {
+		t.Fatalf("LoadOrCreateCA: %v", err)
+	}
+	return NewServer(cfg, st, ca, nil, nil, testLogger()), st, ca
+}
+
+// TestHandlePairSuccessWritesAuditRowWithNewDeviceID is the pair-success half
+// of issue #44: the audit row for a successful pairing must carry the newly
+// created device's ID, learned only from the response — the request that
+// produced it never carried a client certificate.
+func TestHandlePairSuccessWritesAuditRowWithNewDeviceID(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	body, err := json.Marshal(pairRequest{
+		PairingCode: code,
+		CSRPEM:      generateCSRPEM(t, "irrelevant"),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp pairResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opPair {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opPair)
+	}
+	if entries[0].Outcome != state.OutcomeSuccess {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeSuccess)
+	}
+	if entries[0].DeviceID != resp.DeviceID {
+		t.Errorf("device_id = %q, want the newly created device's ID %q", entries[0].DeviceID, resp.DeviceID)
+	}
+}
+
+// TestHandlePairFailureWritesAuditRowWithEmptyDeviceID is the pair-failure
+// half of issue #44: an invalid pairing code writes a row with a failure
+// outcome and an empty device ID (no device was ever created), and the
+// submitted code must never appear in the row.
+func TestHandlePairFailureWritesAuditRowWithEmptyDeviceID(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st, _ := testServerForPairing(t)
+	const badCode = "unknown-pairing-code"
+	body, err := json.Marshal(pairRequest{
+		PairingCode: badCode,
+		CSRPEM:      generateCSRPEM(t, "irrelevant"),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body: %s", rec.Code, rec.Body.String())
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opPair {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opPair)
+	}
+	if entries[0].DeviceID != "" {
+		t.Errorf("device_id = %q, want empty (pairing failed, no device created)", entries[0].DeviceID)
+	}
+	if entries[0].Outcome == state.OutcomeSuccess {
+		t.Error("outcome = success, want a failure outcome")
+	}
+	if strings.Contains(entries[0].Detail, badCode) {
+		t.Errorf("detail = %q, must never contain the submitted pairing code", entries[0].Detail)
+	}
+	if strings.Contains(entries[0].Target, badCode) {
+		t.Errorf("target = %q, must never contain the submitted pairing code", entries[0].Target)
+	}
+}
+
+// TestHandlePairRateLimitedWritesNoAuditRow is the D7-ordering regression
+// test for issue #44: a pair attempt refused by the per-IP pair limiter must
+// never reach withPairAudit, so it must write zero rows regardless of how
+// many attempts preceded it.
+func TestHandlePairRateLimitedWritesNoAuditRow(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a pair tier of burst 1, so the second request is refused by
+	// the limiter before withPairAudit ever runs.
+	s, st, _ := testServerForPairingWithRate(t, 1)
+	body, err := json.Marshal(pairRequest{PairingCode: "irrelevant", CSRPEM: "not a pem csr"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act — first request consumes the burst (and still fails pairing, but
+	// that is not what this test is about).
+	first := postPair(s, body)
+	if first.Code == http.StatusTooManyRequests {
+		t.Fatalf("first request status = 429, want the burst to admit it")
+	}
+
+	// Act — second request past the burst.
+	second := postPair(s, body)
+
+	// Assert
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want 429", second.Code)
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (only the first, non-throttled attempt)", len(entries))
+	}
+}
+
+// testServerForPairingWithoutCA mirrors testServerForPairing but omits the
+// CA, for driving requireCA's fail-closed branch: withPairAudit still needs
+// a real *state.Store to write the audit row a nil CA must still produce.
+func testServerForPairingWithoutCA(t *testing.T) (*Server, *state.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Config{StateDir: dir, ListenAddr: ":8443", PolicyMode: policy.ModeDefault}
+	st, err := state.Open(context.Background(), filepath.Join(dir, "devmon.db"), testLogger())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return NewServer(cfg, st, nil, nil, nil, testLogger()), st
+}
+
+// TestHandlePairWithoutCAFailsClosed is issue #46's fail-closed regression:
+// before requireCA existed, a nil s.ca made pairDevice's IssueDeviceCert call
+// panic, and only withRecovery's generic 500 kept the process alive. The
+// route must now answer the same 500 msgPairInternalError body every other
+// pairing failure serves, without ever reaching IssueDeviceCert, and it must
+// still write an audit row — the CA being unconfigured is an operator
+// misconfiguration, not a reason to lose the attempt from the security
+// record.
+func TestHandlePairWithoutCAFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st := testServerForPairingWithoutCA(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	body, err := json.Marshal(pairRequest{
+		PairingCode: code,
+		CSRPEM:      generateCSRPEM(t, "irrelevant"),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	var respBody errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if respBody.Error != msgPairInternalError {
+		t.Errorf("error = %q, want %q", respBody.Error, msgPairInternalError)
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opPair {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opPair)
+	}
+	if entries[0].Outcome != state.OutcomeInternalError {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeInternalError)
+	}
+
+	// The pairing code must never be spent by a request that could not
+	// actually issue a certificate: the row it would have created never
+	// reaches IssueDeviceCert at all, so no device is created either.
+	devices, err := st.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Errorf("devices = %+v after a pairing attempt with no CA configured, want none created", devices)
 	}
 }
 

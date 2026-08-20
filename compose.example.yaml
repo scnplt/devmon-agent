@@ -18,18 +18,66 @@
 #
 #        stat -c '%g' /var/run/docker.sock
 #
-#      999 is right on Debian and Ubuntu and wrong elsewhere. install.sh
-#      resolves it with `stat` rather than assuming it.
+#      It is left as the placeholder REPLACE_WITH_DOCKER_SOCKET_GID below on
+#      purpose. 999 is the number most guides print; it is right on Debian and
+#      Ubuntu and wrong elsewhere, and when it is wrong the only symptom is a
+#      permission denial that reads as an agent fault. Docker refuses to start
+#      a container whose group_add it cannot resolve, so the placeholder fails
+#      immediately and says what is wrong. install.sh resolves the real GID
+#      with `stat` rather than assuming it.
+#
+# One thing about the published port below that regularly surprises people:
+# Docker installs its own DNAT rules, and those are evaluated before the chains
+# UFW and firewalld manage. A published port is therefore reachable from
+# anywhere the host is, even with `ufw deny 8443` in place — the deny rule is
+# never consulted. Restrict it where Docker will honour it instead: bind the
+# published port to one interface ("127.0.0.1:8443:8443" behind a VPN), or
+# write the rule into the DOCKER-USER chain. docs/THREAT-MODEL.md has the
+# wider picture.
 
 services:
   devmon-agent:
-    image: ghcr.io/scnplt/devmon-agent:0.2.0
+    image: ghcr.io/scnplt/devmon-agent:0.3.0
 
     # Pinned so the agent can name itself through DEVMON_SELF_CONTAINER below.
     # Without it compose derives the container name from the project directory,
     # which changes if this file moves.
     container_name: devmon-agent
     restart: unless-stopped
+
+    # The image carries its own HEALTHCHECK (it runs `devmon-agent health`, a
+    # subcommand on the same binary — distroless has no shell or curl to probe
+    # with), so `docker ps` reports a health state here without any compose
+    # configuration. Override it below only if you want a different interval.
+
+    # Hardening. This container holds the Docker socket, which makes it the most
+    # valuable thing on the host to compromise; each line below narrows what a
+    # foothold inside it is worth. None of them changes how the agent behaves.
+    #
+    # no-new-privileges is the one to keep if you keep only one: it stops any
+    # setuid binary in the container from ever raising privileges, which is the
+    # usual first step out of an unprivileged process.
+    security_opt:
+      - no-new-privileges:true
+
+    # The agent needs no capabilities at all. It binds 8443, which is above
+    # 1024, so not even NET_BIND_SERVICE is required.
+    cap_drop:
+      - ALL
+
+    # The image's own filesystem is never written to — every write goes to the
+    # state bind mount below, which stays writable under read_only. /tmp is
+    # given as a tmpfs because SQLite falls back to it for spill files.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # A ceiling on threads, not processes: the container runs one Go binary that
+    # spawns no children, and Linux counts threads against this limit. It sits
+    # around a dozen at idle, bounded above by GOMAXPROCS plus whatever blocking
+    # syscalls are in flight, so 256 is far out of normal reach while still
+    # capping a runaway.
+    pids_limit: 256
 
     ports:
       - "8443:8443"
@@ -46,8 +94,10 @@ services:
       # itself being replaced, and it states intent.
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
+    # Replace this with the output of `stat -c '%g' /var/run/docker.sock` on
+    # this host. Left unreplaced, Docker refuses to start the container.
     group_add:
-      - "999"
+      - "REPLACE_WITH_DOCKER_SOCKET_GID"
 
     environment:
       # Required. The server certificate's SANs; comma-separated for several.
@@ -68,6 +118,16 @@ services:
 
       DEVMON_LOG_MAX_AGE_DAYS: "1"
       DEVMON_LOG_MAX_TOTAL_MB: "64"
+
+      # Audit retention, shown at its defaults. The audit trail is the security
+      # record, and is deliberately kept far longer than the operational log.
+      #
+      # DEVMON_AUDIT_MAX_AGE_DAYS must be >= DEVMON_LOG_MAX_AGE_DAYS. The agent
+      # checks this at startup and exits 2 if it is violated, on the grounds
+      # that a security record outlived by debug output is worse than useless.
+      # Raising DEVMON_LOG_MAX_AGE_DAYS therefore means raising this as well.
+      DEVMON_AUDIT_MAX_AGE_DAYS: "365"
+      DEVMON_AUDIT_MAX_ROWS: "100000"
 
       # Rate limits, shown at their defaults. The two pre-authentication tiers
       # are per client IP and are counted per minute; the authenticated tier is

@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/scnplt/devmon-agent/internal/state"
 )
 
 // Limits and messages for the two routes an already-paired device uses on
@@ -33,6 +35,25 @@ const (
 	msgDeviceInternalError = "internal error"
 )
 
+// requireCA reports whether the server has a certificate authority
+// configured, answering 500 without panicking otherwise. Mirrors
+// requireDocker (reads.go): the existing test helpers construct servers with
+// nil dependencies deliberately, and handlePair and handleRenew are the only
+// two callers that dereference s.ca, so both must fail closed instead of
+// letting IssueDeviceCert panic on a nil receiver. msg is the route's own
+// terse internal-error message (msgPairInternalError or
+// msgDeviceInternalError), so the response body still matches what every
+// other failure on that route already serves.
+func (s *Server) requireCA(w http.ResponseWriter, r *http.Request, msg string) bool {
+	if s.ca == nil {
+		s.log.Error("certificate authority not configured")
+		setAuditOutcome(r.Context(), state.OutcomeInternalError, "")
+		s.writeError(w, http.StatusInternalServerError, msg)
+		return false
+	}
+	return true
+}
+
 type renewRequest struct {
 	CSRPEM string `json:"csr_pem"`
 }
@@ -46,6 +67,10 @@ type renewResponse struct {
 // identity. The device ID comes only from DeviceFrom — never from the
 // request body or a path parameter — so a device can renew only itself.
 func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCA(w, r, msgDeviceInternalError) {
+		return
+	}
+
 	device, ok := DeviceFrom(r.Context())
 	if !ok {
 		// requireDevice always injects a device before this handler runs;
@@ -56,11 +81,13 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 
 	req, ok := s.decodeRenewRequest(w, r)
 	if !ok {
+		setAuditOutcome(r.Context(), state.OutcomeInvalid, "malformed request body")
 		return
 	}
 
 	csrDER, ok := decodeCSRPEM(req.CSRPEM)
 	if !ok {
+		setAuditOutcome(r.Context(), state.OutcomeInvalid, "malformed csr")
 		s.writeError(w, http.StatusUnauthorized, msgRenewFailed)
 		return
 	}
@@ -71,6 +98,7 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 			slog.String("device_id", device.ID),
 			slog.Any("err", err),
 		)
+		setAuditOutcome(r.Context(), state.OutcomeInternalError, "")
 		s.writeError(w, http.StatusInternalServerError, msgDeviceInternalError)
 		return
 	}
@@ -140,6 +168,7 @@ func (s *Server) handleUnpairSelf(w http.ResponseWriter, r *http.Request) {
 			slog.String("device_id", device.ID),
 			slog.Any("err", err),
 		)
+		setAuditOutcome(r.Context(), state.OutcomeInternalError, "")
 		s.writeError(w, http.StatusInternalServerError, msgDeviceInternalError)
 		return
 	}

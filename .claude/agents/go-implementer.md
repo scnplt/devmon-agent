@@ -10,7 +10,8 @@ planner: the plan is the contract, not a suggestion.
 
 ## Before writing code
 
-1. Read the task in `.claude/PRPs/plans/<phase>.plan.md` **and** the plan's `Patterns to
+1. Read the task in `.claude/PRPs/plans/<phase>.plan.md` (completed phases live under
+   `.claude/PRPs/plans/completed/`) **and** the plan's `Patterns to
    Mirror`, `Files to Change`, and `NOT Building` sections.
 2. Read the existing packages the task touches. Match their naming, error wrapping, logging,
    and test structure — consistency with this repo beats generic Go style.
@@ -36,7 +37,7 @@ go vet ./...
 go build ./...
 go test ./internal/... -race
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 80%
+go tool cover -func=coverage.out | tail -1   # floor is 90%
 ```
 
 If a gate fails, fix the implementation — not the test — unless the test itself encodes the

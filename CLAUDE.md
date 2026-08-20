@@ -40,6 +40,13 @@ Rules:
 - In a `Workflow` script, set the tier explicitly per stage:
   `agent(prompt, {model: 'opus'})` for planning stages, `{model: 'sonnet'}` for
   implementation stages — a workflow agent otherwise inherits the Opus session model.
+- **If you delegate, you own collection.** Never end a turn while a spawned agent is still
+  running: a completed child cannot notify a parent whose turn has ended, so its result is
+  lost. Wait for it, verify its gate output, then report.
+
+Only two agents exist in this repository — `phase-planner` and `go-implementer`
+(`.claude/agents/`). Reviewers are invoked as `ecc:go-reviewer` and
+`ecc:security-reviewer`. Any other agent name is a mistake.
 
 ## Branching
 
@@ -74,7 +81,7 @@ go build ./...
 
 go test ./internal/... -race                        # tests (always -race)
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1          # floor is 80%
+go tool cover -func=coverage.out | tail -1          # floor is 90%
 
 gofmt -l .                                          # must print nothing
 go vet ./...
@@ -107,10 +114,44 @@ Never add a client-facing way to change policy mode or retention.
 
 **Never log key material, pairing codes, or PEM bytes**, at any level.
 
+## Review artifacts (MANDATORY)
+
+**Reviews are never committed.** A review — code review, security review, PR review — is
+delivered where it is read: in the session for local work, or as a comment on the PR it
+covers. It does not become a file in the repository.
+
+- Do not create `.claude/PRPs/reviews/` or any other committed review write-up. If a scratch
+  copy helps, write it to the session scratchpad instead.
+- A plan task that calls for a review means "perform it and report the verdict", never
+  "produce a review document to commit".
+- Reports (`.claude/PRPs/reports/*.md`) are still written — they record what a phase shipped,
+  not what a reviewer said — but like the rest of `.claude/PRPs/` they stay local.
+
+## Rules files
+
+`CLAUDE.md` is the single authority on model routing, delegation, workflow, commit cadence,
+and the gate list. `.claude/rules/ecc/**` is trimmed to what this repository actually uses
+and covers **style and git only**:
+
+| File | Scope |
+|------|-------|
+| `common/coding-style.md` | KISS/DRY/YAGNI, file and function size, error handling |
+| `common/git-workflow.md` | Branching model, commit format, PR workflow |
+| `golang/coding-style.md` | Go formatting, interfaces, error wrapping, naming |
+
+Nothing under `.claude/rules/` may route work to an agent or pick a model. If a generic
+rule file reappears from an upstream ECC install and contradicts this file, this file wins
+— delete the contradiction rather than annotating it.
+
 ## Planning docs
 
+All of `.claude/PRPs/` is gitignored — these are local working documents, not repository
+content. They exist in the working tree but are never committed.
+
 - PRD: `.claude/PRPs/prds/devmon-agent.prd.md` — scope, decisions log, phase table
-- Plans: `.claude/PRPs/plans/*.plan.md` — one per phase; the plan is the implementation contract
+- Plans: `.claude/PRPs/plans/*.plan.md` — one per phase; the plan is the implementation
+  contract. Every phase shipped so far has moved to `.claude/PRPs/plans/completed/`, so
+  that is where the current examples live; an in-flight plan sits in `plans/` itself.
 
 Read the current phase's plan before writing code. It carries verified upstream API
 signatures and the gotchas above with full rationale.

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -42,11 +43,22 @@ const (
 	// maxConcurrentStreams bounds simultaneous live log streams. Each holds a
 	// goroutine, an Engine connection, and a socket for its entire life, so an
 	// unbounded count is a file-descriptor exhaustion the agent inflicts on the
-	// host it exists to protect. A constant rather than an env var: the PRD's
-	// rule is that every extra startup setting is surface the operator has to
-	// understand at install time, and eight concurrent log views on one phone is
-	// already beyond any real use.
+	// host it exists to protect. A constant rather than an env var: every extra
+	// startup setting is surface the operator has to understand at install time,
+	// and eight concurrent log views on one phone is already beyond any real use.
+	// This global ceiling is unchanged by the per-device cap below (issue #80);
+	// only how the eight are shared across devices changes.
 	maxConcurrentStreams = 8
+
+	// maxStreamsPerDevice bounds how many of maxConcurrentStreams a single
+	// device may hold at once (issue #80). Without this, one device holding
+	// every stream slot answers 503 for every other paired device — the
+	// budget was global-only and had no notion of who was calling. Three is
+	// generous for a couple of log views open on one phone, while still
+	// keeping the global ceiling reachable in practice: three devices at
+	// their own cap sum past eight, so the host-wide limit stays meaningful
+	// and testable rather than becoming unreachable dead code.
+	maxStreamsPerDevice = 3
 )
 
 // Server owns the HTTPS listener and its routes.
@@ -57,11 +69,12 @@ type Server struct {
 	// dc is the Docker read surface the eight read routes depend on.
 	dc  DockerReader
 	log *slog.Logger
-	// streams bounds concurrent live log streams (D10). Buffered to
-	// maxConcurrentStreams and initialised here rather than lazily in the
-	// handler: a nil channel blocks forever on send and never succeeds on a
-	// non-blocking select, which would answer every stream request with 503.
-	streams chan struct{}
+	// streams bounds concurrent live log streams (D10), with a global
+	// ceiling and a per-device cap under it (issue #80). Built here rather
+	// than lazily in the handler: a nil *streamBudget would panic on first
+	// use, and this way construction failure is impossible by
+	// construction — NewServer always builds one.
+	streams *streamBudget
 
 	// unauthGlobal is the shared, unkeyed backstop bucket every
 	// pre-authentication request checks first (D8).
@@ -84,6 +97,27 @@ type Server struct {
 	deviceLimit  rate.Limit
 
 	http *http.Server
+
+	// lifecycleCtx is the server's own lifetime signal, wired in as
+	// http.Server's BaseContext (issue #41). Every request's r.Context() is
+	// derived from it, so cancelling it cancels every in-flight request's
+	// context in one step — chiefly the one long-lived handler,
+	// handleStreamContainerLogs, whose stream is otherwise bounded only by
+	// the client. shutdown cancels it before calling http.Server.Shutdown,
+	// so a live stream unwinds immediately instead of pinning Shutdown for
+	// the full shutdownGrace window. Client-initiated disconnects are
+	// unaffected: they still cancel r.Context() the same way they always
+	// did, independent of this context's own lifetime.
+	lifecycleCtx    context.Context
+	cancelLifecycle context.CancelFunc
+
+	// afterCreateHook is a test seam, nil in production. pairDevice calls it,
+	// if set, right after CreateDevice succeeds and before RedeemPairingCode
+	// runs, so a test can land a context cancellation at that exact
+	// interleaving point deterministically instead of racing the SQL layer
+	// with a sleep. It is per-instance rather than a package-level var so
+	// setting it on one test's Server can never race a different test's.
+	afterCreateHook func()
 }
 
 // NewServer wires the API. tlsCfg carries the server certificate, so the
@@ -92,11 +126,13 @@ type Server struct {
 // renew device certificates from it; the status handler derives the public
 // fingerprint from it on each call. ca may be nil in tests that do not
 // exercise certificate issuance; handleStatus tolerates that by serving an
-// empty fingerprint. dc may likewise be nil in tests that do not exercise the
-// Docker read routes; every read handler tolerates that by serving 502
-// instead of panicking.
+// empty fingerprint, and handlePair and handleRenew tolerate it by answering
+// 500 through requireCA rather than panicking inside IssueDeviceCert. dc may
+// likewise be nil in tests that do not exercise the Docker read routes; every
+// read handler tolerates that by serving 502 instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: make(chan struct{}, maxConcurrentStreams)}
+	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: newStreamBudget(maxConcurrentStreams, maxStreamsPerDevice)}
+	s.lifecycleCtx, s.cancelLifecycle = context.WithCancel(context.Background())
 
 	s.unauthGlobal = rate.NewLimiter(rate.Limit(unauthGlobalPerSec), unauthGlobalBurst)
 
@@ -138,6 +174,11 @@ func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		// BaseContext parents every request's r.Context(): cancelling
+		// lifecycleCtx in shutdown cancels every in-flight request's context
+		// in one step, which is how a live SSE stream (issue #41) learns to
+		// stop without Shutdown having to wait out the client.
+		BaseContext: func(net.Listener) context.Context { return s.lifecycleCtx },
 	}
 	return s
 }
@@ -149,31 +190,50 @@ func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
+	// patterns is the closed set of literals registered below, the same set
+	// withRoute checks a resolved match against before logging it (see
+	// middleware.go). handle is the single place that both registers a
+	// pattern with mux and records it here, so the two can never drift.
+	patterns := make(map[string]struct{})
+	handle := func(pattern string, h http.Handler) {
+		mux.Handle(pattern, h)
+		patterns[pattern] = struct{}{}
+	}
+
 	// The Go 1.22+ method pattern matters. Registering "/v1/status" alone would
 	// also match POST, DELETE, and everything else.
 	//
 	// Rate-limit order (the Rate-Limiting Contract): the global unauthenticated
 	// backstop runs first, then the route's own per-IP tier.
-	mux.Handle("GET /v1/status",
+	handle("GET /v1/status",
 		s.withGlobalUnauthLimit(s.withIPLimit(s.statusLimits, s.statusLimit, "status", http.HandlerFunc(s.handleStatus))))
 
 	// Unauthenticated by design (D2): the device has no certificate yet, so
 	// the pairing code itself is what authenticates this one call.
-	mux.Handle("POST /v1/pair",
-		s.withGlobalUnauthLimit(s.withIPLimit(s.pairLimits, s.pairLimit, "pair", http.HandlerFunc(s.handlePair))))
+	// withPairAudit sits inside both rate-limit tiers (D7): a request either
+	// one refuses must never reach it, or a throttled scanner could fill the
+	// audit table (issue #44).
+	handle("POST /v1/pair",
+		s.withGlobalUnauthLimit(s.withIPLimit(s.pairLimits, s.pairLimit, "pair", s.withPairAudit(http.HandlerFunc(s.handlePair)))))
 
 	// Guarded: both act on the calling device's own identity, resolved by
 	// requireDevice from its client certificate — never from the request.
 	// withDeviceLimit sits immediately inside requireDevice, before anything
 	// else, exactly as it does for the read/logs/mutate helpers below.
-	mux.Handle("POST /v1/device/renew", s.requireDevice(s.withDeviceLimit(http.HandlerFunc(s.handleRenew))))
-	mux.Handle("DELETE /v1/device/self", s.requireDevice(s.withDeviceLimit(http.HandlerFunc(s.handleUnpairSelf))))
+	// withIdentityAudit sits inside withDeviceLimit for the same reason
+	// withAudit does on the mutate routes below (D7, D15, issue #44): a
+	// throttled call must never write a row, and every row must carry a real,
+	// authenticated device.
+	handle("POST /v1/device/renew",
+		s.requireDevice(s.withDeviceLimit(s.withIdentityAudit(opRenew, http.HandlerFunc(s.handleRenew)))))
+	handle("DELETE /v1/device/self",
+		s.requireDevice(s.withDeviceLimit(s.withIdentityAudit(opUnpairSelf, http.HandlerFunc(s.handleUnpairSelf)))))
 
 	// Read operations. Every one is guarded three times: requireDevice proves
 	// who is calling, withDeviceLimit bounds how often, requireOp proves the
 	// host's startup policy permits it.
 	read := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpRead, h))))
+		handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpRead, h))))
 	}
 	read("GET /v1/containers", s.handleListContainers)
 	read("GET /v1/containers/{id}", s.handleInspectContainer)
@@ -187,7 +247,7 @@ func (s *Server) routes() http.Handler {
 	// Log routes. Same triple guard as the read routes, with policy.OpLogs —
 	// which, like OpRead, every mode permits (see internal/policy/mode.go).
 	logs := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpLogs, h))))
+		handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpLogs, h))))
 	}
 	logs("GET /v1/containers/{id}/logs", s.handleContainerLogs)
 	logs("GET /v1/containers/{id}/logs/stream", s.handleStreamContainerLogs)
@@ -198,7 +258,7 @@ func (s *Server) routes() http.Handler {
 	// whatever happens to it, requireOp proves the host's startup policy
 	// permits it.
 	mutate := func(pattern string, op policy.Operation, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.withAudit(op, s.requireOp(op, h)))))
+		handle(pattern, s.requireDevice(s.withDeviceLimit(s.withAudit(op, s.requireOp(op, h)))))
 	}
 	mutate("POST /v1/containers/{id}/start", policy.OpStart, s.handleStartContainer)
 	mutate("POST /v1/containers/{id}/restart", policy.OpRestart, s.handleRestartContainer)
@@ -206,7 +266,13 @@ func (s *Server) routes() http.Handler {
 	mutate("POST /v1/containers/{id}/kill", policy.OpKill, s.handleKillContainer)
 	mutate("DELETE /v1/containers/{id}", policy.OpDelete, s.handleRemoveContainer)
 
-	return s.withRecovery(s.withRequestLog(mux))
+	// withRoute sits outermost: it resolves the matched pattern once (or
+	// unmatchedRoute for anything not in patterns) before either logger runs,
+	// so withRecovery and withRequestLog both log that bounded pattern
+	// instead of the attacker-controlled r.URL.Path (issue #46). It only
+	// inspects the request via mux.Handler; mux itself still dispatches,
+	// inside withRequestLog's next.ServeHTTP call, exactly once.
+	return s.withRoute(mux, patterns, s.withRecovery(s.withRequestLog(mux)))
 }
 
 // Run serves until ctx is cancelled, then drains for up to shutdownGrace.
@@ -236,6 +302,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) shutdown() error {
 	s.log.Info("shutting down http server")
+
+	// Cancel the shared lifecycle context first, before asking http.Server
+	// to drain: it is the parent of every in-flight request's context, so
+	// this is what makes a live SSE log stream (issue #41) return promptly
+	// instead of pinning Shutdown below for the full shutdownGrace window.
+	s.cancelLifecycle()
 
 	// A fresh context: ctx is already cancelled, and Shutdown needs a live
 	// deadline to drain against.
