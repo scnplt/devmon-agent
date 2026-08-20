@@ -479,6 +479,67 @@ func TestHandleRenewRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+// TestHandleRenewWithoutCAFailsClosed is issue #46's fail-closed regression
+// for the renew route: before requireCA existed, a nil s.ca made renewDevice's
+// IssueDeviceCert call panic, and only withRecovery's generic 500 kept the
+// process alive. requireCA runs before DeviceFrom is even consulted, so the
+// route answers the usual 500 msgDeviceInternalError body and still writes an
+// audit row carrying the authenticated caller's device ID, entirely without
+// touching s.ca.
+func TestHandleRenewWithoutCAFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — a server with a real store but no CA (testServerWithStore),
+	// and a device registered with an arbitrary certificate serial: requireCA
+	// must trip before requireDevice's result even matters, but requireDevice
+	// still has to resolve a real device for the request to reach it.
+	s, st := testServerWithStore(t)
+	ctx := context.Background()
+	device, err := st.CreateDevice(ctx, "Pixel 9")
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	serial := big.NewInt(42)
+	notBefore := time.Now()
+	if err := st.RecordDeviceCert(ctx, device.ID, serial.Text(16), notBefore, notBefore.Add(90*24*time.Hour)); err != nil {
+		t.Fatalf("RecordDeviceCert: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodPost, "/v1/device/renew", mustMarshalRenew(t), serial)
+	rec := httptest.NewRecorder()
+
+	// Act
+	s.routes().ServeHTTP(rec, req)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	var respBody errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if respBody.Error != msgDeviceInternalError {
+		t.Errorf("error = %q, want %q", respBody.Error, msgDeviceInternalError)
+	}
+
+	entries, err := st.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opRenew {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opRenew)
+	}
+	if entries[0].Outcome != state.OutcomeInternalError {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeInternalError)
+	}
+	if entries[0].DeviceID != device.ID {
+		t.Errorf("device_id = %q, want the authenticated device's ID %q", entries[0].DeviceID, device.ID)
+	}
+}
+
 // TestHandleRenewFailsClosedWithoutResolvedDevice is the mandatory GOTCHA for
 // handleRenew: it only ever runs behind requireDevice, but if it somehow runs
 // without a device resolved in the request context, it must fail closed with

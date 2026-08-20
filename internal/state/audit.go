@@ -17,7 +17,7 @@ type AuditEntry struct {
 	Operation  string // policy.Operation value: start, restart, stop, kill, delete
 	Target     string // the reference as the device supplied it (D21)
 	Outcome    string // one of the Outcome* constants below
-	Detail     string // resolved container ID, or a short reason; never an Engine message
+	Detail     string // short fixed reason for the outcome when one adds information, else ""; never an Engine message or attacker-supplied text
 }
 
 const (

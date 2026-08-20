@@ -126,7 +126,9 @@ func (s *Server) withGlobalUnauthLimit(next http.Handler) http.Handler {
 //
 // Logging names the tier and nothing else: the IP is attacker-controlled
 // input on this port, and echoing it into a size-bounded log would let a
-// scanner write arbitrary volume into the operator's own diagnostics.
+// scanner write arbitrary volume into the operator's own diagnostics. The
+// request logging in middleware.go (withRecovery, withRequestLog) applies
+// the same rule to r.URL.Path, logging the matched route pattern instead.
 func (s *Server) withIPLimit(reg *ratelimit.Registry, limit rate.Limit, tier string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()

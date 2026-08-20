@@ -495,6 +495,87 @@ func TestHandlePairRateLimitedWritesNoAuditRow(t *testing.T) {
 	}
 }
 
+// testServerForPairingWithoutCA mirrors testServerForPairing but omits the
+// CA, for driving requireCA's fail-closed branch: withPairAudit still needs
+// a real *state.Store to write the audit row a nil CA must still produce.
+func testServerForPairingWithoutCA(t *testing.T) (*Server, *state.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := config.Config{StateDir: dir, ListenAddr: ":8443", PolicyMode: policy.ModeDefault}
+	st, err := state.Open(context.Background(), filepath.Join(dir, "devmon.db"), testLogger())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return NewServer(cfg, st, nil, nil, nil, testLogger()), st
+}
+
+// TestHandlePairWithoutCAFailsClosed is issue #46's fail-closed regression:
+// before requireCA existed, a nil s.ca made pairDevice's IssueDeviceCert call
+// panic, and only withRecovery's generic 500 kept the process alive. The
+// route must now answer the same 500 msgPairInternalError body every other
+// pairing failure serves, without ever reaching IssueDeviceCert, and it must
+// still write an audit row — the CA being unconfigured is an operator
+// misconfiguration, not a reason to lose the attempt from the security
+// record.
+func TestHandlePairWithoutCAFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s, st := testServerForPairingWithoutCA(t)
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	body, err := json.Marshal(pairRequest{
+		PairingCode: code,
+		CSRPEM:      generateCSRPEM(t, "irrelevant"),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	// Act
+	rec := postPair(s, body)
+
+	// Assert
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	var respBody errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if respBody.Error != msgPairInternalError {
+		t.Errorf("error = %q, want %q", respBody.Error, msgPairInternalError)
+	}
+
+	entries, err := st.ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Operation != opPair {
+		t.Errorf("operation = %q, want %q", entries[0].Operation, opPair)
+	}
+	if entries[0].Outcome != state.OutcomeInternalError {
+		t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeInternalError)
+	}
+
+	// The pairing code must never be spent by a request that could not
+	// actually issue a certificate: the row it would have created never
+	// reaches IssueDeviceCert at all, so no device is created either.
+	devices, err := st.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Errorf("devices = %+v after a pairing attempt with no CA configured, want none created", devices)
+	}
+}
+
 func TestHandlePairOversizedBodyFails(t *testing.T) {
 	t.Parallel()
 

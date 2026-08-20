@@ -5,6 +5,8 @@ package tlsconf
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -13,9 +15,14 @@ import (
 
 func testCert(t *testing.T) tls.Certificate {
 	t.Helper()
-	certPEM, keyPEM, err := certs.GenerateServerCert([]string{"vps.example.com"}, time.Now())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ca, _, err := certs.LoadOrCreateCA(t.TempDir(), log)
 	if err != nil {
-		t.Fatalf("generate test cert: %v", err)
+		t.Fatalf("load or create test CA: %v", err)
+	}
+	certPEM, keyPEM, err := ca.IssueServerCert([]string{"vps.example.com"}, time.Now())
+	if err != nil {
+		t.Fatalf("issue test cert: %v", err)
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {

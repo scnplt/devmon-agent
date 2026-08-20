@@ -68,6 +68,10 @@ type pairResponse struct {
 // (D2 in the Phase 2 plan): the device has none yet, so the code itself is
 // what authenticates the call.
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCA(w, r, msgPairInternalError) {
+		return
+	}
+
 	req, ok := s.decodePairRequest(w, r)
 	if !ok {
 		return
