@@ -385,28 +385,43 @@ func TestStreamResumeRepeatsAtMostOneLine(t *testing.T) {
 	}
 }
 
-// TestStreamSlotExhaustion asserts the ninth concurrent stream against the
-// same agent answers 503 with the documented body, and that closing one of
-// the eight frees a slot a subsequent stream can use. It does not run
-// t.Parallel(): it deliberately exhausts a resource (maxConcurrentStreams,
-// internal/httpapi/server.go) shared by every stream this agent instance
-// serves, and a sibling test's own stream would make the count
-// non-deterministic — exactly the ordering bug this suite exists to catch,
-// not to introduce (mirrors TestReadsAnswer502WhenEngineIsGone's same
+// TestStreamSlotExhaustion asserts the request that pushes the host past its
+// global ceiling answers 503 with the documented host-wide body, and that
+// closing one of the eight frees a slot a subsequent stream can use. It does
+// not run t.Parallel(): it deliberately exhausts a resource
+// (maxConcurrentStreams, internal/httpapi/server.go) shared by every stream
+// this agent instance serves, and a sibling test's own stream would make the
+// count non-deterministic — exactly the ordering bug this suite exists to
+// catch, not to introduce (mirrors TestReadsAnswer502WhenEngineIsGone's same
 // reasoning for its own single-owner proxy).
+//
+// Reaching the ceiling now takes more than one device (issue #80): a lone
+// device is capped at maxStreamsPerDevice, so a single device could never
+// have reached eight in the first place under the fixed budget. This drives
+// three devices to 3, 3, and 2 streams respectively — summing to the global
+// ceiling while every device stays under its own cap — which is exactly the
+// scenario TestStreamPerDeviceCapDoesNotLockOutOtherDevices below proves does
+// NOT trip the per-device 503 instead.
 func TestStreamSlotExhaustion(t *testing.T) {
 	engine := harness.RequireEngine(t)
-	_, d := readReadyAgent(t, "logs-stream-slots")
+	a, deviceA := readReadyAgent(t, "logs-stream-slots")
 
 	id := harness.StartFixture(t, engine, harness.FixtureOptions{
 		NameSuffix: "slots",
 		Cmd:        logLinesCmd,
 	})
 
-	// maxConcurrentStreams duplicates internal/httpapi/server.go's own
-	// constant (D4): the suite must notice a change to the server's limit,
-	// which it cannot do importing the value it is supposed to be checking.
+	// maxConcurrentStreams and maxStreamsPerDevice duplicate
+	// internal/httpapi/server.go's own constants (D4): the suite must notice
+	// a change to either limit, which it cannot do importing the values it is
+	// supposed to be checking.
 	const maxConcurrentStreams = 8
+	const maxStreamsPerDevice = 3
+
+	deviceB := harness.PairDevice(t, a, "logs-stream-slots-b")
+	deviceC := harness.PairDevice(t, a, "logs-stream-slots-c")
+	devices := []*harness.Device{deviceA, deviceB, deviceC}
+	perDevice := []int{3, 3, 2}
 
 	streams := make([]*harness.Stream, 0, maxConcurrentStreams)
 	defer func() {
@@ -415,17 +430,22 @@ func TestStreamSlotExhaustion(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < maxConcurrentStreams; i++ {
-		s := harness.OpenStream(t, d, "/v1/containers/"+id+"/logs/stream")
-		if s.Status != http.StatusOK {
-			t.Fatalf("stream %d/%d: status = %d, want %d; body = %s", i+1, maxConcurrentStreams, s.Status, http.StatusOK, s.Body)
+	for di, dev := range devices {
+		for i := 0; i < perDevice[di]; i++ {
+			s := harness.OpenStream(t, dev, "/v1/containers/"+id+"/logs/stream")
+			if s.Status != http.StatusOK {
+				t.Fatalf("device %d stream %d/%d: status = %d, want %d; body = %s", di, i+1, perDevice[di], s.Status, http.StatusOK, s.Body)
+			}
+			streams = append(streams, s)
 		}
-		streams = append(streams, s)
 	}
 
-	ninth := harness.OpenStream(t, d, "/v1/containers/"+id+"/logs/stream")
+	// deviceC holds 2 of maxStreamsPerDevice, so its next request clears the
+	// per-device check and is refused for the global ceiling instead —
+	// proving this is the host-wide 503, not the per-device one.
+	ninth := harness.OpenStream(t, deviceC, "/v1/containers/"+id+"/logs/stream")
 	if ninth.Status != http.StatusServiceUnavailable {
-		t.Fatalf("ninth concurrent stream: status = %d, want %d; body = %s", ninth.Status, http.StatusServiceUnavailable, ninth.Body)
+		t.Fatalf("ninth concurrent stream (global ceiling): status = %d, want %d; body = %s", ninth.Status, http.StatusServiceUnavailable, ninth.Body)
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(ninth.Body, &obj); err != nil {
@@ -445,7 +465,7 @@ func TestStreamSlotExhaustion(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	var freed *harness.Stream
 	for time.Now().Before(deadline) {
-		freed = harness.OpenStream(t, d, "/v1/containers/"+id+"/logs/stream")
+		freed = harness.OpenStream(t, deviceC, "/v1/containers/"+id+"/logs/stream")
 		if freed.Status == http.StatusOK {
 			break
 		}
@@ -455,6 +475,61 @@ func TestStreamSlotExhaustion(t *testing.T) {
 		t.Fatalf("a new stream still failed within 15s of freeing one of %d slots; want the freed slot reused", maxConcurrentStreams)
 	}
 	streams = append(streams, freed)
+}
+
+// TestStreamPerDeviceCapDoesNotLockOutOtherDevices is issue #80's stated
+// verification: pinning one device at maxStreamsPerDevice must not deny the
+// stream route to a second, otherwise-idle device — the regression the whole
+// per-device budget exists to fix. It does not run t.Parallel(), for the same
+// shared-budget reasoning TestStreamSlotExhaustion gives above.
+func TestStreamPerDeviceCapDoesNotLockOutOtherDevices(t *testing.T) {
+	engine := harness.RequireEngine(t)
+	a, deviceA := readReadyAgent(t, "logs-stream-percap-a")
+	deviceB := harness.PairDevice(t, a, "logs-stream-percap-b")
+
+	id := harness.StartFixture(t, engine, harness.FixtureOptions{
+		NameSuffix: "percap",
+		Cmd:        logLinesCmd,
+	})
+
+	// maxStreamsPerDevice duplicates internal/httpapi/server.go's own
+	// constant, for the same D4 reasoning maxConcurrentStreams carries above.
+	const maxStreamsPerDevice = 3
+
+	streams := make([]*harness.Stream, 0, maxStreamsPerDevice+1)
+	defer func() {
+		for _, s := range streams {
+			s.Close(t)
+		}
+	}()
+
+	for i := 0; i < maxStreamsPerDevice; i++ {
+		s := harness.OpenStream(t, deviceA, "/v1/containers/"+id+"/logs/stream")
+		if s.Status != http.StatusOK {
+			t.Fatalf("device A stream %d/%d: status = %d, want %d; body = %s", i+1, maxStreamsPerDevice, s.Status, http.StatusOK, s.Body)
+		}
+		streams = append(streams, s)
+	}
+
+	blocked := harness.OpenStream(t, deviceA, "/v1/containers/"+id+"/logs/stream")
+	if blocked.Status != http.StatusServiceUnavailable {
+		t.Fatalf("device A's stream beyond its own cap: status = %d, want %d; body = %s", blocked.Status, http.StatusServiceUnavailable, blocked.Body)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(blocked.Body, &obj); err != nil {
+		t.Fatalf("decode device A's rejection body: %v; body = %s", err, blocked.Body)
+	}
+	if obj["error"] != "too many concurrent log streams for this device" {
+		t.Errorf(`device A's rejection error = %v, want "too many concurrent log streams for this device"`, obj["error"])
+	}
+
+	// The regression the issue is about: device A pinned at its own cap must
+	// not deny the route to device B.
+	s := harness.OpenStream(t, deviceB, "/v1/containers/"+id+"/logs/stream")
+	if s.Status != http.StatusOK {
+		t.Fatalf("device B stream while device A is at its own cap: status = %d, want %d; body = %s", s.Status, http.StatusOK, s.Body)
+	}
+	streams = append(streams, s)
 }
 
 // TestStreamAgainstUnknownContainer asserts a stream request against a
