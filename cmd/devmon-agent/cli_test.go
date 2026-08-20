@@ -385,6 +385,87 @@ func TestRunAuditListRespectsLimit(t *testing.T) {
 	}
 }
 
+func TestRunAuditListPrintsDashForEmptyTargetAndDetail(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — mirrors the identity operations (pair, renew, unpair_self;
+	// internal/httpapi/audit.go) that leave Target and/or Detail empty by
+	// design: pairing and renewal have no container target, and a pair row
+	// has no detail. An empty tabwriter cell between tab stops collapses
+	// visually and defeats the e2e harness's column-count parser
+	// (internal/e2e/harness/cli.go's parseTable), so every row must always
+	// print a visually distinct placeholder instead.
+	st := openTestStore(t)
+	ctx := context.Background()
+	device, err := st.CreateDevice(ctx, "Pixel 9")
+	if err != nil {
+		t.Fatalf("CreateDevice() unexpected error: %v", err)
+	}
+	entry := state.AuditEntry{
+		DeviceID:  device.ID,
+		Operation: "pair",
+		Target:    "",
+		Outcome:   state.OutcomeSuccess,
+		Detail:    "",
+	}
+	if err := st.AppendAudit(ctx, entry); err != nil {
+		t.Fatalf("AppendAudit() unexpected error: %v", err)
+	}
+	var buf bytes.Buffer
+
+	// Act
+	if err := runAuditList(ctx, st, &buf, defaultAuditLimit); err != nil {
+		t.Fatalf("runAuditList() unexpected error: %v", err)
+	}
+
+	// Assert — the row is header + one line; every field, including the two
+	// placeholders, must land in its own tab-separated cell.
+	got := buf.String()
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("runAuditList() printed %d lines, want 2 (header + 1 row): %q", len(lines), got)
+	}
+	fields := strings.Fields(lines[1])
+	if len(fields) < 5 {
+		t.Fatalf("runAuditList() row %q, want at least 5 whitespace-separated fields", lines[1])
+	}
+	dashCount := 0
+	for _, f := range fields {
+		if f == auditEmptyColumn {
+			dashCount++
+		}
+	}
+	if dashCount != 2 {
+		t.Errorf("runAuditList() row = %q, want exactly 2 fields equal to %q (TARGET and DETAIL), got %d", lines[1], auditEmptyColumn, dashCount)
+	}
+}
+
+func TestOrDash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty string becomes the placeholder", "", auditEmptyColumn},
+		{"non-empty string is unchanged", "web", "web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act
+			got := orDash(tt.in)
+
+			// Assert
+			if got != tt.want {
+				t.Errorf("orDash(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunAuditListCommandParsesLimitFlag(t *testing.T) {
 	t.Parallel()
 
