@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<!--
+  The GitHub Pages landing page. Deployed by .github/workflows/pages.yml, which
+  places the Redoc-rendered API reference next to it at /api/.
+
+  Deliberately a single hand-written file with no build step and no external
+  assets: the page states how to install the agent and links to the reference,
+  and nothing about that justifies a static-site generator. Content here
+  mirrors README.md § Install — change them together.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>devmon-agent</title>
+  <meta name="description" content="A narrow, mTLS-authenticated Docker control API. One agent per host; no SSH, no exposed Docker socket.">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #1a1f24;
+      --muted: #57606a;
+      --accent: #0b63c5;
+      --code-bg: #f4f6f8;
+      --border: #d8dee4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --fg: #e6edf3;
+        --muted: #8d96a0;
+        --accent: #58a6ff;
+        --code-bg: #161b22;
+        --border: #30363d;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 46rem;
+      margin: 0 auto;
+      padding: 3rem 1.25rem 4rem;
+    }
+    h1 {
+      font-size: 2rem;
+      margin: 0 0 0.25rem;
+      letter-spacing: -0.02em;
+    }
+    h2 {
+      font-size: 1.3rem;
+      margin: 2.5rem 0 0.75rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+    }
+    p { margin: 0.75rem 0; }
+    .tagline { color: var(--muted); font-size: 1.1rem; margin-top: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin: 1.5rem 0 0;
+    }
+    .links a {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.9rem;
+      font-weight: 600;
+    }
+    .links a.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+      font-size: 0.875rem;
+      line-height: 1.55;
+    }
+    code {
+      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    }
+    p code, li code {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.1rem 0.35rem;
+      font-size: 0.85em;
+    }
+    ul { padding-left: 1.25rem; }
+    li { margin: 0.4rem 0; }
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>devmon-agent</h1>
+  <p class="tagline">A narrow, mTLS-authenticated Docker control API.</p>
+
+  <p>
+    One agent runs per Docker host. It is the sole holder of the Docker socket
+    and never proxies arbitrary Engine calls: a paired client can inspect and
+    restart containers without SSH and without the socket ever being exposed.
+    Authentication is mutual TLS — the agent is its own certificate authority,
+    and pairing a device means issuing it a certificate.
+  </p>
+
+  <nav class="links">
+    <a class="primary" href="api/">API reference</a>
+    <a href="https://github.com/scnplt/devmon-agent">GitHub</a>
+    <a href="https://github.com/scnplt/devmon-agent#readme">README</a>
+  </nav>
+
+  <h2>Install</h2>
+  <p>
+    The installer takes a clean Linux host from nothing to a paired device.
+    <code>sh</code> and <code>docker</code> are its only prerequisites:
+  </p>
+  <pre><code>git clone https://github.com/scnplt/devmon-agent.git
+cd devmon-agent
+./install.sh --public-addr vps.example.com</code></pre>
+  <p>
+    That resolves the Docker socket GID, creates and chowns the state
+    directory, writes a <code>compose.yaml</code>, starts the agent, and prints
+    the CA fingerprint and your first pairing code. Pass <code>--dry-run</code>
+    to see the compose file and every command it would run without touching the
+    host, and <code>--help</code> for the full flag list.
+  </p>
+  <p>Upgrading an existing installation:</p>
+  <pre><code>docker compose pull &amp;&amp; docker compose up -d</code></pre>
+  <p>
+    To set things up by hand instead — including the two host prerequisites the
+    installer exists to resolve — see
+    <a href="https://github.com/scnplt/devmon-agent#installing-by-hand">README
+    § Installing by hand</a> and
+    <a href="https://github.com/scnplt/devmon-agent/blob/main/compose.example.yaml">compose.example.yaml</a>.
+  </p>
+
+  <h2>Verify it is up</h2>
+  <pre><code>curl -sk https://vps.example.com:8443/v1/status
+# {"api_version":"v1","agent_version":"0.3.0","policy_mode":"default",
+#  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}</code></pre>
+  <p>
+    <code>-k</code> is expected: the server certificate is issued by the
+    agent's own CA, which no public root store knows. A client pins that CA
+    rather than a public one — record the fingerprint the installer prints.
+  </p>
+
+  <h2>API</h2>
+  <p>
+    The contract is a hand-maintained OpenAPI 3.1 document,
+    <a href="https://github.com/scnplt/devmon-agent/blob/main/docs/openapi.yaml">docs/openapi.yaml</a>,
+    rendered here as a browsable <a href="api/">API reference</a>. The path
+    prefix <code>/v1</code> is the contract version; clients negotiate against
+    the <code>api_version</code> field of <code>GET /v1/status</code>. Every
+    route except <code>/v1/status</code> and <code>/v1/pair</code> requires a
+    client certificate issued by the agent's CA.
+  </p>
+
+  <footer>
+    AGPL-3.0-only ·
+    <a href="https://github.com/scnplt/devmon-agent/blob/main/SECURITY.md">Security policy</a> ·
+    <a href="https://github.com/scnplt/devmon-agent/blob/main/docs/THREAT-MODEL.md">Threat model</a>
+  </footer>
+</main>
+</body>
+</html>

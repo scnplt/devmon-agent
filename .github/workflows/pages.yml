@@ -1,0 +1,62 @@
+# Publishes the project site to GitHub Pages: a hand-written landing page
+# (docs/site/index.html) and the API reference rendered from docs/openapi.yaml
+# with `redocly build-docs`, which emits a single self-contained HTML file.
+#
+# main only, matching the openapi CI job: the published reference documents
+# released contract versions, and a spec change on dev is not a release. The
+# repository's Pages source must be set to "GitHub Actions" once, by hand,
+# under Settings → Pages.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/openapi.yaml
+      - docs/site/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and a superseded run has nothing worth finishing.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # Pinned to the same version the Makefile and ci.yml name, so the reference
+  # is rendered by the same release that linted the document.
+  REDOCLY_VERSION: 2.46.2
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Render API reference
+        run: npx --yes @redocly/cli@${REDOCLY_VERSION} build-docs docs/openapi.yaml --output _site/api/index.html
+
+      - name: Add landing page
+        run: cp docs/site/index.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
