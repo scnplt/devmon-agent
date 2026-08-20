@@ -13,6 +13,167 @@ changes nothing about the agent's behaviour, but this is an open repository and
 a contributor reading the history should not have to reconstruct why the build
 moved.
 
+## [0.3.0] - 2026-08-20
+
+A hardening release. Two of the agent's shared budgets — the live log stream
+slots and the audit table — were host-wide, so a single paired device could
+exhaust either one and lock every other device out of it. Both are now bounded
+per device under an unchanged global ceiling. The image also gained a working
+`HEALTHCHECK`, which a distroless base made impossible until the agent could
+probe itself.
+
+The configuration surface is unchanged: every `DEVMON_*` variable means in
+0.3.0 exactly what it meant in 0.2.0, and no variable was added or removed.
+
+### Added
+
+- **`devmon-agent health`, and the image `HEALTHCHECK` it makes possible.** The
+  image is `distroless/static:nonroot` — no shell, no curl — so the only thing
+  in it that can make an HTTPS request is the agent's own binary. The
+  subcommand performs one `GET /v1/status` against the agent's own listener on
+  loopback and exits 0 or 1. `restart: unless-stopped` reacts to the process
+  exiting; it does not react to a listener that is up and no longer answering,
+  and `docker ps` previously showed no health state at all for an agent that
+  reports `health` for every other container on the host.
+  ([#89](https://github.com/scnplt/devmon-agent/pull/89))
+
+- **Audit rows for pairing, certificate renewal and self-revocation.** Identity
+  events are the highest-value entries an audit trail can hold, yet only the
+  five container-lifecycle routes went through `withAudit`; identity events
+  were recoverable only from the operational log, whose retention budget is
+  deliberately shorter than the audit table's. Pair rows carry the newly
+  created device ID on success and an empty device ID on failure. Details never
+  contain the submitted code or CSR.
+  ([#69](https://github.com/scnplt/devmon-agent/pull/69))
+
+### Changed
+
+- **Live log streams are budgeted per device — three each — under the unchanged
+  host ceiling of eight.** The host-wide budget meant one device holding slots
+  answered 503 to every other device without any authentication failure or
+  policy violation. The two refusals are now distinct: a device at its own cap
+  gets `too many concurrent log streams for this device`, a genuinely full host
+  gets the existing `too many concurrent log streams` and a WARN naming the
+  holders. This is the release's one caller-visible behaviour change — a client
+  that legitimately held four or more concurrent streams from a single device
+  now sees a 503 where 0.2.0 served the stream.
+  ([#93](https://github.com/scnplt/devmon-agent/pull/93))
+
+- **The audit table is trimmed fair-share per device before the row-count
+  backstop runs.** `PruneAudit` bounded the table's size but not whose rows were
+  evicted. With the defaults a paired device may issue 20 admitted mutations per
+  second, filling the 100,000-row budget in roughly 83 minutes; the oldest-first
+  DELETE then removed every other device's history along with it. `maxRows` is
+  now divided evenly across the device buckets still present and each bucket
+  trimmed to its own newest rows. The row-count pass stays last and unchanged,
+  so the hard disk-budget guarantee is untouched.
+  ([#87](https://github.com/scnplt/devmon-agent/pull/87))
+
+- **The image and both compose files are hardened.** Base images are digest
+  pinned, so two builds of one commit are the same build, and `GOTOOLCHAIN=local`
+  turns a base image that drifts below the `go.mod` requirement into a loud
+  error rather than a silent mid-build toolchain download. `/var/lib/devmon` is
+  pre-created and owned by `65532`. `compose.example.yaml` and the file
+  `install.sh` generates both now set `no-new-privileges`, `cap_drop: [ALL]`,
+  `read_only: true` with a tmpfs for `/tmp`, and `pids_limit: 256`. This
+  container holds the Docker socket, so each setting narrows what a foothold
+  inside it is worth; none changes how the agent behaves.
+  ([#88](https://github.com/scnplt/devmon-agent/pull/88))
+
+- **`install.sh` handles its arguments defensively and `--dry-run` is inert.** A
+  trailing value-flag no longer aborts with dash's raw `shift: can't shift that
+  many`, a declined re-run no longer leaves the state directory created and
+  chowned, and `--dry-run` no longer requires a responding Docker daemon — the
+  compose file can be previewed from a workstation, which is most of what the
+  flag is for.
+  ([#90](https://github.com/scnplt/devmon-agent/pull/90))
+
+### Fixed
+
+- **Retention was silently unenforced on two paths.** `PrunePairingCodes` was
+  written and tested but never called from production code, so every minted
+  pairing code was retained forever. Neither the pruner nor the log rotator ran
+  a pass at startup — their first ticks land after 6h and 24h — so an agent
+  restarted more often than that never enforced `DEVMON_AUDIT_MAX_AGE_DAYS`,
+  `DEVMON_AUDIT_MAX_ROWS` or `DEVMON_LOG_MAX_AGE_DAYS` at all. Both now make one
+  pass before entering their ticker loop. Only counts are logged, never codes.
+  ([#67](https://github.com/scnplt/devmon-agent/pull/67))
+
+- **A graceful shutdown no longer exits 1 while a log stream is open.**
+  `http.Server.Shutdown` waits for in-flight requests but never cancels their
+  contexts, so a live SSE stream pinned it for the full grace window: the
+  process exited 1 on an ordinary `docker stop`, and the deferred Docker and
+  state closes raced the still-running stream goroutine. A server-lifetime
+  context is now wired in as `BaseContext` and cancelled first.
+  ([#68](https://github.com/scnplt/devmon-agent/pull/68))
+
+- **An aborted pairing request no longer leaves a permanent pending device
+  row.** The rollback that deletes the half-created row ran on the request
+  context, so a client that dropped the connection at the right moment made the
+  cleanup fail on the same dead context — repeatable without authentication, at
+  the pair-tier rate limit, and visible as an active device in `device list`.
+  The rollback now runs on a detached context with its own timeout.
+  ([#66](https://github.com/scnplt/devmon-agent/pull/66))
+
+- **A container detail response no longer 500s on a short timestamp.**
+  `zeroTimeToEmpty` sliced `ts[:4]` unguarded, so an Engine — or a proxy in
+  front of one — returning e.g. `"0"` for `State.StartedAt` panicked into a 500.
+  ([#65](https://github.com/scnplt/devmon-agent/pull/65))
+
+- **A broken `DEVMON_PUBLIC_ADDR` is reported even when another variable is also
+  wrong.** The missing-address problem was suppressed whenever the loader had
+  already recorded a fault for any earlier field, so the operator learned about
+  one variable, fixed it, restarted, and only then learned about the next — the
+  one-fault-per-restart experience aggregated validation exists to prevent.
+  ([#79](https://github.com/scnplt/devmon-agent/pull/79))
+
+- **The identity routes answer 500 instead of panicking when no CA is
+  configured**, and request logs record the matched route pattern rather than
+  `r.URL.Path`, which is attacker-controlled up to the header budget.
+  ([#86](https://github.com/scnplt/devmon-agent/pull/86))
+
+- **`ErrNotModified` maps to 204 rather than a 502 and a false `engine_error`
+  audit row.** The moby SDK returns nil for 304 today, so this is unreachable
+  in practice; the half-wired state meant any change in SDK behaviour would have
+  reported an Engine outage for "start an already-running container".
+  ([#70](https://github.com/scnplt/devmon-agent/pull/70))
+
+### Internal
+
+- The OpenAPI lint gate documented since 0.1.0 now actually runs in CI, and
+  fails on warnings rather than only errors.
+  ([#82](https://github.com/scnplt/devmon-agent/pull/82),
+  [#83](https://github.com/scnplt/devmon-agent/pull/83))
+- The release workflow no longer pushes `:latest` unconditionally, and every
+  third-party action is pinned by SHA.
+  ([#84](https://github.com/scnplt/devmon-agent/pull/84))
+- The release bar runs on pushes to `main`, not only on PRs into it, and CI
+  verifies the container health projection against a real Engine 29 service.
+  ([#71](https://github.com/scnplt/devmon-agent/pull/71),
+  [#94](https://github.com/scnplt/devmon-agent/pull/94))
+- `make lint` and `make e2e-lint` fail on `gofmt` and `golangci-lint` findings
+  instead of reporting them and exiting 0, and a `.dockerignore` keeps runtime
+  state out of the build context.
+  ([#61](https://github.com/scnplt/devmon-agent/pull/61),
+  [#62](https://github.com/scnplt/devmon-agent/pull/62))
+- The coverage floor moved from 80% to 90%.
+  ([#38](https://github.com/scnplt/devmon-agent/pull/38))
+- Three flaky or sleep-synchronised tests were pinned to observable state: the
+  shutdown-error contract, the sleep-based synchronisation across the suite, and
+  the stream goroutine-leak assertion, which counted the whole process's
+  goroutines under `t.Parallel()`.
+  ([#73](https://github.com/scnplt/devmon-agent/pull/73),
+  [#91](https://github.com/scnplt/devmon-agent/pull/91),
+  [#96](https://github.com/scnplt/devmon-agent/pull/96))
+- The dead self-signing certificate path is gone, drifted documentation
+  citations are re-anchored, the `SECURITY.md` supported-versions table is
+  drift-proof, and the local planning documents are no longer tracked.
+  ([#63](https://github.com/scnplt/devmon-agent/pull/63),
+  [#75](https://github.com/scnplt/devmon-agent/pull/75),
+  [#76](https://github.com/scnplt/devmon-agent/pull/76),
+  [#85](https://github.com/scnplt/devmon-agent/pull/85),
+  [#86](https://github.com/scnplt/devmon-agent/pull/86))
+
 ## [0.2.0] - 2026-08-12
 
 The agent can now identify its own container by **name**, which is the first
@@ -207,6 +368,7 @@ First public release — the full surface.
   writing a `compose.yaml`, and waiting for the agent to answer.
 - **Multi-arch image.** `linux/amd64` and `linux/arm64`.
 
+[0.3.0]: https://github.com/scnplt/devmon-agent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scnplt/devmon-agent/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/scnplt/devmon-agent/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/scnplt/devmon-agent/compare/v0.1.0...v0.1.1
