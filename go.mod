@@ -1,6 +1,6 @@
 module github.com/scnplt/devmon-agent
 
-go 1.26.5
+go 1.26.7
 
 require (
 	github.com/containerd/errdefs v1.0.0
