@@ -479,6 +479,30 @@ services:
     container_name: $SERVICE_NAME
     restart: unless-stopped
 
+    # Hardening. This container holds the Docker socket, which makes it the
+    # most valuable thing on the host to compromise; each line below narrows
+    # what a foothold inside it is worth, and none changes how the agent
+    # behaves. no-new-privileges is the most important of them: it stops any
+    # setuid binary in the container from ever raising privileges.
+    security_opt:
+      - no-new-privileges:true
+
+    # The agent needs no capabilities at all — 8443 is above 1024, so not even
+    # NET_BIND_SERVICE is required.
+    cap_drop:
+      - ALL
+
+    # Every write goes to the state bind mount below, which stays writable
+    # under read_only. /tmp is a tmpfs because SQLite falls back to it for
+    # spill files.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # A ceiling on threads, not processes: one Go binary, no children, and
+    # Linux counts threads here. Idle sits around a dozen.
+    pids_limit: 256
+
     ports:
       - "$PORT:8443"
 
@@ -666,7 +690,12 @@ EOF
        fingerprint shown before it. The code is single-use and expires.
     2. Do not expose this port to the open internet without a VPN or a
        firewall in front of it. docs/THREAT-MODEL.md says what the agent does
-       and does not defend against.
+       and does not defend against. Note that a host firewall alone may not
+       be doing what you think: Docker's published ports install DNAT rules
+       that are evaluated before the chains UFW and firewalld manage, so port
+       $PORT stays reachable even with a \`ufw deny $PORT\` rule in place.
+       Restrict it where Docker honours it — bind the published port to one
+       interface in $COMPOSE_PATH, or write the rule into DOCKER-USER.
     3. Back up $STATE_DIR. It is the agent's identity, and the backup is
        itself a credential. See docs/BACKUP.md.
 
