@@ -68,9 +68,26 @@ docker run -d --name devmon-agent \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -p 8443:8443 \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL \
+  --read-only --tmpfs /tmp \
+  --pids-limit 256 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
   ghcr.io/scnplt/devmon-agent:0.2.0
 ```
+
+The four hardening flags are not needed to run the agent and none of them
+changes how it behaves — they narrow what a foothold inside a container that
+holds the Docker socket is worth. `no-new-privileges` is the one to keep if you
+keep only one. `--read-only` covers the image's own filesystem; the state bind
+mount stays writable, and `/tmp` is a tmpfs because SQLite falls back to it for
+spill files.
+
+A published port is reachable from anywhere the host is, and a host firewall
+alone does not change that: Docker installs DNAT rules that are evaluated before
+the chains UFW and firewalld manage, so a `ufw deny 8443` is never consulted.
+Restrict it where Docker honours it — publish to one interface
+(`-p 127.0.0.1:8443:8443`, behind a VPN), or write the rule into `DOCKER-USER`.
 
 See `compose.example.yaml` for the equivalent Compose file. It carries the knobs
 worth setting by hand, not all of them — the full list is the environment table
