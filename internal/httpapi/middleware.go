@@ -21,6 +21,53 @@ const msgClientCertRequired = "client certificate required"
 // collide with another package's context value, an empty struct type cannot.
 type deviceCtxKey struct{}
 
+// routeCtxKey is the context key under which withRoute stashes the matched
+// route pattern for withRecovery and withRequestLog to read.
+type routeCtxKey struct{}
+
+// unmatchedRoute is what withRoute stashes for a request that matched no
+// registered pattern — a fixed literal, never anything derived from the
+// request. See withRoute for why.
+const unmatchedRoute = "(unmatched)"
+
+// routeFrom returns the route pattern withRoute resolved for this request,
+// or unmatchedRoute if none was stashed (e.g. a context that never passed
+// through withRoute, as in a unit test that calls a handler directly).
+func routeFrom(ctx context.Context) string {
+	if route, ok := ctx.Value(routeCtxKey{}).(string); ok {
+		return route
+	}
+	return unmatchedRoute
+}
+
+// withRoute resolves the route pattern once, outside both withRecovery and
+// withRequestLog, and stashes it in the request context under routeCtxKey.
+//
+// mux.Handler only inspects the request to find a match; it does not serve
+// it, so dispatch still happens exactly once, inside next, when next's chain
+// eventually reaches mux.ServeHTTP.
+//
+// The resolved pattern is checked against patterns — the closed set of
+// literals routes() registered — rather than trusted verbatim. Two cases
+// need that: an unmatched request, where mux.Handler returns an empty
+// pattern, and an internally-generated redirect (e.g. a path ServeMux
+// cleans before matching), where the net/http docs say Handler returns "the
+// path that will match after following the redirect" — a value built from
+// the request path, not from the registered pattern set, and therefore not
+// safe to log unfiltered. Membership in patterns is what keeps the logged
+// value bounded and non-attacker-controlled in both cases; anything not in
+// the set collapses to unmatchedRoute.
+func (s *Server) withRoute(mux *http.ServeMux, patterns map[string]struct{}, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, pattern := mux.Handler(r)
+		if _, ok := patterns[pattern]; !ok {
+			pattern = unmatchedRoute
+		}
+		ctx := context.WithValue(r.Context(), routeCtxKey{}, pattern)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // DeviceFrom returns the Device requireDevice resolved for this request, if
 // any. Handlers behind requireDevice may call this without a second lookup.
 func DeviceFrom(ctx context.Context) (state.Device, bool) {
@@ -89,13 +136,22 @@ func (s *Server) requireDevice(next http.Handler) http.Handler {
 // withRecovery turns a panicking handler into a 500 without leaking a stack
 // trace to the client. The trace goes to the agent's own log, where the operator
 // can read it and a scanner cannot.
+//
+// It logs the matched route pattern, resolved upstream by withRoute, rather
+// than r.URL.Path: the path is attacker-controlled up to the header budget
+// (maxHeaderBytes), and withIPLimit's doc comment (ratelimit.go) already
+// explains why attacker-controlled input has no place in this log — a
+// scanner must not be able to write arbitrary volume into the operator's
+// own diagnostics. The route pattern is drawn from the closed, fixed set
+// routes() registers, so it carries the same diagnostic value without that
+// risk.
 func (s *Server) withRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.log.Error("panic serving request",
 					slog.String("method", r.Method),
-					slog.String("path", r.URL.Path),
+					slog.String("route", routeFrom(r.Context())),
 					slog.Any("panic", rec),
 				)
 				s.writeError(w, http.StatusInternalServerError, "internal error")
@@ -107,9 +163,15 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 
 // withRequestLog records one Debug line per request.
 //
-// Method, path, status, and duration only — never headers, never query strings,
-// never a body. Headers on this port carry client certificates and, from
-// Phase 2, pairing material.
+// Method, route, status, and duration only — never headers, never query
+// strings, never a body. Headers on this port carry client certificates and,
+// from Phase 2, pairing material.
+//
+// "route" is the matched route pattern (see withRoute), not r.URL.Path: the
+// same reasoning as withRecovery above applies here — the path is
+// attacker-controlled and unbounded relative to the log, the route pattern
+// is neither. See withIPLimit in ratelimit.go for the rate-limiter's version
+// of this same rule.
 func (s *Server) withRequestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -119,7 +181,7 @@ func (s *Server) withRequestLog(next http.Handler) http.Handler {
 
 		s.log.Debug("request served",
 			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
+			slog.String("route", routeFrom(r.Context())),
 			slog.Int("status", rec.status),
 			slog.Duration("duration", time.Since(start)),
 		)

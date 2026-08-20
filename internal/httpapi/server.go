@@ -177,12 +177,22 @@ func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
+	// patterns is the closed set of literals registered below, the same set
+	// withRoute checks a resolved match against before logging it (see
+	// middleware.go). handle is the single place that both registers a
+	// pattern with mux and records it here, so the two can never drift.
+	patterns := make(map[string]struct{})
+	handle := func(pattern string, h http.Handler) {
+		mux.Handle(pattern, h)
+		patterns[pattern] = struct{}{}
+	}
+
 	// The Go 1.22+ method pattern matters. Registering "/v1/status" alone would
 	// also match POST, DELETE, and everything else.
 	//
 	// Rate-limit order (the Rate-Limiting Contract): the global unauthenticated
 	// backstop runs first, then the route's own per-IP tier.
-	mux.Handle("GET /v1/status",
+	handle("GET /v1/status",
 		s.withGlobalUnauthLimit(s.withIPLimit(s.statusLimits, s.statusLimit, "status", http.HandlerFunc(s.handleStatus))))
 
 	// Unauthenticated by design (D2): the device has no certificate yet, so
@@ -190,7 +200,7 @@ func (s *Server) routes() http.Handler {
 	// withPairAudit sits inside both rate-limit tiers (D7): a request either
 	// one refuses must never reach it, or a throttled scanner could fill the
 	// audit table (issue #44).
-	mux.Handle("POST /v1/pair",
+	handle("POST /v1/pair",
 		s.withGlobalUnauthLimit(s.withIPLimit(s.pairLimits, s.pairLimit, "pair", s.withPairAudit(http.HandlerFunc(s.handlePair)))))
 
 	// Guarded: both act on the calling device's own identity, resolved by
@@ -201,16 +211,16 @@ func (s *Server) routes() http.Handler {
 	// withAudit does on the mutate routes below (D7, D15, issue #44): a
 	// throttled call must never write a row, and every row must carry a real,
 	// authenticated device.
-	mux.Handle("POST /v1/device/renew",
+	handle("POST /v1/device/renew",
 		s.requireDevice(s.withDeviceLimit(s.withIdentityAudit(opRenew, http.HandlerFunc(s.handleRenew)))))
-	mux.Handle("DELETE /v1/device/self",
+	handle("DELETE /v1/device/self",
 		s.requireDevice(s.withDeviceLimit(s.withIdentityAudit(opUnpairSelf, http.HandlerFunc(s.handleUnpairSelf)))))
 
 	// Read operations. Every one is guarded three times: requireDevice proves
 	// who is calling, withDeviceLimit bounds how often, requireOp proves the
 	// host's startup policy permits it.
 	read := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpRead, h))))
+		handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpRead, h))))
 	}
 	read("GET /v1/containers", s.handleListContainers)
 	read("GET /v1/containers/{id}", s.handleInspectContainer)
@@ -224,7 +234,7 @@ func (s *Server) routes() http.Handler {
 	// Log routes. Same triple guard as the read routes, with policy.OpLogs —
 	// which, like OpRead, every mode permits (see internal/policy/mode.go).
 	logs := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpLogs, h))))
+		handle(pattern, s.requireDevice(s.withDeviceLimit(s.requireOp(policy.OpLogs, h))))
 	}
 	logs("GET /v1/containers/{id}/logs", s.handleContainerLogs)
 	logs("GET /v1/containers/{id}/logs/stream", s.handleStreamContainerLogs)
@@ -235,7 +245,7 @@ func (s *Server) routes() http.Handler {
 	// whatever happens to it, requireOp proves the host's startup policy
 	// permits it.
 	mutate := func(pattern string, op policy.Operation, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireDevice(s.withDeviceLimit(s.withAudit(op, s.requireOp(op, h)))))
+		handle(pattern, s.requireDevice(s.withDeviceLimit(s.withAudit(op, s.requireOp(op, h)))))
 	}
 	mutate("POST /v1/containers/{id}/start", policy.OpStart, s.handleStartContainer)
 	mutate("POST /v1/containers/{id}/restart", policy.OpRestart, s.handleRestartContainer)
@@ -243,7 +253,13 @@ func (s *Server) routes() http.Handler {
 	mutate("POST /v1/containers/{id}/kill", policy.OpKill, s.handleKillContainer)
 	mutate("DELETE /v1/containers/{id}", policy.OpDelete, s.handleRemoveContainer)
 
-	return s.withRecovery(s.withRequestLog(mux))
+	// withRoute sits outermost: it resolves the matched pattern once (or
+	// unmatchedRoute for anything not in patterns) before either logger runs,
+	// so withRecovery and withRequestLog both log that bounded pattern
+	// instead of the attacker-controlled r.URL.Path (issue #46). It only
+	// inspects the request via mux.Handler; mux itself still dispatches,
+	// inside withRequestLog's next.ServeHTTP call, exactly once.
+	return s.withRoute(mux, patterns, s.withRecovery(s.withRequestLog(mux)))
 }
 
 // Run serves until ctx is cancelled, then drains for up to shutdownGrace.
