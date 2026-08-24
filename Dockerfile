@@ -3,7 +3,7 @@
 # identical. Dependabot's docker ecosystem watches a pinned digest and opens a PR
 # when the tag moves, so the pin does not rot silently. The tag is kept next to
 # the digest for readability only — Docker resolves the digest and ignores it.
-FROM golang:1.26-alpine@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS build
+FROM golang:1.27-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS build
 
 # GOTOOLCHAIN=local, not the default `auto`. go.mod requires go 1.26.5, bumped
 # specifically for GO-2026-5856. Under `auto`, a base image that has drifted
@@ -45,7 +45,7 @@ RUN mkdir -m 0700 -p /out/state
 
 # No ca-certificates layer: the agent makes no outbound TLS connections, and
 # distroless/static already carries a bundle if a later phase needs one.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:1b7b9f0f0e0a1d2155f531db587cc48ec26aaf97ab64364225f5bf18a054e66a
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/devmon-agent /usr/local/bin/devmon-agent
 
