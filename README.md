@@ -462,6 +462,7 @@ reasoning; the spec keeps the shapes.
 | `GET /v1/volumes/{name}` | client cert | Inspect one volume |
 | `GET /v1/containers/{id}/logs` | client cert | Recent log lines as JSON |
 | `GET /v1/containers/{id}/logs/stream` | client cert | Live log stream (Server-Sent Events) |
+| `GET /v1/events/stream` | client cert | Live container health and lifecycle events (Server-Sent Events) |
 | `POST /v1/containers/{id}/start` | client cert | Start a stopped container — needs `default` |
 | `POST /v1/containers/{id}/restart` | client cert | Restart a container — needs `default` |
 | `POST /v1/containers/{id}/stop` | client cert | Stop a running container — needs `default` |
@@ -546,6 +547,11 @@ args are what identify a misconfigured container, and they are already visible
 in the host's process table and in `docker ps`. This is a bounded, deliberate
 disclosure rather than an oversight.
 
+**Engine event attributes are never forwarded.** The event stream maps no
+attribute of a Docker event, because an event's attributes are the container's
+label set — the same rule that removes env vars, applied to a different field.
+Only the container's name is read out of them, by exact key.
+
 **Lists are capped at 500 items** and carry a `truncated` flag. A host with
 thousands of images would otherwise send a multi-megabyte body to a phone on a
 mobile connection. The cap is server-side and cannot be raised by a client,
@@ -623,6 +629,61 @@ including the secrets the projection rules above work to keep out of
 responses — the difference is only that here the operator asked for them. That
 makes it more important, not less, that they pass through in transit and leave
 nothing behind.
+
+### Container health event stream
+
+`GET /v1/events/stream` tells a client the moment a container's health flips or
+a container dies, starts, stops, or is OOM-killed — without polling. It is SSE
+on the same listener, behind the same certificate, rate-limit, and policy guards
+as every read route, and it is permitted in every policy mode because it
+discloses a strict subset of what `GET /v1/containers` already returns.
+
+**The snapshot replaces replay.** The first frame is always one
+`event: snapshot` carrying `{id, name, state, health}` for every container on
+the host. There is deliberately no `?since=` and no `Last-Event-ID` resume: a
+replay window would mean the agent buffering events per absent device — exactly
+the durable per-client state the log stream refused to add — and would still be
+wrong at its edges. A snapshot is one Engine call and is always true. The
+ordering is guaranteed the strong way round: the agent subscribes to the
+Engine's event feed first and takes the snapshot only once the subscription is
+live, so an event firing in between lands in the stream rather than in a gap.
+
+After the snapshot, one `event: health` frame per forwarded event. Exactly six
+Engine events are forwarded — `health_status: healthy`,
+`health_status: unhealthy`, `die`, `start`, `stop`, `oom` — through a closed
+allowlist. That allowlist is a security control, not a filter: Docker's raw
+health action string can carry the healthcheck's own output, and an event's
+attributes are the container's labels, so neither ever reaches the wire or the
+agent's own log.
+
+**One Engine subscription, fanned out.** However many devices are connected,
+the agent holds exactly one `/events` connection to the Engine, started when
+the first client attaches and closed when the last one leaves. An event stream
+therefore consumes none of the log-stream budget — holding a health view open
+never costs the device a log view.
+
+**Every gap becomes a disconnect.** If the Engine feed dies the agent does not
+silently reconnect — a resumed feed would have a hole in it and no way to say
+what fell in. Every client gets a terminal `event: error` /
+`docker engine unavailable` and reconnects into a fresh snapshot. A client that
+cannot keep up is dropped the same way (`event stream fell behind`) rather than
+having events silently skipped: a dropped client re-snapshots and is correct
+again, a client missing one event is quietly wrong forever.
+
+**One stream per device, newest wins.** A second connection from the same
+device closes the older one with `event stream superseded` — in practice the
+second connection is a client that reconnected before its old socket was
+reaped, and the newer socket is the one the device is actually holding. That is
+the one terminal error a client must not retry; the other two are retryable
+with backoff.
+
+A `: heartbeat` comment is written every 25 seconds, for the same two reasons
+the log stream's keepalive exists. `id` is the join key across routes: `name`
+on this stream strips the leading `/` the Engine puts on list names, because
+the Engine's list and event APIs disagree on the form and one stream must be
+self-consistent. Snapshot `health` needs Engine 29+ (API v1.52) — on an older
+Engine every container snapshots as `none` while the events themselves still
+arrive.
 
 `/v1/status` is the only endpoint served without a client certificate. Its fields
 are a strict allowlist — it may inform, never issue — and it carries no host,

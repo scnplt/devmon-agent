@@ -78,6 +78,8 @@ tags:
     description: Container reads.
   - name: logs
     description: Historical log retrieval and the live stream.
+  - name: events
+    description: The live container health and lifecycle event stream.
   - name: lifecycle
     description: Mutating container operations, bounded by the host's policy mode.
   - name: images
@@ -515,6 +517,112 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example: { error: too many concurrent log streams }
 
+  /v1/events/stream:
+    get:
+      tags: [events]
+      operationId: streamContainerEvents
+      summary: Live container health and lifecycle events (Server-Sent Events)
+      description: |
+        Permitted in every policy mode: the stream discloses a strict subset of
+        what `GET /v1/containers` already returns.
+
+        **The snapshot replaces replay.** The first frame is always one
+        `event: snapshot` carrying the current state of every container, taken
+        only after the Engine-side event subscription is live, so no event can
+        fall between the two. There is no `since` parameter and no
+        `Last-Event-ID` resume: a client reconciles from the snapshot on every
+        connect, which is one mechanism that is always true rather than a replay
+        window that is bounded and stale at its edges.
+
+        After the snapshot, one `event: health` frame per forwarded Engine
+        event. Exactly six container events are forwarded —
+        `health_status: healthy`, `health_status: unhealthy`, `die`, `start`,
+        `stop`, and `oom`. Everything else, including every event attribute the
+        Engine attaches (attributes are the container's label set), is dropped
+        agent-side.
+
+        **One stream per paired device, newest wins.** A second connection from
+        the same device closes the older one with a terminal
+        `event: error` / `event stream superseded` frame — the one terminal
+        error a client must **not** retry, since reconnecting would fight the
+        newer stream. This limit is independent of the log-stream budget: an
+        event stream consumes no log-stream slot, because every event stream
+        shares one Engine subscription per agent process.
+
+        **A gap becomes a disconnect.** If the Engine feed dies, every client
+        receives `event: error` / `docker engine unavailable` and the stream
+        closes; a client that falls too far behind receives
+        `event stream fell behind`. Both are retryable with backoff, and a
+        reconnect serves a fresh snapshot.
+
+        A `: heartbeat` comment frame is written every 25 seconds so NAT and
+        proxies keep the connection open, and so a client can detect a dead
+        stream.
+
+        `id` is the join key across routes. `name` here carries the Engine name
+        with its leading `/` stripped (the Engine's list and event APIs disagree
+        on the form), which differs from `GET /v1/containers`'s `names`.
+
+        Snapshot `health` requires Engine 29+ / API v1.52: on an older Engine
+        every container snapshots as `none` while the events themselves are
+        unaffected.
+
+        Response headers are withheld until the snapshot is ready to send, which
+        keeps `502` available as an ordinary JSON response. Once the stream has
+        started, a later failure can only arrive as a terminal `event: error`
+        frame on a response that already said 200.
+      responses:
+        "200":
+          description: The stream. Ends when the client disconnects, a newer stream from the same device supersedes it, or a terminal error frame is sent.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+            X-Accel-Buffering:
+              schema: { type: string, const: "no" }
+              description: Disables response buffering on nginx-style proxies, which would otherwise hold the stream until it closed.
+          content:
+            text/event-stream:
+              schema:
+                description: |
+                  The HTTP body is SSE text framing, not JSON; this schema names
+                  the frame `data` payloads for generators. `event: snapshot`
+                  carries a bare JSON array of ContainerStateSummary as its
+                  `data`, exactly once, always first. `event: health` carries a
+                  ContainerEvent. `event: error` carries an Error object and
+                  terminates the stream. Comment frames (`: heartbeat`) carry no
+                  event and are ignored by any conforming SSE client. Frame `id`
+                  fields are empty: there is deliberately no resume cursor on
+                  this route.
+                oneOf:
+                  - type: string
+                    description: The body as transmitted — SSE text framing.
+                  - type: array
+                    items: { $ref: "#/components/schemas/ContainerStateSummary" }
+                    description: "The `data` payload of the one `event: snapshot` frame."
+                  - $ref: "#/components/schemas/ContainerEvent"
+                  - $ref: "#/components/schemas/Error"
+              examples:
+                stream:
+                  value: |
+                    event: snapshot
+                    data: [{"id":"a1b2c3","name":"api","state":"running","health":"healthy"},{"id":"d4e5f6","name":"cron","state":"exited","health":"none"}]
+
+                    : heartbeat
+
+                    event: health
+                    data: {"id":"a1b2c3","name":"api","event":"health_status","health":"unhealthy","time":"2026-08-25T09:14:02Z"}
+
+                    event: health
+                    data: {"id":"d4e5f6","name":"cron","event":"die","time":"2026-08-25T09:31:47Z"}
+
+                    event: error
+                    data: {"error":"event stream superseded"}
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/PolicyForbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502": { $ref: "#/components/responses/EngineUnavailable" }
+
   /v1/images:
     get:
       tags: [images]
@@ -797,6 +905,18 @@ components:
         returned here would already be stale. Re-fetch
         `GET /v1/containers/{id}` instead; it is one cheap request and always
         true.
+
+    PolicyForbidden:
+      description: |
+        The host's policy mode does not permit the operation. Every shipped
+        mode permits reads, so on a read route this answer indicates an agent
+        misconfiguration rather than a tier a client could encounter by design —
+        it is documented because the taxonomy keeps 403 distinct from 401 and
+        502 on every route.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: operation not permitted by host policy }
 
     LifecycleForbidden:
       description: |
@@ -1305,3 +1425,59 @@ components:
             exists because one enormous line — a stack dump, a base64 payload —
             would otherwise be accumulated whole in agent memory before any line
             boundary arrived.
+
+    ContainerStateSummary:
+      type: object
+      description: |
+        One entry of the event stream's opening snapshot: the minimum a client
+        needs to reconcile its own view before live events start arriving. It is
+        deliberately not ContainerSummary — the snapshot is resent on every
+        reconnect, so it carries the four fields the stream can change and
+        nothing else. The snapshot array is capped at 500 entries like every
+        list; a host beyond that is outside this route's design point.
+      required: [id, name, state, health]
+      properties:
+        id:
+          type: string
+          description: The join key across routes.
+        name:
+          type: string
+          description: The Engine name with its leading `/` stripped, matching the form events carry. Join on `id`, not this.
+        state:
+          type: string
+          examples: [running, exited, created, paused, restarting, removing, dead]
+        health:
+          type: string
+          enum: [none, starting, healthy, unhealthy]
+          description: |
+            Never omitted: a client must be able to tell "no healthcheck"
+            (`none`) from "this agent version does not report health". `none` is
+            also what every container reports on an Engine older than API v1.52,
+            where the list response carries no health at all.
+
+    ContainerEvent:
+      type: object
+      description: |
+        One allowlisted Docker container event. `event` is a normalised literal
+        from a fixed six-entry allowlist, never the Engine's raw action string —
+        a raw health action can carry the healthcheck's own output. Engine event
+        attributes are never mapped: they are the container's label set.
+      required: [id, name, event, time]
+      properties:
+        id:
+          type: string
+          description: The join key across routes.
+        name:
+          type: string
+          description: The Engine name with its leading `/` stripped.
+        event:
+          type: string
+          enum: [health_status, die, start, stop, oom]
+        health:
+          type: string
+          enum: [healthy, unhealthy]
+          description: Present only when `event` is `health_status`. The snapshot's other two values cannot arrive here — `starting` and `none` never produce an Engine event this route forwards.
+        time:
+          type: string
+          format: date-time
+          description: RFC 3339 UTC, from the Engine's own event timestamp.
