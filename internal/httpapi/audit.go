@@ -13,7 +13,7 @@ import (
 
 // auditCtxKey is the context key under which withAudit stores the in-flight
 // entry. An empty struct type, not a string, for the same reason
-// deviceCtxKey is (middleware.go:20).
+// deviceCtxKey (middleware.go) is.
 type auditCtxKey struct{}
 
 // Identity operation names for the audit `operation` column. These are not

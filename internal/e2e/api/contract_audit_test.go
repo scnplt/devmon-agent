@@ -31,7 +31,8 @@ import (
 //
 // Audit ROW RETENTION (internal/state/pruner.go) is out of scope for a live
 // round trip in this suite: Pruner.Run ticks on a fixed, uncomfigurable
-// six-hour interval (pruner.go:12) with no test seam to shorten it, and D19
+// six-hour interval (defaultPruneInterval in pruner.go) with no test seam to
+// shorten it, and D19
 // forbids adding one just to make this task's assertions pass sooner. The
 // retention bound itself — DEVMON_AUDIT_MAX_ROWS enforced by PruneAudit — is
 // already exercised at the unit level (internal/state/audit_test.go's

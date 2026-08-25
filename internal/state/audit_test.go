@@ -157,8 +157,8 @@ func TestListAuditOrdersMostRecentFirstByID(t *testing.T) {
 	t.Parallel()
 
 	// Arrange — insert three entries whose id order and occurred_at order
-	// agree, then verify ordering is by id, not occurred_at (store.go:272-276
-	// treats id as the ordering that matters for the same reason).
+	// agree, then verify ordering is by id, not occurred_at (PruneAudit's
+	// retention queries in store.go order by id for the same reason).
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
 	for i, target := range []string{"first", "second", "third"} {
