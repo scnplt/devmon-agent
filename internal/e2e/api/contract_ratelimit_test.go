@@ -23,9 +23,9 @@ import (
 // variables are startup configuration, so sharing an agent across cases
 // would make one test's limit leak into another's assertion.
 //
-// maxRateLimitIterations bounds every polling loop in this file. Agent.
-// waitReady already spends tokens from the status tier's bucket before a
-// test body runs (harness/agent.go:328-353), so no case here may assert an
+// maxRateLimitIterations bounds every polling loop in this file. The
+// harness Agent's waitReady (harness/agent.go) already spends tokens from
+// the status tier's bucket before a test body runs, so no case here may assert an
 // exact request count before the first 429 — only that one arrives within
 // this bound. None of these cases sets the status tier to 1: doing so risks
 // waitReady itself failing before the agent is ever considered started.

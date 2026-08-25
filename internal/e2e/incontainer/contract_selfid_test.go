@@ -176,8 +176,8 @@ func TestExplicitSelfIDOverrideIsHonoured(t *testing.T) {
 // is answered, and the answer is that the documented 503 contract is NOT
 // what the agent implements.
 //
-// internal/selfid/selfid.go:53-59 makes the override merely the FIRST entry
-// in a candidate list, and internal/dockerx/self.go's confirmSelf walks that
+// internal/selfid's Detect makes the override merely the FIRST entry in a
+// candidate list, and internal/dockerx/self.go's confirmSelf walks that
 // list until the Engine confirms one — an override the Engine does not
 // recognise is skipped exactly like a stale mountinfo line. In a normal
 // container the mountinfo candidate then resolves, so the agent
