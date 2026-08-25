@@ -41,8 +41,8 @@ const (
 // disconnects, this device's stream is superseded by a newer one, or the
 // shared Engine subscription fails.
 //
-// Ordering mirrors handleStreamContainerLogs (logs.go:126-247) step for
-// step; the comments here call out only where this handler differs.
+// Ordering mirrors handleStreamContainerLogs (logs.go) step for step; the
+// comments here call out only where this handler differs.
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDocker(w) {
 		return
@@ -154,9 +154,9 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeTerminalEventError sends the terminal event: error frame carrying
-// msg, mirroring logs.go:227-247 in spirit but NOT in the context it checks
-// for "is the client gone": it gates on r.Context(), not the handler's own
-// derived ctx.
+// msg, mirroring handleStreamContainerLogs's terminal-frame path in spirit
+// but NOT in the context it checks for "is the client gone": it gates on
+// r.Context(), not the handler's own derived ctx.
 //
 // That distinction is load-bearing. handleStreamContainerLogs's ctx is
 // cancelled only by a real client disconnect or server shutdown, so
