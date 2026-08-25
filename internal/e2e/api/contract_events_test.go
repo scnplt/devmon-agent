@@ -253,9 +253,14 @@ func TestEventStreamHealthEventArrives(t *testing.T) {
 }
 
 // TestEventStreamLifecycleEvents asserts stopping a running container
-// produces both a "die" and a "stop" frame, in that order — the two
-// lifecycle actions eventActions allowlists besides health_status
-// (internal/dockerx/events.go).
+// produces both a "die" and a "stop" frame — the two lifecycle actions
+// eventActions allowlists besides health_status (internal/dockerx/events.go).
+// The two carry no ordering guarantee between them: on Docker Engine API
+// 1.55, stopping a container was observed to emit kill, kill, stop, die —
+// stop arrives before die — because the daemon's stop handler and the
+// containerd exit notification race independently to the event bus. This
+// test therefore asserts presence of both, in whichever order the daemon
+// happens to deliver them.
 func TestEventStreamLifecycleEvents(t *testing.T) {
 	engine := harness.RequireEngine(t)
 	_, d := readReadyAgent(t, "events-lifecycle")
@@ -275,14 +280,63 @@ func TestEventStreamLifecycleEvents(t *testing.T) {
 		t.Fatalf("POST .../stop: status = %d, want %d; body = %s", status, http.StatusNoContent, raw)
 	}
 
-	die := waitForContainerEvent(t, s, id, "die", 20*time.Second)
-	if die.ID != id {
+	events := waitForContainerEvents(t, s, id, []string{"die", "stop"}, 20*time.Second)
+	if die := events["die"]; die.ID != id {
 		t.Errorf("die event id = %q, want %q", die.ID, id)
 	}
-	stop := waitForContainerEvent(t, s, id, "stop", 20*time.Second)
-	if stop.ID != id {
+	if stop := events["stop"]; stop.ID != id {
 		t.Errorf("stop event id = %q, want %q", stop.ID, id)
 	}
+}
+
+// waitForContainerEvents reads frames off s until it has seen a container
+// event for id matching every action in wantEvents, in any order, or fails
+// the test after deadline. It mirrors waitForContainerEvent's structure (the
+// same "health" SSE-event-name assertion, the same closed-channel and
+// timeout fatals) but tracks a set of still-wanted actions instead of a
+// single one, since the daemon gives no ordering guarantee between them.
+func waitForContainerEvents(t *testing.T, s *harness.Stream, id string, wantEvents []string, deadline time.Duration) map[string]wireContainerEvent {
+	t.Helper()
+
+	remaining := make(map[string]struct{}, len(wantEvents))
+	for _, ev := range wantEvents {
+		remaining[ev] = struct{}{}
+	}
+	seen := make(map[string]wireContainerEvent, len(wantEvents))
+
+	timeout := time.After(deadline)
+	for len(remaining) > 0 {
+		select {
+		case f, ok := <-s.Frames:
+			if !ok {
+				t.Fatalf("stream closed while waiting for events %v on container %s (Err = %v)", remainingKeys(remaining), id, s.Err())
+			}
+			if f.Event != "health" {
+				t.Fatalf("frame event = %q, want %q (every container event frame this route sends uses that one SSE event name)", f.Event, "health")
+			}
+			ev := decodeContainerEvent(t, f.Data)
+			if ev.ID != id {
+				continue
+			}
+			if _, wanted := remaining[ev.Event]; wanted {
+				seen[ev.Event] = ev
+				delete(remaining, ev.Event)
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for events %v on container %s within %s", remainingKeys(remaining), id, deadline)
+		}
+	}
+	return seen
+}
+
+// remainingKeys returns the still-wanted event names out of remaining, for
+// use in a waitForContainerEvents failure message.
+func remainingKeys(remaining map[string]struct{}) []string {
+	keys := make([]string, 0, len(remaining))
+	for k := range remaining {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // TestEventStreamSupersedesOnlySameDevice asserts D11's whole eviction
