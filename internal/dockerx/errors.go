@@ -45,6 +45,14 @@ var ErrConflict = errors.New("docker object is in a conflicting state")
 // distinct sentinel so the audit detail can record that nothing changed.
 var ErrNotModified = errors.New("docker object already in the requested state")
 
+// ErrEventFeedClosed is returned when the Engine's event feed ends rather than
+// fails — an io.EOF on the error channel, or a closed channel. It is distinct
+// from a transport failure because the caller's response is the same either way
+// (tear the subscribers down so they reconnect and re-snapshot) while the log
+// level is not: an ended feed is ordinary on a daemon restart, a transport
+// failure is not.
+var ErrEventFeedClosed = errors.New("docker event feed closed")
+
 // classify maps a raw Engine error onto the package's sentinel errors,
 // wrapping the result with op so a caller can name the failing operation
 // without inspecting the underlying error type.
