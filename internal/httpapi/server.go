@@ -59,6 +59,13 @@ const (
 	// their own cap sum past eight, so the host-wide limit stays meaningful
 	// and testable rather than becoming unreachable dead code.
 	maxStreamsPerDevice = 3
+
+	// maxEventStreamsPerDevice is documentation, not an enforced ceiling: it
+	// records that eventRegistry admits exactly one live event stream per
+	// device by construction (D11) — a second register() call for the same
+	// device evicts the first rather than being refused, so there is no
+	// counter here to compare this constant against.
+	maxEventStreamsPerDevice = 1
 )
 
 // Server owns the HTTPS listener and its routes.
@@ -75,6 +82,14 @@ type Server struct {
 	// use, and this way construction failure is impossible by
 	// construction — NewServer always builds one.
 	streams *streamBudget
+
+	// events owns the agent's single shared Docker events subscription and
+	// fans it out to every attached client (D5/D6); eventStreams enforces
+	// one live event stream per paired device, newest wins (D11). Built
+	// here, never lazily, for the same "construction failure is impossible
+	// by construction" reason streams is.
+	events       *eventHub
+	eventStreams *eventRegistry
 
 	// unauthGlobal is the shared, unkeyed backstop bucket every
 	// pre-authentication request checks first (D8).
@@ -133,6 +148,8 @@ type Server struct {
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: newStreamBudget(maxConcurrentStreams, maxStreamsPerDevice)}
 	s.lifecycleCtx, s.cancelLifecycle = context.WithCancel(context.Background())
+	s.events = newEventHub(dc, log)
+	s.eventStreams = newEventRegistry()
 
 	s.unauthGlobal = rate.NewLimiter(rate.Limit(unauthGlobalPerSec), unauthGlobalBurst)
 
@@ -252,6 +269,13 @@ func (s *Server) routes() http.Handler {
 	logs("GET /v1/containers/{id}/logs", s.handleContainerLogs)
 	logs("GET /v1/containers/{id}/logs/stream", s.handleStreamContainerLogs)
 
+	// The container event stream. Registered through `read`, not a bespoke
+	// chain: it discloses a strict subset of GET /v1/containers, so
+	// policy.OpRead is its honest tier (D3), and reusing the same closure is
+	// what guarantees the three guards match rather than merely resemble the
+	// read routes'.
+	read("GET /v1/events/stream", s.handleEventStream)
+
 	// Mutating operations. Four guards, and the order is load-bearing (D7,
 	// D15): requireDevice proves who is calling, withDeviceLimit bounds how
 	// often before anything is recorded, withAudit records the attempt
@@ -308,6 +332,12 @@ func (s *Server) shutdown() error {
 	// this is what makes a live SSE log stream (issue #41) return promptly
 	// instead of pinning Shutdown below for the full shutdownGrace window.
 	s.cancelLifecycle()
+
+	// The hub's goroutine already unwinds on the cancelled lifecycle context
+	// above; stop() is what makes that deterministic rather than eventual,
+	// so a goroutine-leak test can assert it right after shutdown returns
+	// instead of racing the hub's own teardown.
+	s.events.stop()
 
 	// A fresh context: ctx is already cancelled, and Shutdown needs a live
 	// deadline to drain against.

@@ -4,6 +4,10 @@ package httpapi
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
 
 	"github.com/scnplt/devmon-agent/internal/dockerx"
 )
@@ -14,4 +18,157 @@ import (
 type EventReader interface {
 	ContainerStates(ctx context.Context) ([]dockerx.ContainerStateSummary, error)
 	StreamContainerEvents(ctx context.Context, onReady func(), emit func(dockerx.ContainerEvent) error) error
+}
+
+const (
+	// msgEventStreamLagged is the terminal frame served to a client the hub
+	// dropped for falling behind. Distinct from the Engine failure below so
+	// the client can tell "consume faster" from "the host's Docker died" —
+	// the same argument that keeps 401, 403, 429 and 502 distinct on the
+	// request itself.
+	msgEventStreamLagged = "event stream fell behind"
+
+	// msgEventStreamSuperseded is the terminal frame served to a device's
+	// older event stream when that device opens a newer one. It is the one
+	// terminal error a client must NOT retry: reconnecting would fight the
+	// newer stream.
+	msgEventStreamSuperseded = "event stream superseded"
+)
+
+// handleEventStream opens the container health event stream: one
+// event: snapshot frame with the current state of every container, then one
+// event: health frame per allowlisted Engine transition, until the client
+// disconnects, this device's stream is superseded by a newer one, or the
+// shared Engine subscription fails.
+//
+// Ordering mirrors handleStreamContainerLogs (logs.go:126-247) step for
+// step; the comments here call out only where this handler differs.
+func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDocker(w) {
+		return
+	}
+
+	// A missing device in the request context is a 500, not a silent
+	// fallback: this handler only ever runs behind requireDevice, and
+	// degrading to an unkeyed stream would silently remove the
+	// one-stream-per-device rule (mirrors withDeviceLimit's reasoning).
+	device, ok := DeviceFrom(r.Context())
+	if !ok {
+		s.log.Error("handleEventStream ran without a resolved device in the request context")
+		s.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// wg.Wait() is deferred BEFORE cancel(), so defer's LIFO order runs
+	// cancel() first. Reversing these deadlocks the handler for a full
+	// eventHeartbeatInterval on every request (see logs.go's doc comment for
+	// the full argument).
+	ctx, cancel := context.WithCancel(r.Context())
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+
+	// Registering before attaching is deliberate: a device reconnecting must
+	// evict its own stale stream first. If attach then fails below, the only
+	// way this device could have had a live stream is if the hub was already
+	// running — in which case attach cannot fail — so no working stream is
+	// ever destroyed by a failure here.
+	release, superseded := s.eventStreams.register(device.ID, cancel)
+	defer release()
+
+	// parent is the server's lifetime context, not the request's: the shared
+	// subscription must outlive whichever client happened to start it.
+	sub, err := s.events.attach(s.lifecycleCtx, ctx)
+	if err != nil {
+		// Nothing has been written to w yet, so this is a real 502/404-style
+		// mapping through writeDockerError, not a terminal frame.
+		s.writeDockerError(w, r, "attach event stream", err)
+		return
+	}
+	defer s.events.detach(sub)
+
+	// D7's ordering pays off here: sub has been buffering since attach
+	// returned, so an event that fires during this call is already sitting
+	// in sub.events by the time the snapshot below is sent.
+	states, err := s.dc.ContainerStates(ctx)
+	if err != nil {
+		s.writeDockerError(w, r, "container states", err)
+		return
+	}
+
+	sse := newSSEWriter(w)
+
+	// The snapshot is the first thing on the wire, before anything buffered
+	// in sub.events is drained.
+	if err := sse.event("", sseEventSnapshot, states); err != nil {
+		return
+	}
+
+	// Started only after the snapshot, mirroring handleStreamContainerLogs's
+	// keepalive goroutine verbatim — see its doc comment for the wg/cancel
+	// ordering argument that also applies here.
+	ticker := time.NewTicker(eventHeartbeatInterval)
+	defer ticker.Stop()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// A failed heartbeat write means the client is gone; the
+				// main loop's next send will discover the same thing on its
+				// own next write.
+				_ = sse.comment("heartbeat")
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-superseded:
+			// A newer stream from the same device evicted this one. This is
+			// the one terminal error the client must not retry, so it gets
+			// its own message distinct from an ordinary Engine failure.
+			s.writeTerminalEventError(ctx, sse, msgEventStreamSuperseded)
+			return
+		case <-ctx.Done():
+			// Client gone, or the server is shutting down. Nothing to send:
+			// there is no reason to attempt for a plain disconnect.
+			return
+		case ev := <-sub.events:
+			if err := sse.event("", sseEventHealth, ev); err != nil {
+				return
+			}
+		case reason := <-sub.closed:
+			msg := msgEngineUnavailable
+			if reason == eventClosedLagged {
+				msg = msgEventStreamLagged
+			}
+			s.writeTerminalEventError(ctx, sse, msg)
+			return
+		}
+	}
+}
+
+// writeTerminalEventError sends the terminal event: error frame carrying
+// msg, mirroring logs.go:227-247 exactly: the frame is skipped entirely when
+// the client is already gone (isClientGone(ctx, ctx.Err())), and a failed
+// send logs at Debug for a gone client, Error otherwise. Headers are always
+// already committed by the time this is called — the snapshot frame sent
+// them — so there is no writeDockerError path left to fall back to.
+func (s *Server) writeTerminalEventError(ctx context.Context, sse *sseWriter, msg string) {
+	if isClientGone(ctx, ctx.Err()) {
+		return
+	}
+
+	if err := sse.event("", sseEventError, errorBody{Error: msg}); err != nil {
+		if isClientGone(ctx, err) {
+			s.log.Debug("stream container events: write terminal error frame", slog.Any("err", err))
+		} else {
+			s.log.Error("stream container events: write terminal error frame", slog.Any("err", err))
+		}
+	}
 }
