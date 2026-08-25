@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -233,6 +234,75 @@ func TestLogRoutePrecedence(t *testing.T) {
 			tc.verify(t, rec.Body.Bytes())
 		})
 	}
+}
+
+// TestEventRoutePrecedence proves GET /v1/events/stream reaches its own
+// handler rather than being shadowed by, or shadowing, any of the
+// /v1/containers/... patterns registered alongside it.
+func TestEventRoutePrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	fd := &fakeDocker{
+		containerStatesFn: func(context.Context) ([]dockerx.ContainerStateSummary, error) {
+			return []dockerx.ContainerStateSummary{{ID: "from-events", Name: "api", State: "running", Health: "healthy"}}, nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/events/stream", nil, serial)
+	rec := newWriteCountingRecorder()
+
+	// Act
+	cancel, done := startEventStream(t, s, req, rec, 1)
+	cancel()
+	<-done
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if !bodyContains(rec.Body.String(), "from-events") {
+		t.Errorf("body = %q, want it to contain from-events, proving this request reached "+
+			"handleEventStream rather than a neighbouring /v1/containers/... pattern", rec.Body.String())
+	}
+}
+
+// TestShutdownStopsEventHub asserts that after shutdown() returns, the event
+// hub reports not running and its run goroutine has actually exited —
+// deterministic, not merely eventual, per shutdown()'s own doc comment.
+func TestShutdownStopsEventHub(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	cfg := config.Config{StateDir: t.TempDir(), ListenAddr: ":0", PolicyMode: policy.ModeDefault}
+	fd := &fakeDocker{}
+	s := NewServer(cfg, nil, nil, fd, nil, testLogger())
+
+	sub, err := s.events.attach(s.lifecycleCtx, context.Background())
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	_ = sub
+
+	// Act
+	if err := s.shutdown(); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	// Assert
+	s.events.mu.Lock()
+	running := s.events.running
+	s.events.mu.Unlock()
+	if running {
+		t.Error("event hub still reports running after shutdown")
+	}
+
+	waitForCondition(t, 2*time.Second, 5*time.Millisecond,
+		func() bool { return countGoroutinesMatching(eventHubRunGoroutineFrame) == 0 },
+		func() string {
+			return fmt.Sprintf("event hub run goroutine count = %d, want 0", countGoroutinesMatching(eventHubRunGoroutineFrame))
+		})
 }
 
 // TestRunReturnsShutdownError covers both shutdown's error branch and Run's

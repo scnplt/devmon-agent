@@ -132,7 +132,7 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			// A newer stream from the same device evicted this one. This is
 			// the one terminal error the client must not retry, so it gets
 			// its own message distinct from an ordinary Engine failure.
-			s.writeTerminalEventError(ctx, sse, msgEventStreamSuperseded)
+			s.writeTerminalEventError(r, sse, msgEventStreamSuperseded)
 			return
 		case <-ctx.Done():
 			// Client gone, or the server is shutting down. Nothing to send:
@@ -147,25 +147,38 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			if reason == eventClosedLagged {
 				msg = msgEventStreamLagged
 			}
-			s.writeTerminalEventError(ctx, sse, msg)
+			s.writeTerminalEventError(r, sse, msg)
 			return
 		}
 	}
 }
 
 // writeTerminalEventError sends the terminal event: error frame carrying
-// msg, mirroring logs.go:227-247 exactly: the frame is skipped entirely when
-// the client is already gone (isClientGone(ctx, ctx.Err())), and a failed
-// send logs at Debug for a gone client, Error otherwise. Headers are always
-// already committed by the time this is called — the snapshot frame sent
-// them — so there is no writeDockerError path left to fall back to.
-func (s *Server) writeTerminalEventError(ctx context.Context, sse *sseWriter, msg string) {
-	if isClientGone(ctx, ctx.Err()) {
+// msg, mirroring logs.go:227-247 in spirit but NOT in the context it checks
+// for "is the client gone": it gates on r.Context(), not the handler's own
+// derived ctx.
+//
+// That distinction is load-bearing. handleStreamContainerLogs's ctx is
+// cancelled only by a real client disconnect or server shutdown, so
+// isClientGone(ctx, ctx.Err()) there really does mean "the client is gone".
+// handleEventStream's derived ctx is ALSO cancelled by
+// eventRegistry.register when this device opens a newer stream (D11) — the
+// very case msgEventStreamSuperseded exists to report. Gating on that same
+// ctx would make the superseded frame unreachable: by the time this
+// function runs for that case, ctx.Err() is already non-nil because OF the
+// eviction, not because the client left, so isClientGone would report "gone"
+// on every single supersede and silently drop the one terminal frame the
+// feature spec requires. r.Context() carries no such internal signal — it is
+// cancelled only by the underlying connection actually closing or the
+// server shutting down — so it is what genuinely answers "is anyone still
+// listening".
+func (s *Server) writeTerminalEventError(r *http.Request, sse *sseWriter, msg string) {
+	if isClientGone(r.Context(), r.Context().Err()) {
 		return
 	}
 
 	if err := sse.event("", sseEventError, errorBody{Error: msg}); err != nil {
-		if isClientGone(ctx, err) {
+		if isClientGone(r.Context(), err) {
 			s.log.Debug("stream container events: write terminal error frame", slog.Any("err", err))
 		} else {
 			s.log.Error("stream container events: write terminal error frame", slog.Any("err", err))

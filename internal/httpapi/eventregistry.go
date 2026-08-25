@@ -62,9 +62,18 @@ func (r *eventRegistry) register(deviceID string, cancel context.CancelFunc) (re
 	// Cancel the old slot only after releasing the mutex: the cancelled
 	// handler's unwind calls release, which takes r.mu, so cancelling while
 	// holding it is a lock-ordering hazard.
+	//
+	// superseded is closed before cancel is called (rather than after) so
+	// the evicted handler's select never has to observe ctx.Done() without
+	// superseded already being visible too — belt and braces alongside the
+	// handler-side fix (events.go's writeTerminalEventError) that is what
+	// actually makes the superseded frame reach the wire: gating "is the
+	// client gone" on the handler's own derived ctx, which this cancel call
+	// deliberately closes, made the terminal frame unreachable regardless of
+	// this ordering.
 	if old != nil {
-		old.cancel()
 		close(old.superseded)
+		old.cancel()
 	}
 
 	release = func() {
