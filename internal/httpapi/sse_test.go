@@ -83,6 +83,81 @@ func TestSSEKeepaliveBytes(t *testing.T) {
 	}
 }
 
+// TestSSECommentBytes pins the exact bytes of a comment frame written
+// through comment directly, with a text other than "keepalive" — the event
+// stream's heartbeat is the other caller and uses "heartbeat".
+func TestSSECommentBytes(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sw := newSSEWriter(rec)
+
+	// Act
+	err := sw.comment("heartbeat")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("comment() error = %v, want nil", err)
+	}
+	want := ": heartbeat\n\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("comment() body = %q, want %q", got, want)
+	}
+}
+
+// TestSSEKeepaliveBytesUnchanged is a regression guard on a shipped
+// contract: keepalive() must still emit exactly ": keepalive\n\n" now that
+// its body has been extracted into comment, so the log route's wire format
+// cannot drift as a side effect of that refactor.
+func TestSSEKeepaliveBytesUnchanged(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sw := newSSEWriter(rec)
+
+	// Act
+	err := sw.keepalive()
+
+	// Assert
+	if err != nil {
+		t.Fatalf("keepalive() error = %v, want nil", err)
+	}
+	want := ": keepalive\n\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("keepalive() body = %q, want %q", got, want)
+	}
+}
+
+// TestSSECommentStartsLazily asserts comment on an uncommitted writer
+// commits the response exactly as event and keepalive do: SSE headers set
+// and Started() true, even though nothing was ever sent as an event.
+func TestSSECommentStartsLazily(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sw := newSSEWriter(rec)
+
+	// Act / Assert — before any comment
+	if sw.Started() {
+		t.Fatal("Started() = true before any comment, want false")
+	}
+
+	if err := sw.comment("heartbeat"); err != nil {
+		t.Fatalf("comment() error = %v, want nil", err)
+	}
+
+	// Assert — after the comment
+	if !sw.Started() {
+		t.Error("Started() = false after comment(), want true")
+	}
+	if got := rec.Header().Get("Content-Type"); got != sseContentType {
+		t.Errorf("Content-Type = %q, want %q", got, sseContentType)
+	}
+}
+
 // TestSSELazyStart is D12's contract: nothing is written to the underlying
 // ResponseWriter, and Started() stays false, until the first event is
 // emitted. Committing headers eagerly would make a pre-stream failure (a

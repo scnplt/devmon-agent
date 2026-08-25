@@ -45,6 +45,40 @@ func TestErrInvalidSinceIsDistinctSentinel(t *testing.T) {
 	}
 }
 
+// TestErrEventFeedClosedIsDistinct guards against ErrEventFeedClosed ever
+// being folded into another sentinel by an accidental reuse — a caller must
+// be able to tell "the feed ended" apart from every other classified error
+// via errors.Is.
+func TestErrEventFeedClosedIsDistinct(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "is itself", err: ErrEventFeedClosed, want: ErrEventFeedClosed},
+		{name: "wrapped still matches", err: fmt.Errorf("stream container events: %w", ErrEventFeedClosed), want: ErrEventFeedClosed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act & Assert
+			if !errors.Is(tt.err, tt.want) {
+				t.Errorf("errors.Is(%v, ErrEventFeedClosed) = false, want true", tt.err)
+			}
+			if errors.Is(tt.err, ErrNotFound) {
+				t.Errorf("errors.Is(%v, ErrNotFound) = true, want false", tt.err)
+			}
+			if errors.Is(tt.err, ErrInvalidSince) {
+				t.Errorf("errors.Is(%v, ErrInvalidSince) = true, want false", tt.err)
+			}
+		})
+	}
+}
+
 func TestClassify(t *testing.T) {
 	t.Parallel()
 

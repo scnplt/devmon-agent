@@ -104,6 +104,41 @@ type ContainerDetail struct {
 	Protected bool `json:"protected"`
 }
 
+// ContainerStateSummary is one entry of the event stream's opening snapshot: the
+// minimum a client needs to reconcile its own view before live events start
+// arriving. 4 fields.
+//
+// It is deliberately not ContainerSummary. The snapshot is sent on every
+// reconnect, including on a flaky mobile connection, so it carries the four
+// fields the stream can change and nothing else — ports, labels, and image
+// identifiers do not belong in a frame whose job is "here is what moved".
+//
+// Health is one of container.NoHealthcheck, Starting, Healthy, Unhealthy —
+// "none", "starting", "healthy", "unhealthy". No omitempty: a client must be
+// able to tell "no healthcheck" from "this agent version does not report
+// health", exactly as ContainerSummary.Protected argues.
+type ContainerStateSummary struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"` // leading "/" stripped (D18); join on ID, not this
+	State  string `json:"state"`
+	Health string `json:"health"`
+}
+
+// ContainerEvent is one allowlisted Docker container event.
+//
+// Event is a NORMALISED literal from a fixed allowlist, never string(msg.Action):
+// a free-form health_status action carries the healthcheck's own output, which
+// this agent must not publish or log. Actor.Attributes is never mapped at all —
+// it is the container's label set (Phase 3 D2 applies verbatim); only the "name"
+// key is read.
+type ContainerEvent struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`             // leading "/" stripped (D18)
+	Event  string `json:"event"`            // "health_status" | "die" | "start" | "stop" | "oom"
+	Health string `json:"health,omitempty"` // set only for health_status; "healthy" | "unhealthy"
+	Time   string `json:"time"`             // RFC3339 UTC
+}
+
 // ImageSummary is one entry of an image list. 8 fields.
 type ImageSummary struct {
 	ID          string            `json:"id"`

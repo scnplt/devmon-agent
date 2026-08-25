@@ -55,6 +55,9 @@ type DockerReader interface {
 	VolumeReader
 	LogReader
 	ContainerController
+	// EventReader joins the surface the same way (D21): the consumer owns
+	// the contract, and NewServer's signature stays untouched.
+	EventReader
 }
 
 // Compile-time proof the concrete client still satisfies the contract. A
