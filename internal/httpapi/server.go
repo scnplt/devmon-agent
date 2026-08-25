@@ -59,14 +59,12 @@ const (
 	// their own cap sum past eight, so the host-wide limit stays meaningful
 	// and testable rather than becoming unreachable dead code.
 	maxStreamsPerDevice = 3
-
-	// maxEventStreamsPerDevice is documentation, not an enforced ceiling: it
-	// records that eventRegistry admits exactly one live event stream per
-	// device by construction (D11) — a second register() call for the same
-	// device evicts the first rather than being refused, so there is no
-	// counter here to compare this constant against.
-	maxEventStreamsPerDevice = 1
 )
+
+// There is deliberately no maxEventStreamsPerDevice constant: eventRegistry
+// admits exactly one live event stream per device by construction — a second
+// register() call for the same device evicts the first rather than being
+// refused, so there is no counter to compare a constant against.
 
 // Server owns the HTTPS listener and its routes.
 type Server struct {
