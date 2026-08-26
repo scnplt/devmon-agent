@@ -104,7 +104,7 @@ func toContainerDetail(r container.InspectResponse, selfID string) ContainerDeta
 	d := ContainerDetail{
 		ID:           r.ID,
 		Name:         r.Name,
-		Image:        r.Image,
+		ImageID:      r.Image,
 		CreatedAt:    r.Created,
 		Command:      r.Path,
 		Platform:     r.Platform,
@@ -131,6 +131,7 @@ func toContainerDetail(r container.InspectResponse, selfID string) ContainerDeta
 	}
 
 	if r.Config != nil {
+		d.Image = r.Config.Image
 		d.Labels = r.Config.Labels
 		d.WorkingDir = r.Config.WorkingDir
 		d.User = r.Config.User

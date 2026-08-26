@@ -79,6 +79,7 @@ func TestContainerDetailFieldCount(t *testing.T) {
 		ID:            "abc123",
 		Name:          "/api",
 		Image:         "myapp:1.4",
+		ImageID:       "sha256:abcdef",
 		CreatedAt:     "2023-11-14T22:13:20Z",
 		State:         "running",
 		Running:       true,
@@ -107,8 +108,8 @@ func TestContainerDetailFieldCount(t *testing.T) {
 	body := marshalToMap(t, cd)
 
 	// Assert
-	if len(body) != 25 {
-		t.Fatalf("ContainerDetail payload has %d keys (%v), want exactly 25", len(body), keysOf(body))
+	if len(body) != 26 {
+		t.Fatalf("ContainerDetail payload has %d keys (%v), want exactly 26", len(body), keysOf(body))
 	}
 }
 
