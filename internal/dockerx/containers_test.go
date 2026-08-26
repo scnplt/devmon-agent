@@ -52,6 +52,7 @@ func TestToContainerDetailNilState(t *testing.T) {
 	// Arrange
 	r := container.InspectResponse{
 		ID:         "abc123",
+		Image:      "sha256:abcdef",
 		State:      nil,
 		Config:     nil,
 		HostConfig: nil,
@@ -61,6 +62,12 @@ func TestToContainerDetailNilState(t *testing.T) {
 	got := toContainerDetail(r, "")
 
 	// Assert
+	if got.Image != "" {
+		t.Errorf("got.Image = %q, want empty when Config is nil", got.Image)
+	}
+	if got.ImageID != "sha256:abcdef" {
+		t.Errorf("got.ImageID = %q, want sha256:abcdef", got.ImageID)
+	}
 	if got.State != "" {
 		t.Errorf("got.State = %q, want empty", got.State)
 	}
@@ -229,7 +236,7 @@ func TestToContainerDetailFullState(t *testing.T) {
 	r := container.InspectResponse{
 		ID:      "abc123",
 		Name:    "/api",
-		Image:   "myapp:1.4",
+		Image:   "sha256:abcdef",
 		Created: "2023-11-14T22:13:20Z",
 		Path:    "/app/server",
 		Args:    []string{"--port", "8080"},
@@ -243,6 +250,7 @@ func TestToContainerDetailFullState(t *testing.T) {
 		},
 		Config: &container.Config{
 			Env:        []string{"DB_PASSWORD=hunter2"},
+			Image:      "myapp:1.4",
 			WorkingDir: "/app",
 			User:       "nobody",
 			Labels:     map[string]string{"app": "myapp"},
@@ -272,6 +280,12 @@ func TestToContainerDetailFullState(t *testing.T) {
 	got := toContainerDetail(r, "")
 
 	// Assert
+	if got.Image != "myapp:1.4" {
+		t.Errorf("got.Image = %q, want myapp:1.4 (from Config.Image)", got.Image)
+	}
+	if got.ImageID != "sha256:abcdef" {
+		t.Errorf("got.ImageID = %q, want sha256:abcdef (from the top-level Image digest)", got.ImageID)
+	}
 	if got.FinishedAt != "" {
 		t.Errorf("got.FinishedAt = %q, want empty for the zero timestamp", got.FinishedAt)
 	}

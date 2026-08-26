@@ -72,12 +72,13 @@ type ContainerSummary struct {
 	Protected bool `json:"protected"`
 }
 
-// ContainerDetail is the full projection of a single container. 25 fields.
+// ContainerDetail is the full projection of a single container. 26 fields.
 // NO env. NO raw Engine payload.
 type ContainerDetail struct {
 	ID            string            `json:"id"`
 	Name          string            `json:"name"`
 	Image         string            `json:"image"`
+	ImageID       string            `json:"image_id"`
 	CreatedAt     string            `json:"created_at"` // RFC3339 UTC
 	State         string            `json:"state"`
 	Running       bool              `json:"running"`
