@@ -13,6 +13,17 @@ changes nothing about the agent's behaviour, but this is an open repository and
 a contributor reading the history should not have to reconstruct why the build
 moved.
 
+## [Unreleased]
+
+### Fixed
+
+- **`GET /v1/containers/{id}` now reports `image` and `image_id` consistently
+  with the container list.** The detail response previously returned the
+  Engine's digest-prefixed image ID in the `image` field. `image` now carries
+  the image reference the container was created from (as in the list route),
+  and a new `image_id` field carries the digest-prefixed ID. Clients reading
+  the digest out of `image` should switch to `image_id`. ([#120])
+
 ## [0.4.0] - 2026-08-26
 
 A feature release. The agent gains `GET /v1/events/stream`, a live feed of
@@ -421,6 +432,10 @@ First public release — the full surface.
   writing a `compose.yaml`, and waiting for the agent to answer.
 - **Multi-arch image.** `linux/amd64` and `linux/arm64`.
 
+[#120]: https://github.com/scnplt/devmon-agent/issues/120
+
+[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/scnplt/devmon-agent/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/scnplt/devmon-agent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scnplt/devmon-agent/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/scnplt/devmon-agent/compare/v0.1.1...v0.1.2
