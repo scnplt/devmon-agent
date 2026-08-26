@@ -35,11 +35,13 @@ NONROOT_GID='65532'
 # Docker host is outside what this installer sets up.
 SOCKET_PATH='/var/run/docker.sock'
 
-# CONTAINER_BINARY is the absolute path of the agent binary inside the image.
-# The image is distroless/static:nonroot — there is no shell in it — so every
-# in-container command must name the binary directly. `docker compose exec sh
-# -c ...` does not work and never will.
-CONTAINER_BINARY='/usr/local/bin/devmon-agent'
+# CONTAINER_BINARY is the agent CLI name inside the image: a symlink to
+# /usr/local/bin/devmon-agent, resolved through the container's default PATH
+# (docker exec does the lookup, no absolute path needed). The image is
+# distroless/static:nonroot — there is no shell in it — so every in-container
+# command must name the binary directly. `docker compose exec sh -c ...` does
+# not work and never will.
+CONTAINER_BINARY='devmon'
 
 # SERVICE_NAME is the compose service the exec and log commands address.
 SERVICE_NAME='devmon-agent'
