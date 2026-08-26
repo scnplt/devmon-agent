@@ -1219,12 +1219,21 @@ components:
         The full projection of one container. No environment variables, at any
         level, and no raw Engine payload.
       required:
-        [id, name, image, created_at, state, running, paused, restarting, exit_code,
-         restart_count, platform, labels, command, args, mounts, networks, ports, protected]
+        [id, name, image, image_id, created_at, state, running, paused, restarting,
+         exit_code, restart_count, platform, labels, command, args, mounts, networks,
+         ports, protected]
       properties:
         id: { type: string }
         name: { type: string }
-        image: { type: string }
+        image:
+          type: string
+          description: The image reference the container was created from, as in ContainerSummary.
+        image_id:
+          type: string
+          description: |
+            The Engine's image ID, digest-prefixed (`sha256:…`), as in
+            ImageSummary. `GET /v1/images/{id}` rejects a `:`, so strip the
+            prefix before inspecting it.
         created_at: { type: string, format: date-time }
         state:
           type: string
