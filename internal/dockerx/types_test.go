@@ -112,6 +112,78 @@ func TestContainerDetailFieldCount(t *testing.T) {
 	}
 }
 
+// TestContainerStateSummaryFieldCount is the D1 allowlist guard for the event
+// stream's snapshot entry: Health has no omitempty, so this must be exactly 4
+// keys regardless of population.
+func TestContainerStateSummaryFieldCount(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	css := ContainerStateSummary{
+		ID:     "abc123",
+		Name:   "api",
+		State:  "running",
+		Health: "healthy",
+	}
+
+	// Act
+	body := marshalToMap(t, css)
+
+	// Assert
+	if len(body) != 4 {
+		t.Fatalf("ContainerStateSummary payload has %d keys (%v), want exactly 4", len(body), keysOf(body))
+	}
+}
+
+// TestContainerEventFieldCount is the D1 allowlist guard for the event
+// stream's per-transition frame: Health is omitempty, so a lifecycle event
+// (no Health) marshals to 4 keys and a health event marshals to 5.
+func TestContainerEventFieldCount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ev   ContainerEvent
+		want int
+	}{
+		{
+			name: "lifecycle event without health has four keys",
+			ev: ContainerEvent{
+				ID:    "abc123",
+				Name:  "api",
+				Event: "die",
+				Time:  "2023-11-14T22:13:20Z",
+			},
+			want: 4,
+		},
+		{
+			name: "health event has five keys",
+			ev: ContainerEvent{
+				ID:     "abc123",
+				Name:   "api",
+				Event:  "health_status",
+				Health: "healthy",
+				Time:   "2023-11-14T22:13:20Z",
+			},
+			want: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act
+			body := marshalToMap(t, tt.ev)
+
+			// Assert
+			if len(body) != tt.want {
+				t.Fatalf("ContainerEvent payload has %d keys (%v), want exactly %d", len(body), keysOf(body), tt.want)
+			}
+		})
+	}
+}
+
 func TestImageSummaryFieldCount(t *testing.T) {
 	t.Parallel()
 

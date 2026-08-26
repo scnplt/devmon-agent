@@ -39,6 +39,13 @@ Types: feat, fix, refactor, docs, test, chore, perf, ci
 
 Note: To disable co-author attribution on commits, set `"includeCoAuthoredBy": false` in `~/.claude/settings.json` (Claude Code appends `Co-Authored-By` by default; ECC does not ship this setting).
 
+## Issues
+
+- **Every new issue gets appropriate labels at creation time** — never open an unlabeled
+  issue: `gh issue create --label <label>[,<label>]`. Pick from the repository's existing
+  labels (`gh label list`), e.g. `bug`, `enhancement`, `documentation`, `dependencies`,
+  `tracking` for umbrella issues.
+
 ## Pull Request Workflow
 
 When creating PRs:
@@ -47,6 +54,11 @@ When creating PRs:
 3. Draft comprehensive PR summary
 4. Include test plan with TODOs
 5. Push with `-u` flag if new branch
+6. **Link the related issue**: a bare `Closes #N` on its own line in the body for each
+   issue the merge should close (this fills the Development panel), or `Refs #N` when the
+   PR advances an issue without finishing it. Verify the link after opening.
+7. **Label the PR too**: add the same kind of labels as the issue it addresses —
+   `gh pr create --label <label>` or `gh pr edit <n> --add-label <label>`.
 
 > For the development process before git operations — model routing, commit cadence,
 > and the gates every change must pass — see `CLAUDE.md`, which is the authority.

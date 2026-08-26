@@ -12,9 +12,11 @@ import (
 
 // SSE framing and liveness constants.
 const (
-	sseContentType = "text/event-stream"
-	sseEventLog    = "log"
-	sseEventError  = "error"
+	sseContentType   = "text/event-stream"
+	sseEventLog      = "log"
+	sseEventError    = "error"
+	sseEventSnapshot = "snapshot"
+	sseEventHealth   = "health"
 )
 
 // keepaliveInterval bounds how long the stream may be silent. A container
@@ -27,6 +29,14 @@ const (
 // A package variable rather than a const so Task 9's race test can shorten it
 // and observe a keepalive without waiting 20 real seconds.
 var keepaliveInterval = 20 * time.Second
+
+// eventHeartbeatInterval bounds how long the container event stream may be
+// silent. It is 25s rather than keepaliveInterval's 20s because the two routes
+// have different silence profiles and the event stream's interval is fixed by
+// its own contract. A separate package variable rather than a shared one: both
+// exist as variables so tests can shorten them, and a shared variable would
+// mean one route's test silently retiming the other route's stream.
+var eventHeartbeatInterval = 25 * time.Second
 
 // sseWriter frames one SSE response. Headers are written lazily, on the first
 // event: once 200 and the headers are committed the status can never be
@@ -128,19 +138,24 @@ func (s *sseWriter) event(id, name string, data any) error {
 	return nil
 }
 
-// keepalive writes a bare SSE comment frame. It does not count as an event
-// and carries no id or data; its only purpose is to keep the connection warm
-// through NAT and proxy idle timeouts.
+// comment writes a bare SSE comment frame. It does not count as an event and
+// carries no id or data; its only purpose is to keep the connection warm
+// through NAT and proxy idle timeouts, and to discover a client that vanished
+// without closing — the write fails, and the stream unwinds.
 //
-// It calls startLocked first if the response has not been committed yet,
-// exactly as event does — a silent container's first activity may well be a
-// keepalive tick rather than a log line, and without this the response would
-// commit as a plain 200 with none of the SSE headers and, critically, the
-// server's write deadline never cleared, so the stream would still die at the
-// server's WriteTimeout. Committing here cannot steal D12's 404 window: the
-// pre-stream inspect is bounded by callTimeout and always returns well before
-// the first keepaliveInterval tick.
-func (s *sseWriter) keepalive() error {
+// It calls startLocked first if the response has not been committed yet, for
+// the reason keepalive's doc comment gives — a silent container's first
+// activity may well be a comment tick rather than a log line, and without
+// this the response would commit as a plain 200 with none of the SSE
+// headers and, critically, the server's write deadline never cleared, so the
+// stream would still die at the server's WriteTimeout. Committing here
+// cannot steal D12's 404 window: the pre-stream inspect is bounded by
+// callTimeout and always returns well before the first tick.
+//
+// text must be a compile-time literal with no embedded newline: the only two
+// call sites pass "keepalive" and "heartbeat", so there is no runtime check
+// for a case that cannot occur.
+func (s *sseWriter) comment(text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -150,14 +165,18 @@ func (s *sseWriter) keepalive() error {
 		}
 	}
 
-	if _, err := fmt.Fprint(s.w, ": keepalive\n\n"); err != nil {
-		return fmt.Errorf("write sse keepalive: %w", err)
+	if _, err := fmt.Fprintf(s.w, ": %s\n\n", text); err != nil {
+		return fmt.Errorf("write sse comment: %w", err)
 	}
 	if err := s.rc.Flush(); err != nil {
-		return fmt.Errorf("flush sse keepalive: %w", err)
+		return fmt.Errorf("flush sse comment: %w", err)
 	}
 	return nil
 }
+
+// keepalive writes the log stream's comment frame. Kept as a named method so
+// that route's exact wire bytes cannot drift.
+func (s *sseWriter) keepalive() error { return s.comment("keepalive") }
 
 // Started reports whether the response has been committed. Callers use it
 // after a stream ends to decide between writeDockerError (nothing sent yet)

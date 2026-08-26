@@ -266,8 +266,8 @@ func TestRemoveRunningConflict(t *testing.T) {
 // a running container, HTTP 304) is treated as success (D9), never as an
 // error the caller has to special-case.
 //
-// The moby v0.5.1 client's checkResponseErr classifies every 2xx/3xx
-// response as success before the body is even inspected (request.go:225),
+// The moby client's checkResponseErr (request.go in the SDK) classifies
+// every 2xx/3xx response as success before the body is even inspected,
 // so ContainerStart returns a nil error for 304 exactly as it does for 204.
 // classify's ErrNotModified branch (errors.go) exists for callers that
 // receive an actual non-2xx error carrying that condition elsewhere in the

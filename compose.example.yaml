@@ -37,7 +37,7 @@
 
 services:
   devmon-agent:
-    image: ghcr.io/scnplt/devmon-agent:0.3.0
+    image: ghcr.io/scnplt/devmon-agent:0.4.0
 
     # Pinned so the agent can name itself through DEVMON_SELF_CONTAINER below.
     # Without it compose derives the container name from the project directory,

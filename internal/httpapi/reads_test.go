@@ -50,6 +50,16 @@ type fakeDocker struct {
 	stopContainerFn    func(ctx context.Context, ref string) error
 	killContainerFn    func(ctx context.Context, ref string) error
 	removeContainerFn  func(ctx context.Context, ref string) error
+
+	// containerStatesFn and streamContainerEventsFn back EventReader (D21).
+	// Nil-safe like every field above: a nil containerStatesFn answers with
+	// an empty, non-nil slice; a nil streamContainerEventsFn calls onReady
+	// (mirroring "the subscription is live") and then blocks until ctx is
+	// cancelled, so the many existing tests that never touch the event
+	// stream keep working unmodified — the hub never calls this at all
+	// unless a test actually attaches to it.
+	containerStatesFn       func(ctx context.Context) ([]dockerx.ContainerStateSummary, error)
+	streamContainerEventsFn func(ctx context.Context, onReady func(), emit func(dockerx.ContainerEvent) error) error
 }
 
 var _ DockerReader = (*fakeDocker)(nil)
@@ -157,6 +167,24 @@ func (fd *fakeDocker) RemoveContainer(ctx context.Context, ref string) error {
 		return nil
 	}
 	return fd.removeContainerFn(ctx, ref)
+}
+
+func (fd *fakeDocker) ContainerStates(ctx context.Context) ([]dockerx.ContainerStateSummary, error) {
+	if fd.containerStatesFn == nil {
+		return []dockerx.ContainerStateSummary{}, nil
+	}
+	return fd.containerStatesFn(ctx)
+}
+
+func (fd *fakeDocker) StreamContainerEvents(ctx context.Context, onReady func(), emit func(dockerx.ContainerEvent) error) error {
+	if fd.streamContainerEventsFn == nil {
+		if onReady != nil {
+			onReady()
+		}
+		<-ctx.Done()
+		return nil
+	}
+	return fd.streamContainerEventsFn(ctx, onReady, emit)
 }
 
 // testServerWithDocker is a fifth Server helper, additive to testServer,
