@@ -6,11 +6,39 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/scnplt/devmon-agent/internal/state"
 )
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// whatever fn wrote to it. Used to prove a parse error never reaches
+// stdout — only requested help does (see runAuditListCommand's ErrHelp
+// branch and the plan note it implements).
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() unexpected error: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout pipe writer: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	return buf.String()
+}
 
 func openTestStore(t *testing.T) *state.Store {
 	t.Helper()
@@ -501,6 +529,222 @@ func TestAuditDeviceColumnReturnsBareIDWhenUnknown(t *testing.T) {
 	// Assert
 	if got != "deadbeefcafefeed" {
 		t.Errorf("auditDeviceColumn() = %q, want the bare id when no device matches", got)
+	}
+}
+
+func TestRunDeviceCommandHelpPrintsUsageWithoutOpeningStore(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		arg  string
+	}{
+		{"help", "help"},
+		{"-h", "-h"},
+		{"-help", "-help"},
+		{"--help", "--help"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange — StateDir is never prepared: a store open would fail
+			// noisily if the help path tried to touch it.
+			cfg := testStateConfig(t)
+
+			// Act
+			err := runDeviceCommand(context.Background(), cfg, []string{tt.arg})
+
+			// Assert
+			if err != nil {
+				t.Fatalf("runDeviceCommand(%q) unexpected error: %v", tt.arg, err)
+			}
+			if _, statErr := os.Stat(cfg.DBPath()); !os.IsNotExist(statErr) {
+				t.Errorf("runDeviceCommand(%q) created a store file at %s, want none for help", tt.arg, cfg.DBPath())
+			}
+			if entries, readErr := os.ReadDir(cfg.StateDir); readErr == nil && len(entries) != 0 {
+				t.Errorf("runDeviceCommand(%q) left %d entries under %s, want an untouched state dir", tt.arg, len(entries), cfg.StateDir)
+			}
+		})
+	}
+}
+
+func TestRunAuditCommandHelpPrintsUsageWithoutOpeningStore(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	cfg := testStateConfig(t)
+
+	// Act
+	err := runAuditCommand(context.Background(), cfg, []string{"--help"})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("runAuditCommand(--help) unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(cfg.DBPath()); !os.IsNotExist(statErr) {
+		t.Errorf("runAuditCommand(--help) created a store file at %s, want none for help", cfg.DBPath())
+	}
+}
+
+func TestRunDeviceRevokeHelpReturnsNilWithoutWrappedError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	err := runDeviceRevoke(context.Background(), st, []string{"--help"})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("runDeviceRevoke(--help) = %v, want nil", err)
+	}
+}
+
+func TestRunDevicePairCodeHelpReturnsNilWithoutWrappedError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	err := runDevicePairCode(context.Background(), st, []string{"--help"})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("runDevicePairCode(--help) = %v, want nil", err)
+	}
+}
+
+func TestRunAuditListCommandHelpReturnsNilWithoutWrappedError(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	err := runAuditListCommand(context.Background(), st, []string{"--help"})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("runAuditListCommand(--help) = %v, want nil", err)
+	}
+}
+
+// TestRunAuditListCommandBadFlagErrorsWithoutStdoutOutput and its two
+// siblings below deliberately do NOT call t.Parallel(): they redirect the
+// package-level os.Stdout for the duration of the call, which would race
+// with any concurrently running parallel test that also writes to stdout.
+func TestRunAuditListCommandBadFlagErrorsWithoutStdoutOutput(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+	var err error
+
+	// Act — capture stdout around the call: a genuine parse error must print
+	// nothing there, only the wrapped error (which main sends to stderr).
+	got := captureStdout(t, func() {
+		err = runAuditListCommand(context.Background(), st, []string{"--bogus"})
+	})
+
+	// Assert
+	if err == nil {
+		t.Fatal("runAuditListCommand(--bogus) = nil error, want one for an unknown flag")
+	}
+	if got != "" {
+		t.Errorf("runAuditListCommand(--bogus) wrote %q to stdout, want nothing", got)
+	}
+}
+
+func TestRunDeviceRevokeBadFlagErrorsWithoutStdoutOutput(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+	var err error
+
+	// Act
+	got := captureStdout(t, func() {
+		err = runDeviceRevoke(context.Background(), st, []string{"--bogus"})
+	})
+
+	// Assert
+	if err == nil {
+		t.Fatal("runDeviceRevoke(--bogus) = nil error, want one for an unknown flag")
+	}
+	if got != "" {
+		t.Errorf("runDeviceRevoke(--bogus) wrote %q to stdout, want nothing", got)
+	}
+}
+
+func TestRunDevicePairCodeBadFlagErrorsWithoutStdoutOutput(t *testing.T) {
+	// Arrange — the bad-flag case matters most here: pair-code's stdout is a
+	// pairing code a script may parse, so a flag error must never pollute it.
+	st := openTestStore(t)
+	var err error
+
+	// Act
+	got := captureStdout(t, func() {
+		err = runDevicePairCode(context.Background(), st, []string{"--bogus"})
+	})
+
+	// Assert
+	if err == nil {
+		t.Fatal("runDevicePairCode(--bogus) = nil error, want one for an unknown flag")
+	}
+	if got != "" {
+		t.Errorf("runDevicePairCode(--bogus) wrote %q to stdout, want nothing", got)
+	}
+}
+
+func TestIsHelpSubcommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"help literal", "help", true},
+		{"short flag", "-h", true},
+		{"single-dash long flag", "-help", true},
+		{"double-dash long flag", "--help", true},
+		{"real subcommand", subcommandList, false},
+		{"empty string", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Act
+			got := isHelpSubcommand(tt.in)
+
+			// Assert
+			if got != tt.want {
+				t.Errorf("isHelpSubcommand(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunDeviceCommandUnknownSubcommandDoesNotOpenStore proves the reordered
+// check pays no SQLite open for a typo'd subcommand: the state dir is left
+// untouched by prepareStateDir's own directories only, no devmon.db appears.
+func TestRunDeviceCommandUnknownSubcommandDoesNotOpenStore(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	cfg := testStateConfig(t)
+	if err := prepareStateDir(cfg); err != nil {
+		t.Fatalf("prepareStateDir() unexpected error: %v", err)
+	}
+
+	// Act
+	if err := runDeviceCommand(context.Background(), cfg, []string{"bogus"}); err == nil {
+		t.Fatal("runDeviceCommand() = nil, want an error for an unknown subcommand")
+	}
+
+	// Assert
+	if _, statErr := os.Stat(cfg.DBPath()); !os.IsNotExist(statErr) {
+		t.Errorf("runDeviceCommand(bogus) created a store file at %s, want none for an unknown subcommand", cfg.DBPath())
 	}
 }
 

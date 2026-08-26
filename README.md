@@ -798,6 +798,9 @@ work just as well:
 docker exec devmon-agent devmon device <subcommand>
 ```
 
+`docker exec devmon-agent devmon` on its own (or `devmon help`, or
+`devmon <command> --help`) prints a usage screen listing every command.
+
 | Subcommand | Effect |
 |---|---|
 | `device list` | Every registered device: ID, name, paired, last seen, state |

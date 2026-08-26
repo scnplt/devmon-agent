@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -74,6 +75,20 @@ func runDeviceCommand(ctx context.Context, cfg config.Config, args []string) err
 		return fmt.Errorf("device: missing subcommand (want one of: %s, %s, %s)",
 			subcommandList, subcommandRevoke, subcommandPairCode)
 	}
+	if isHelpSubcommand(args[0]) {
+		printDeviceUsage(os.Stdout)
+		return nil
+	}
+
+	// Validated before openDeviceStore opens the SQLite file: an unknown
+	// subcommand (or a help request, handled above) must not pay for a store
+	// open it will never use.
+	switch args[0] {
+	case subcommandList, subcommandRevoke, subcommandPairCode:
+	default:
+		return fmt.Errorf("device: unknown subcommand %q (want one of: %s, %s, %s)",
+			args[0], subcommandList, subcommandRevoke, subcommandPairCode)
+	}
 
 	st, err := openDeviceStore(ctx, cfg)
 	if err != nil {
@@ -89,9 +104,20 @@ func runDeviceCommand(ctx context.Context, cfg config.Config, args []string) err
 	case subcommandPairCode:
 		return runDevicePairCode(ctx, st, args[1:])
 	default:
-		return fmt.Errorf("device: unknown subcommand %q (want one of: %s, %s, %s)",
-			args[0], subcommandList, subcommandRevoke, subcommandPairCode)
+		// Unreachable: args[0] was already validated above.
+		return nil
 	}
+}
+
+// isHelpSubcommand reports whether a would-be subcommand argument (args[0] to
+// runDeviceCommand or runAuditCommand) is actually a request for help rather
+// than a real subcommand name.
+func isHelpSubcommand(a string) bool {
+	switch a {
+	case "help", "-h", "-help", "--help":
+		return true
+	}
+	return false
 }
 
 // openDeviceStore opens the state store without constructing a logging.Sink.
@@ -153,7 +179,13 @@ func deviceStateOf(d state.Device) string {
 // no name, only an error.
 func runDeviceRevoke(ctx context.Context, st *state.Store, args []string) error {
 	fs := flag.NewFlagSet(subcommandRevoke, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printDeviceUsage(os.Stdout)
+			return nil
+		}
 		return fmt.Errorf("device revoke: %w", err)
 	}
 	if fs.NArg() != 1 {
@@ -189,8 +221,14 @@ func deviceNameByID(devices []state.Device, id string) string {
 // rotated, so a pairing code in agent.log would be a durable credential.
 func runDevicePairCode(ctx context.Context, st *state.Store, args []string) error {
 	fs := flag.NewFlagSet(subcommandPairCode, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	name := fs.String(pairCodeNameFlag, "", "name of the device to mint a pairing code for")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printDeviceUsage(os.Stdout)
+			return nil
+		}
 		return fmt.Errorf("device pair-code: %w", err)
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -219,6 +257,16 @@ func runAuditCommand(ctx context.Context, cfg config.Config, args []string) erro
 	if len(args) == 0 {
 		return fmt.Errorf("audit: missing subcommand (want one of: %s)", subcommandList)
 	}
+	if isHelpSubcommand(args[0]) {
+		printAuditUsage(os.Stdout)
+		return nil
+	}
+
+	// Validated before openDeviceStore opens the SQLite file — see
+	// runDeviceCommand's identical reordering and its comment.
+	if args[0] != subcommandList {
+		return fmt.Errorf("audit: unknown subcommand %q (want one of: %s)", args[0], subcommandList)
+	}
 
 	st, err := openDeviceStore(ctx, cfg)
 	if err != nil {
@@ -226,20 +274,21 @@ func runAuditCommand(ctx context.Context, cfg config.Config, args []string) erro
 	}
 	defer func() { _ = st.Close() }()
 
-	switch args[0] {
-	case subcommandList:
-		return runAuditListCommand(ctx, st, args[1:])
-	default:
-		return fmt.Errorf("audit: unknown subcommand %q (want one of: %s)", args[0], subcommandList)
-	}
+	return runAuditListCommand(ctx, st, args[1:])
 }
 
 // runAuditListCommand parses the `audit list` flags and prints the result to
 // stdout.
 func runAuditListCommand(ctx context.Context, st *state.Store, args []string) error {
 	fs := flag.NewFlagSet(subcommandList, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	limit := fs.Int(auditLimitFlag, defaultAuditLimit, "maximum number of audit rows to print, most recent first")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printAuditUsage(os.Stdout)
+			return nil
+		}
 		return fmt.Errorf("audit list: %w", err)
 	}
 	return runAuditList(ctx, st, os.Stdout, *limit)
