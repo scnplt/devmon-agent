@@ -2,8 +2,9 @@
 
 // Host-side `device` subcommands (D8 in the Phase 2 plan). The image is
 // distroless/static:nonroot — there is no shell and no second binary — so
-// `docker exec devmon-agent /usr/local/bin/devmon-agent device ...` is the
-// only shape that works for an operator managing paired devices.
+// `docker exec devmon-agent devmon device ...` (with `devmon` a symlink to
+// /usr/local/bin/devmon-agent) is the only shape that works for an operator
+// managing paired devices.
 package main
 
 import (

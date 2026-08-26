@@ -790,17 +790,16 @@ cannot lock a device out.
 
 These run against the same state directory the agent is using. The image is
 `distroless/static:nonroot` — no shell, no second binary — so the host CLI is
-subcommands on the agent binary itself, reachable through the `devmon` alias
-(a symlink the image ships next to the binary):
+subcommands on the agent binary itself. `devmon` is a symlink to
+`/usr/local/bin/devmon-agent`, so the full path and the `devmon-agent` name
+work just as well:
 
 ```bash
 docker exec devmon-agent devmon device <subcommand>
 ```
 
 `docker exec devmon-agent devmon` on its own (or `devmon help`, or
-`devmon <command> --help`) prints a usage screen listing every command. The
-long form `docker exec devmon-agent /usr/local/bin/devmon-agent …` still works
-— `devmon` is the same binary under a different name.
+`devmon <command> --help`) prints a usage screen listing every command.
 
 | Subcommand | Effect |
 |---|---|

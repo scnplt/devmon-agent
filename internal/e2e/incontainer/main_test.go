@@ -20,6 +20,7 @@ package incontainer
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,4 +91,49 @@ func TestContainerSmoke(t *testing.T) {
 	if restartCount != 0 {
 		t.Fatalf("agent container %s restart count = %d, want 0", c.ID, restartCount)
 	}
+
+	// `devmon` is the documented short alias `docker exec <name> devmon ...`
+	// depends on (Dockerfile): a symlink to devmon-agent, staged into a
+	// directory that is on the container's default PATH. Resolving the BARE
+	// name — never the absolute path — must produce the exact same `device
+	// list` table header as the canonical binary does.
+	canonicalOut, canonicalExit := c.Exec(t, "/usr/local/bin/devmon-agent", "device", "list")
+	if canonicalExit != 0 {
+		t.Fatalf("device list (canonical path): exit code %d", canonicalExit)
+	}
+	aliasOut, aliasExit := c.Exec(t, "devmon", "device", "list")
+	if aliasExit != 0 {
+		t.Fatalf("device list (via `devmon` PATH alias): exit code %d", aliasExit)
+	}
+
+	const wantHeaderFields = "ID NAME PAIRED LAST SEEN STATE"
+	canonicalHeader := normalizeHeader(firstLine(t, canonicalOut))
+	aliasHeader := normalizeHeader(firstLine(t, aliasOut))
+	if canonicalHeader != wantHeaderFields {
+		t.Fatalf("device list (canonical path) header = %q, want %q", canonicalHeader, wantHeaderFields)
+	}
+	if aliasHeader != canonicalHeader {
+		t.Fatalf("device list (via `devmon` PATH alias) header = %q, want the canonical path's header %q", aliasHeader, canonicalHeader)
+	}
+}
+
+// normalizeHeader collapses a tabwriter table's inter-column padding down to
+// single spaces, so the header's field text can be compared against a fixed
+// literal regardless of the terminal-driven column widths TTY: true exec
+// produces.
+func normalizeHeader(line string) string {
+	return strings.Join(strings.Fields(line), " ")
+}
+
+// firstLine returns the first non-empty line of a tabwriter table's output —
+// the header row `device list` prints as its first line.
+func firstLine(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return strings.TrimSpace(line)
+		}
+	}
+	t.Fatalf("output has no non-empty lines: %q", out)
+	return ""
 }
