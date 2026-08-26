@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/scnplt/devmon-agent/internal/config"
@@ -52,6 +53,10 @@ const loopbackHost = "127.0.0.1"
 // second process touching certs/ could race the running agent's own startup
 // exactly as cli.go's comment on runDeviceCommand explains.
 func runHealthCommand(ctx context.Context, cfg config.Config, args []string) error {
+	if helpRequested(args) {
+		printHealthUsage(os.Stdout)
+		return nil
+	}
 	if len(args) != 0 {
 		return fmt.Errorf("health: unexpected argument %q (health takes no arguments)", args[0])
 	}
