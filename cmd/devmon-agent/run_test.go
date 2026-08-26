@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestRunPrintsRootUsage(t *testing.T) {
 		argv []string
 	}{
 		{name: "devmon with no args", argv: []string{"devmon"}},
-		{name: "devmon.exe path with no args", argv: []string{`C:\x\devmon.exe`}},
+		{name: "devmon.exe with no args", argv: []string{filepath.Join("x", "devmon.exe")}},
 		{name: "devmon-agent help", argv: []string{"devmon-agent", "help"}},
 		{name: "devmon-agent -h", argv: []string{"devmon-agent", "-h"}},
 		{name: "devmon-agent -help", argv: []string{"devmon-agent", "-help"}},
@@ -161,7 +162,7 @@ func TestIsDevmonAlias(t *testing.T) {
 	}{
 		{name: "bare name", argv0: "devmon", want: true},
 		{name: "unix path", argv0: "/usr/local/bin/devmon", want: true},
-		{name: "windows path with .exe", argv0: `C:\x\devmon.exe`, want: true},
+		{name: "path with .exe", argv0: filepath.Join("x", "devmon.exe"), want: true},
 		{name: "mixed case", argv0: "DevMon", want: true},
 		{name: "devmon-agent is not the alias", argv0: "devmon-agent", want: false},
 		{name: "unrelated name", argv0: "bash", want: false},
