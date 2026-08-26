@@ -29,13 +29,21 @@ ARG BUILD_TIME=unknown
 # it run on distroless/static. With cgo left on, the binary links against musl
 # and distroless reports "no such file or directory" for a file that plainly
 # exists, which is a genuinely confusing way to spend an afternoon.
+#
+# The `devmon` symlink is the operator-CLI alias: distroless has no shell and
+# no ln, so the link must be created here and carried over by a *directory*
+# COPY (a single-file COPY would dereference it into a second full copy of the
+# binary). The relative target keeps the link valid wherever the directory
+# lands. main.go dispatches on argv[0]: under the `devmon` name a bare
+# invocation prints help instead of starting the daemon.
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags "-s -w \
       -X github.com/scnplt/devmon-agent/internal/version.Version=${VERSION} \
       -X github.com/scnplt/devmon-agent/internal/version.Commit=${COMMIT} \
       -X github.com/scnplt/devmon-agent/internal/version.BuildTime=${BUILD_TIME}" \
-    -o /out/devmon-agent ./cmd/devmon-agent
+    -o /out/bin/devmon-agent ./cmd/devmon-agent \
+ && ln -s devmon-agent /out/bin/devmon
 
 # The default DEVMON_STATE_DIR (internal/config/config.go), staged here so the
 # final stage can COPY it in with the right owner. distroless has no shell, so
@@ -47,7 +55,11 @@ RUN mkdir -m 0700 -p /out/state
 # distroless/static already carries a bundle if a later phase needs one.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-COPY --from=build /out/devmon-agent /usr/local/bin/devmon-agent
+# Directory COPY, deliberately: it preserves the `devmon` symlink next to the
+# binary, so `docker exec devmon-agent devmon ...` resolves via the image PATH
+# (/usr/local/bin is on distroless's default PATH) at the cost of a symlink,
+# not a second copy of the binary.
+COPY --from=build /out/bin/ /usr/local/bin/
 
 # Pre-created and owned by the nonroot UID. UID 65532 cannot MkdirAll under a
 # root-owned /var, so without this a bare `docker run` with no bind mount dies
