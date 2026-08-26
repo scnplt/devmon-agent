@@ -135,8 +135,10 @@ func TestGracefulShutdown(t *testing.T) {
 	a := harness.StartAgent(t, harness.AgentOptions{})
 
 	// Agent.Stop already asserts a clean (0) exit within its own
-	// shutdownTimeout (5s, matching server.go's own drain budget) — a
-	// timeout or a non-zero exit fails the test right here.
+	// shutdownTimeout (7s — it deliberately exceeds server.go's 5s drain
+	// budget by design, so SIGKILL only fires on a genuine hang, never on a
+	// correct full-grace drain; issue #117) — a timeout or a non-zero exit
+	// fails the test right here.
 	exitCode := a.Stop(t)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", exitCode)

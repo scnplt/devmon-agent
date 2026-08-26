@@ -26,10 +26,17 @@ import (
 // Timing budgets for the agent subprocess. readinessTimeout is generous: the
 // state store and CA are built on first start, which is slower than a warm
 // restart.
+//
+// shutdownTimeout must strictly exceed the agent's own drain grace
+// (shutdownGrace in internal/httpapi/server.go, currently 5s — unexported, so
+// it can't be imported here and the two values are kept aligned by this
+// comment) plus roughly 2s of scheduling margin. Setting it equal to the
+// drain grace put SIGTERM-to-SIGKILL on a knife edge where even a correct
+// full-grace drain got killed as if it were a hang (issue #117).
 const (
 	readinessTimeout = 15 * time.Second
 	readinessPoll    = 100 * time.Millisecond
-	shutdownTimeout  = 5 * time.Second
+	shutdownTimeout  = 7 * time.Second
 	killTimeout      = 10 * time.Second
 )
 
