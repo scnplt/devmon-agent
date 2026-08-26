@@ -13,6 +13,59 @@ changes nothing about the agent's behaviour, but this is an open repository and
 a contributor reading the history should not have to reconstruct why the build
 moved.
 
+## [0.4.0] - 2026-08-26
+
+A feature release. The agent gains `GET /v1/events/stream`, a live feed of
+container health and lifecycle transitions, so a paired client can show a
+notification the moment a container turns unhealthy or dies instead of polling
+`GET /v1/containers` on a timer.
+
+The configuration surface is unchanged: every `DEVMON_*` variable means in
+0.4.0 exactly what it meant in 0.3.0, and no variable was added or removed.
+The new route is additive — no existing route changed its behaviour.
+
+### Added
+
+- **`GET /v1/events/stream` — a Server-Sent Events stream of container health
+  and lifecycle transitions.** The stream always opens with one
+  `event: snapshot` frame carrying `{id, name, state, health}` for every
+  container, then forwards `event: health` frames as Engine events arrive —
+  exactly `health_status: healthy`, `health_status: unhealthy`, `die`, `start`,
+  `stop` and `oom`. There is deliberately no replay (`?since=`,
+  `Last-Event-ID`): the snapshot is the single recovery path after any gap. A
+  `: heartbeat` comment every 25 seconds keeps intermediaries from reaping an
+  idle connection. The route sits behind the same guard chain as every other
+  read route, one Docker `/events` subscription is fanned out to all clients
+  through bounded per-client buffers, and each device holds at most one stream
+  — a newer connection supersedes the older one. The Engine's raw event action
+  and attributes can carry healthcheck output and container labels, so a closed
+  action allowlist and a `name`-only attribute read keep them off the wire and
+  out of the log. Event streams consume none of the log-stream budget.
+  ([#116](https://github.com/scnplt/devmon-agent/pull/116))
+
+### Changed
+
+- **`modernc.org/sqlite` bumped from 1.56.0 to 1.57.0** — the release's only
+  runtime dependency change.
+  ([#112](https://github.com/scnplt/devmon-agent/pull/112))
+
+### Internal
+
+- The builder image moved from `golang:1.26-alpine` to `golang:1.27-alpine`
+  and the `distroless/static-debian12` digest pin was refreshed; both stay
+  digest-pinned under `GOTOOLCHAIN=local`.
+  ([#110](https://github.com/scnplt/devmon-agent/pull/110),
+  [#111](https://github.com/scnplt/devmon-agent/pull/111))
+- `actions/deploy-pages` and `actions/upload-pages-artifact` moved to v5 in the
+  Pages workflow.
+  ([#113](https://github.com/scnplt/devmon-agent/pull/113),
+  [#114](https://github.com/scnplt/devmon-agent/pull/114))
+- The git workflow rules now require labels on every issue and PR and an issue
+  link on every PR, and code comments cite sibling code by name rather than
+  line number so the references survive edits.
+  ([#109](https://github.com/scnplt/devmon-agent/pull/109),
+  [#115](https://github.com/scnplt/devmon-agent/pull/115))
+
 ## [0.3.0] - 2026-08-20
 
 A hardening release. Two of the agent's shared budgets — the live log stream
