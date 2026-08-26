@@ -716,8 +716,7 @@ in transit or at rest anywhere but on the device that owns it.
 ### 1. Mint a code on the host
 
 ```bash
-docker exec devmon-agent /usr/local/bin/devmon-agent \
-  device pair-code --name "pixel-8"
+docker exec devmon-agent devmon device pair-code --name "pixel-8"
 # Pairing code: B4HJFH3KEAZ2QMY546LLN3IDOW
 # Expires:      2026-08-07T20:12:00Z
 ```
@@ -791,11 +790,17 @@ cannot lock a device out.
 
 These run against the same state directory the agent is using. The image is
 `distroless/static:nonroot` — no shell, no second binary — so the host CLI is
-subcommands on the agent binary itself:
+subcommands on the agent binary itself, reachable through the `devmon` alias
+(a symlink the image ships next to the binary):
 
 ```bash
-docker exec devmon-agent /usr/local/bin/devmon-agent device <subcommand>
+docker exec devmon-agent devmon device <subcommand>
 ```
+
+`docker exec devmon-agent devmon` on its own (or `devmon help`, or
+`devmon <command> --help`) prints a usage screen listing every command. The
+long form `docker exec devmon-agent /usr/local/bin/devmon-agent …` still works
+— `devmon` is the same binary under a different name.
 
 | Subcommand | Effect |
 |---|---|
@@ -804,11 +809,11 @@ docker exec devmon-agent /usr/local/bin/devmon-agent device <subcommand>
 | `device revoke <id>` | Withdraw a device's access, effective immediately |
 
 ```bash
-$ docker exec devmon-agent /usr/local/bin/devmon-agent device list
+$ docker exec devmon-agent devmon device list
 ID                NAME     PAIRED                LAST SEEN             STATE
 3f9a1c74b2e05d68  pixel-8  2026-08-07T20:02:00Z  2026-08-07T21:14:33Z  active
 
-$ docker exec devmon-agent /usr/local/bin/devmon-agent device revoke 3f9a1c74b2e05d68
+$ docker exec devmon-agent devmon device revoke 3f9a1c74b2e05d68
 revoked 3f9a1c74b2e05d68 (pixel-8)
 ```
 
@@ -843,7 +848,7 @@ alone only reacts to the process exiting; this also catches a listener that is
 up but no longer answering.
 
 ```bash
-$ docker exec devmon-agent /usr/local/bin/devmon-agent health
+$ docker exec devmon-agent devmon health
 healthy: GET /v1/status returned 200
 
 $ docker inspect -f '{{.State.Health.Status}}' devmon-agent
@@ -871,7 +876,7 @@ a row per list refresh would drown the record the log exists for and then push
 the destructive-operation history out under retention.
 
 ```bash
-$ docker exec devmon-agent /usr/local/bin/devmon-agent audit list --limit 5
+$ docker exec devmon-agent devmon audit list --limit 5
 WHEN                  DEVICE            OPERATION  TARGET  OUTCOME        DETAIL
 2026-08-08T21:06:40Z  3f9a1c… (pixel-8) delete     devmon  denied_self
 2026-08-08T21:05:02Z  3f9a1c… (pixel-8) kill       api     denied_policy
