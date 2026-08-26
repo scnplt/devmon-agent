@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -131,6 +132,23 @@ type Server struct {
 	// with a sleep. It is per-instance rather than a package-level var so
 	// setting it on one test's Server can never race a different test's.
 	afterCreateHook func()
+
+	// newConnMu guards newConns and draining below (issue #117). A
+	// connection that completed its TLS handshake but never sent a request
+	// sits in http.StateNew for the rest of its life; http.Server.Shutdown
+	// only treats such a connection as closable-idle once its state stamp
+	// is more than shutdownGrace old, with one-second stamp granularity, so
+	// it can pin Shutdown for the entire grace window. Tracking every
+	// StateNew connection here lets shutdown close them itself instead of
+	// waiting on that stamp.
+	newConnMu sync.Mutex
+	newConns  map[net.Conn]struct{}
+	// draining is set by shutdown before it closes the tracked connections
+	// above. The ConnState hook checks it so a connection that reaches
+	// StateNew after draining started — in the window between shutdown
+	// beginning and http.Server.Shutdown closing the listener — is closed
+	// immediately too, rather than surviving to pin the grace window.
+	draining bool
 }
 
 // NewServer wires the API. tlsCfg carries the server certificate, so the
@@ -144,7 +162,11 @@ type Server struct {
 // likewise be nil in tests that do not exercise the Docker read routes; every
 // read handler tolerates that by serving 502 instead of panicking.
 func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader, tlsCfg *tls.Config, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, st: st, ca: ca, dc: dc, log: log, streams: newStreamBudget(maxConcurrentStreams, maxStreamsPerDevice)}
+	s := &Server{
+		cfg: cfg, st: st, ca: ca, dc: dc, log: log,
+		streams:  newStreamBudget(maxConcurrentStreams, maxStreamsPerDevice),
+		newConns: make(map[net.Conn]struct{}),
+	}
 	s.lifecycleCtx, s.cancelLifecycle = context.WithCancel(context.Background())
 	s.events = newEventHub(dc, log)
 	s.eventStreams = newEventRegistry()
@@ -194,8 +216,70 @@ func NewServer(cfg config.Config, st *state.Store, ca *certs.CA, dc DockerReader
 		// in one step, which is how a live SSE stream (issue #41) learns to
 		// stop without Shutdown having to wait out the client.
 		BaseContext: func(net.Listener) context.Context { return s.lifecycleCtx },
+		// ConnState tracks every connection whose current state is
+		// http.StateNew (issue #117): shutdown closes them directly instead
+		// of waiting on Shutdown's own idle-since-state-stamp check, which a
+		// handshake-only, request-less connection can outlive for the whole
+		// shutdownGrace window. See trackConnState's doc comment.
+		ConnState: s.trackConnState,
 	}
 	return s
+}
+
+// trackConnState is the http.Server ConnState hook (issue #117). It keeps
+// newConns as the current set of connections in http.StateNew — added on
+// StateNew, removed the moment a connection leaves it for StateActive,
+// StateIdle, StateHijacked, or StateClosed — so shutdown can close every
+// still-StateNew connection itself rather than rely on Shutdown's own
+// idle-since-state-stamp check, which treats a StateNew connection as
+// closable-idle only once that stamp is more than shutdownGrace old.
+//
+// If draining is already true when a connection reaches StateNew, shutdown
+// has already swept the connections it knew about; this one arrived in the
+// gap between that sweep and http.Server.Shutdown closing the listener, so
+// it is closed here immediately instead of being left to pin the grace
+// window on its own.
+//
+// There is an acknowledged, accepted race: a connection can transition
+// StateNew -> StateActive concurrently with shutdown closing it here. That
+// is fine during shutdown — the lifecycle context is already cancelled by
+// the time shutdown reaches this path, so any handler that connection's
+// request might have reached is already unwinding.
+func (s *Server) trackConnState(conn net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		s.newConnMu.Lock()
+		draining := s.draining
+		if !draining {
+			s.newConns[conn] = struct{}{}
+		}
+		s.newConnMu.Unlock()
+		if draining {
+			_ = conn.Close()
+		}
+	case http.StateActive, http.StateIdle, http.StateHijacked, http.StateClosed:
+		s.newConnMu.Lock()
+		delete(s.newConns, conn)
+		s.newConnMu.Unlock()
+	}
+}
+
+// closeNewConns marks the server as draining and closes every connection
+// currently tracked as http.StateNew (issue #117). Called from shutdown
+// before http.Server.Shutdown, so a handshake-only, request-less connection
+// — which carries no request context for lifecycleCtx cancellation to reach
+// — is closed directly instead of pinning Shutdown for the whole
+// shutdownGrace window waiting on its state stamp to age out.
+func (s *Server) closeNewConns() {
+	s.newConnMu.Lock()
+	s.draining = true
+	conns := s.newConns
+	s.newConns = make(map[net.Conn]struct{})
+	s.newConnMu.Unlock()
+
+	for conn := range conns {
+		_ = conn.Close()
+	}
 }
 
 // routes builds the mux and wraps it in the middleware chain.
@@ -336,6 +420,18 @@ func (s *Server) shutdown() error {
 	// so a goroutine-leak test can assert it right after shutdown returns
 	// instead of racing the hub's own teardown.
 	s.events.stop()
+
+	// Close every connection still in http.StateNew (issue #117) before
+	// asking http.Server to drain. A connection that completed its TLS
+	// handshake but never sent a request has no request context for
+	// cancelLifecycle above to reach, and Shutdown itself only treats a
+	// StateNew connection as closable-idle once its state stamp is more
+	// than shutdownGrace old — with one-second stamp granularity, that can
+	// pin Shutdown for the entire grace window on a connection that was
+	// never going to send anything. See trackConnState's doc comment for
+	// why closing it here, mid-transition, is an accepted race rather than
+	// a bug.
+	s.closeNewConns()
 
 	// A fresh context: ctx is already cancelled, and Shutdown needs a live
 	// deadline to drain against.
