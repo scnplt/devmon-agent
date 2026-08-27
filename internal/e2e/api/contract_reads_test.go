@@ -162,7 +162,7 @@ func TestContainerReadContractKeys(t *testing.T) {
 	}
 	assertKeySet(t, detail,
 		[]string{
-			"id", "name", "image", "created_at", "state", "running", "paused", "restarting",
+			"id", "name", "image", "image_id", "created_at", "state", "running", "paused", "restarting",
 			"exit_code", "restart_count", "platform", "labels", "command", "args",
 			"mounts", "networks", "ports", "protected",
 		},
