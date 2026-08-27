@@ -15,8 +15,46 @@ moved.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-27
+
+A feature release. The agent binary gains an operator CLI surface: the image
+ships a `devmon` alias next to the binary, so `docker exec devmon-agent devmon
+help` (and `device`, `audit`, `health` with `--help`) work without a shell in
+the container, and unknown commands fail fast instead of starting a second
+daemon.
+
+The configuration surface is unchanged: every `DEVMON_*` variable means in
+0.5.0 exactly what it meant in 0.4.0, and no variable was added or removed.
+One response field changed meaning — `image` in the container detail route,
+see *Fixed* below.
+
+### Added
+
+- **A `devmon` alias in the image, for `docker exec`.** `/usr/local/bin`
+  carries a relative `devmon` symlink next to the binary, so
+  `docker exec devmon-agent devmon <command>` resolves on the distroless
+  PATH without a shell. `ENTRYPOINT` and `HEALTHCHECK` are unchanged.
+  ([#123](https://github.com/scnplt/devmon-agent/pull/123))
+- **Operator CLI help.** Running the binary under the `devmon` name with no
+  arguments, or with `help`/`-h`/`--help`, prints a one-screen usage listing
+  of all operator commands. `device`, `audit` and `health` accept
+  `-h`/`--help` without requiring any `DEVMON_*` variables and without
+  opening the store; subcommand help lands on stdout and exits 0. Unknown
+  commands now fail with exit 2 and a usage hint instead of silently starting
+  the daemon.
+  ([#124](https://github.com/scnplt/devmon-agent/pull/124))
+
 ### Fixed
 
+- **A graceful shutdown is no longer pinned for the full drain grace by a
+  connection that never sent a request.** A connection that completed its TLS
+  handshake but sent nothing sits in `http.StateNew`, carries no request
+  context for the lifecycle cancellation to reach, and kept
+  `http.Server.Shutdown` waiting for the whole 5-second grace window. Such
+  connections are now tracked and closed directly when shutdown begins.
+  Slowloris protection during normal serving is unchanged.
+  ([#122](https://github.com/scnplt/devmon-agent/pull/122), refs
+  [#117](https://github.com/scnplt/devmon-agent/issues/117))
 - **`GET /v1/containers/{id}` now reports `image` and `image_id` consistently
   with the container list.** The detail response previously returned the
   Engine's digest-prefixed image ID in the `image` field. `image` now carries
@@ -434,7 +472,8 @@ First public release — the full surface.
 
 [#120]: https://github.com/scnplt/devmon-agent/issues/120
 
-[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/scnplt/devmon-agent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/scnplt/devmon-agent/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/scnplt/devmon-agent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scnplt/devmon-agent/compare/v0.1.2...v0.2.0
