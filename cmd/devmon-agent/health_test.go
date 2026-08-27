@@ -123,3 +123,33 @@ func TestRunHealthCommandRejectsTrailingArgument(t *testing.T) {
 		t.Fatal("runHealthCommand() = nil error, want one for an unexpected trailing argument")
 	}
 }
+
+func TestRunHealthCommandHelpReturnsNilWithoutProbing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		arg  string
+	}{
+		{"-h", "-h"},
+		{"-help", "-help"},
+		{"--help", "--help"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange — an unresolvable listen address proves probeStatus was
+			// never reached: a real probe attempt would return an error.
+			cfg := config.Config{ListenAddr: "not-a-host-port"}
+
+			// Act
+			err := runHealthCommand(context.Background(), cfg, []string{tt.arg})
+
+			// Assert
+			if err != nil {
+				t.Fatalf("runHealthCommand(%q) = %v, want nil", tt.arg, err)
+			}
+		})
+	}
+}

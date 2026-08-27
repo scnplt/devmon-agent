@@ -37,6 +37,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
       -X github.com/scnplt/devmon-agent/internal/version.BuildTime=${BUILD_TIME}" \
     -o /out/devmon-agent ./cmd/devmon-agent
 
+# `devmon` is the documented short name for docker exec (`docker exec <name>
+# devmon device list`). It has to be staged as a symlink inside a directory:
+# COPY of a single symlink dereferences it, which would duplicate the whole
+# binary in the final layer, while symlinks inside a copied directory are
+# preserved. The link target is relative so it resolves at /usr/local/bin too.
+RUN mkdir -p /out/bin \
+    && cp /out/devmon-agent /out/bin/devmon-agent \
+    && ln -s devmon-agent /out/bin/devmon
+
 # The default DEVMON_STATE_DIR (internal/config/config.go), staged here so the
 # final stage can COPY it in with the right owner. distroless has no shell, so
 # `RUN mkdir` is not available there and this is the only way to put a directory
@@ -47,7 +56,7 @@ RUN mkdir -m 0700 -p /out/state
 # distroless/static already carries a bundle if a later phase needs one.
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-COPY --from=build /out/devmon-agent /usr/local/bin/devmon-agent
+COPY --from=build /out/bin/ /usr/local/bin/
 
 # Pre-created and owned by the nonroot UID. UID 65532 cannot MkdirAll under a
 # root-owned /var, so without this a bare `docker run` with no bind mount dies

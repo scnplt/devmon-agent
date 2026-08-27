@@ -590,3 +590,62 @@ func TestShutdownEndsLiveStreamPromptlyAndReturnsNil(t *testing.T) {
 		t.Fatal("the client's stream read did not end after shutdown")
 	}
 }
+
+// TestShutdownNotPinnedByRequestlessConnection is issue #117's regression: a
+// connection that completed its TLS handshake but never sent a request sits
+// in http.StateNew for the server's whole life. That state has no request
+// context for shutdown to cancel — TestShutdownEndsLiveStreamPromptlyAndReturnsNil's
+// fix does not reach it — and http.Server.Shutdown only treats a StateNew
+// connection as closable-idle once its state stamp is more than five seconds
+// old, with one-second stamp granularity (issue #72). shutdownGrace is
+// exactly five seconds, so such a connection pins Shutdown for the entire
+// grace window rather than returning promptly. This is not a synthetic case:
+// Go's own http.Transport sometimes dials an extra connection during pool
+// contention that never carries a request and sits in the client's idle pool
+// while the server still sees it as StateNew.
+func TestShutdownNotPinnedByRequestlessConnection(t *testing.T) {
+	// Not t.Parallel(), for the same reason TestRunReturnsShutdownError is
+	// not: this test's assertion window overlaps shutdownGrace closely
+	// enough that running alongside other goroutine-heavy tests could skew
+	// TestStreamGoroutineDoesNotLeak's before/after count.
+
+	// Arrange — a known port, since this test dials the server itself.
+	addr := freeTCPAddr(t)
+	s := runnableServer(t, addr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() { done <- s.Run(ctx) }()
+	waitForListening(t, addr, 2*time.Second)
+
+	// A real TLS handshake, then deliberately no request: this is the
+	// server-side http.StateNew, request-less keep-alive connection the fix
+	// targets.
+	conn, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // test-only, talks to our own ephemeral server
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.Handshake(); err != nil {
+		t.Fatalf("TLS handshake: %v", err)
+	}
+
+	// Act
+	shutdownStart := time.Now()
+	cancel()
+
+	// Assert — Shutdown completes well under shutdownGrace: a request-less
+	// handshake-only connection must not pin it for the full grace window.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run() = %v, want nil with only a request-less connection open", err)
+		}
+		if elapsed := time.Since(shutdownStart); elapsed >= 2*time.Second {
+			t.Errorf("shutdown took %v, want well under the %v grace period", elapsed, shutdownGrace)
+		}
+	case <-time.After(shutdownGrace + 5*time.Second):
+		t.Fatal("Run() did not return after shutdown with only a request-less connection open")
+	}
+}

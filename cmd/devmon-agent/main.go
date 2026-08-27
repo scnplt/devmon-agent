@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -24,8 +25,9 @@ import (
 	"github.com/scnplt/devmon-agent/internal/version"
 )
 
-// Exit codes. 2 is reserved for configuration faults so an operator (or an
-// installer script) can tell "you typed something wrong" apart from "it broke".
+// Exit codes. 2 is reserved for configuration faults and CLI usage mistakes
+// so an operator (or an installer script) can tell "you typed something
+// wrong" apart from "it broke".
 const (
 	exitOK      = 0
 	exitFailure = 1
@@ -35,14 +37,35 @@ const (
 // stateDirMode keeps the state directory owner-only; it holds the key material.
 const stateDirMode = 0o700
 
+// usageError is returned for a CLI mistake that a config.ValidationError
+// cannot represent — an unknown command or a bad global flag. main() maps it
+// to exitConfig, the same code as a configuration fault, since both mean
+// "you typed something wrong" rather than "the agent broke".
+type usageError struct {
+	msg string
+}
+
+func (e *usageError) Error() string { return e.msg }
+
+// unknownCommandHint is appended to the unknown-command error so it is
+// visible on stderr even though the full root usage screen is not — an
+// unknown command is a mistake, not a help request, and only requested help
+// goes to stdout.
+const unknownCommandHint = "Run 'devmon help' for usage."
+
 // main does nothing but map run's error to an exit code. os.Exit skips deferred
 // calls, so any defer placed here would silently never run — including the log
 // flush.
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Args, os.Getenv, os.Stdout, os.Stderr); err != nil {
 		var vErr *config.ValidationError
 		if errors.As(err, &vErr) {
 			fmt.Fprintln(os.Stderr, vErr.Error())
+			os.Exit(exitConfig)
+		}
+		var uErr *usageError
+		if errors.As(err, &uErr) {
+			fmt.Fprintln(os.Stderr, uErr.Error())
 			os.Exit(exitConfig)
 		}
 		fmt.Fprintf(os.Stderr, "devmon-agent: %v\n", err)
@@ -51,19 +74,60 @@ func main() {
 	os.Exit(exitOK)
 }
 
-func run() error {
-	showVersion := flag.Bool("version", false, "print version information and exit")
-	flag.Parse()
+// run holds every path through the binary: the operator CLI (device, audit,
+// health, help) and the daemon path (container ENTRYPOINT). argv, getenv,
+// stdout, and stderr are injected so tests can exercise it without touching
+// the process's real os.Args, environment, or standard streams.
+//
+// Every help path below returns before config.Load is reached — a `--help`
+// invocation must not require DEVMON_PUBLIC_ADDR or any other env var, and
+// must never open the SQLite state store.
+func run(argv []string, getenv func(string) string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("devmon-agent", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { printRootUsage(stderr) }
+	showVersion := fs.Bool("version", false, "print version information and exit")
+
+	if err := fs.Parse(argv[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRootUsage(stdout)
+			return nil
+		}
+		return &usageError{msg: err.Error()}
+	}
+
 	if *showVersion {
-		fmt.Printf("devmon-agent %s (commit %s, built %s)\n",
+		_, _ = fmt.Fprintf(stdout, "devmon-agent %s (commit %s, built %s)\n",
 			version.Version, version.Commit, version.BuildTime)
 		return nil
+	}
+
+	cmd := fs.Arg(0)
+	rest := fs.Args()[min(1, fs.NArg()):]
+
+	switch {
+	case cmd == "help":
+		printRootUsage(stdout)
+		return nil
+	case cmd == "" && isDevmonAlias(argv[0]):
+		printRootUsage(stdout)
+		return nil
+	case cmd == "":
+		// No subcommand under the devmon-agent name: this is the container
+		// ENTRYPOINT starting the daemon, unchanged.
+	case (cmd == "device" || cmd == "audit" || cmd == "health") && helpRequested(rest):
+		printCommandUsage(stdout, cmd)
+		return nil
+	case cmd == "device" || cmd == "audit" || cmd == "health":
+		// Handled below, after config.Load.
+	default:
+		return &usageError{msg: fmt.Sprintf("unknown command %q\n%s", cmd, unknownCommandHint)}
 	}
 
 	// Configuration is read and validated before the log sink exists, so a bad
 	// docker run line lands on stderr as plain readable text rather than as
 	// structured slog lines an operator has to squint at.
-	cfg, err := config.Load(os.Getenv)
+	cfg, err := config.Load(getenv)
 	if err != nil {
 		return err
 	}
@@ -73,8 +137,8 @@ func run() error {
 	// or touch certs/ — see cli.go for why. It is dispatched before the
 	// server path so it never triggers state-dir prep, log-sink construction,
 	// or certificate loading meant only for the long-running agent.
-	if flag.Arg(0) == "device" {
-		return runDeviceCommand(context.Background(), cfg, flag.Args()[1:])
+	if cmd == "device" {
+		return runDeviceCommand(context.Background(), cfg, rest)
 	}
 
 	// The `audit list` CLI (D19) is the audit trail's only reader — it is
@@ -82,8 +146,8 @@ func run() error {
 	// for the same reason as `device`: it must never trigger state-dir prep,
 	// log-sink construction, or certificate loading meant only for the
 	// long-running agent.
-	if flag.Arg(0) == "audit" {
-		return runAuditCommand(context.Background(), cfg, flag.Args()[1:])
+	if cmd == "audit" {
+		return runAuditCommand(context.Background(), cfg, rest)
 	}
 
 	// `health` (issue #56) backs the Dockerfile's HEALTHCHECK. It is
@@ -91,8 +155,8 @@ func run() error {
 	// never trigger state-dir prep, log-sink construction, or certificate
 	// loading meant only for the long-running agent — and doubly so here,
 	// since Docker invokes it every 30 seconds for the life of the container.
-	if flag.Arg(0) == "health" {
-		return runHealthCommand(context.Background(), cfg, flag.Args()[1:])
+	if cmd == "health" {
+		return runHealthCommand(context.Background(), cfg, rest)
 	}
 
 	if err := prepareStateDir(cfg); err != nil {
@@ -112,6 +176,20 @@ func run() error {
 	defer stop()
 
 	return serve(ctx, cfg, sink, log)
+}
+
+// printCommandUsage prints the per-command usage screen for one of
+// "device", "audit", or "health". It is only ever called with those three
+// values, guarded by the switch in run.
+func printCommandUsage(w io.Writer, cmd string) {
+	switch cmd {
+	case "device":
+		printDeviceUsage(w)
+	case "audit":
+		printAuditUsage(w)
+	case "health":
+		printHealthUsage(w)
+	}
 }
 
 // prepareStateDir creates the bind-mounted layout. A failure here is almost
