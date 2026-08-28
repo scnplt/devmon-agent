@@ -243,6 +243,32 @@ func TestRunDevicePairCodeTTLAboveCeilingMintsNothing(t *testing.T) {
 	}
 }
 
+// TestRunDevicePairCodeHugeTTLMintsNothing proves a --ttl large enough to
+// overflow int64 nanoseconds under naive Duration multiplication is still a
+// hard error at the CLI layer, not silently accepted — see
+// resolvePairCodeTTL's overflow-safety doc comment.
+func TestRunDevicePairCodeHugeTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "9007199254741022"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for a --ttl that overflows under naive multiplication")
+		}
+		if !strings.Contains(err.Error(), "9007199254741022") || !strings.Contains(err.Error(), "DEVMON_PAIR_TTL_MAX_MIN") {
+			t.Errorf("runDevicePairCode() error = %v, want it to name the typed value and DEVMON_PAIR_TTL_MAX_MIN", err)
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
 func TestRunDevicePairCodeTTLBelowMinimumMintsNothing(t *testing.T) {
 	// Arrange
 	st := openTestStore(t)
