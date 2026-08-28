@@ -19,6 +19,15 @@ const (
 	sseEventHealth   = "health"
 )
 
+// msgStreamRevoked is the terminal event: error frame sent to a stream whose
+// device had its access withdrawn while the stream was open
+// (GHSA-qrxm-qm54-xc44). requireDevice only rejects access at request entry,
+// so a long-lived SSE stream needs its own per-tick re-check to notice a
+// mid-stream revocation; this is the body that check's terminal frame
+// carries. The client must not retry: a retry hits requireDevice again and
+// gets 401, the same way any other revoked device's request does.
+const msgStreamRevoked = "device revoked"
+
 // keepaliveInterval bounds how long the stream may be silent. A container
 // that logs nothing for minutes is ordinary; a TCP connection that sends
 // nothing for minutes is dropped by mobile-carrier NAT and by any proxy in
