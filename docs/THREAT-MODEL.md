@@ -47,12 +47,17 @@ state.
 - Schema: `devices` and `device_certs` tables in
   [`internal/state/schema.go:70-89`](../internal/state/schema.go).
 - Every authenticated request costs one indexed lookup against this table —
-  there is no in-memory cache — which is what makes revocation immediate:
-  `RevokeDevice` at
+  there is no in-memory cache — which is what makes revocation immediate for
+  request-scoped traffic: `RevokeDevice` at
   [`internal/state/devices.go:172`](../internal/state/devices.go), checked on
   every guarded request by
   [`internal/httpapi/middleware.go:43-87`](../internal/httpapi/middleware.go)
-  (`requireDevice`).
+  (`requireDevice`). The two long-lived SSE routes are each a single request,
+  so they additionally re-check revocation on every keepalive/heartbeat tick
+  (`streamRevoked`,
+  [`internal/httpapi/logs.go:128`](../internal/httpapi/logs.go)): an already
+  open stream ends within one tick interval of the revoke
+  (GHSA-qrxm-qm54-xc44).
 - Lives in `devmon.db`, mode `0600`:
   [`internal/state/store.go:46-48`](../internal/state/store.go)
   (`dbFileMode`), reinforced on every WAL sidecar at
@@ -234,6 +239,11 @@ audit route). Once the operator notices, `device revoke` takes effect on that
 device's very next request, because there is no cache of paired devices to go
 stale: [`internal/state/devices.go:172`](../internal/state/devices.go),
 enforced at [`internal/httpapi/middleware.go:43-87`](../internal/httpapi/middleware.go).
+A log or event stream the device already holds open is not a "next request";
+both stream routes therefore re-check revocation on every keepalive/heartbeat
+tick and terminate the stream within one tick interval
+([`internal/httpapi/logs.go:128`](../internal/httpapi/logs.go),
+`streamRevoked`; GHSA-qrxm-qm54-xc44).
 
 **Someone who reads a VPS snapshot or a host backup.** A snapshot or backup
 captures `$DEVMON_STATE_DIR` as bytes, which bypasses the filesystem

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1149,6 +1150,264 @@ func TestNilDockerReaderOnLogRoutes(t *testing.T) {
 				t.Errorf("error = %q, want %q", body.Error, msgEngineUnavailable)
 			}
 		})
+	}
+}
+
+// TestStreamTerminatesWhenDeviceRevokedMidStream is GHSA-qrxm-qm54-xc44's
+// regression: a device revoked after its stream is already open must still
+// have the stream terminated, via the keepalive goroutine's per-tick
+// re-check, rather than keep receiving log lines forever.
+func TestStreamTerminatesWhenDeviceRevokedMidStream(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level keepaliveInterval.
+
+	// Arrange
+	original := keepaliveInterval
+	keepaliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = original })
+
+	started := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(ctx context.Context, _ string, _ dockerx.LogOptions, _ func(dockerx.LogLine) error) error {
+			close(started)
+			<-ctx.Done()
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	device, err := st.DeviceByCertSerial(context.Background(), serial.Text(16))
+	if err != nil {
+		t.Fatalf("DeviceByCertSerial: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — revoke the device once the stream is confirmed open, then wait
+	// for the handler to notice and unwind.
+	<-started
+	if err := st.RevokeDevice(context.Background(), device.ID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not terminate within the keepalive window after revocation")
+	}
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	wantSuffix := fmt.Sprintf("event: error\ndata: {\"error\":%q}\n\n", msgStreamRevoked)
+	if !strings.HasSuffix(rec.Body.String(), wantSuffix) {
+		t.Errorf("body = %q, want it to end with %q", rec.Body.String(), wantSuffix)
+	}
+}
+
+// TestStreamTerminatesWhenDeviceDeletedMidStream mirrors the revocation test
+// above for the other terminal condition streamRevoked checks: the device
+// row disappearing entirely, e.g. via an operator's DeleteDevice call, ends
+// access exactly like an explicit revocation.
+func TestStreamTerminatesWhenDeviceDeletedMidStream(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level keepaliveInterval.
+
+	// Arrange
+	original := keepaliveInterval
+	keepaliveInterval = 5 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = original })
+
+	started := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(ctx context.Context, _ string, _ dockerx.LogOptions, _ func(dockerx.LogLine) error) error {
+			close(started)
+			<-ctx.Done()
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	device, err := st.DeviceByCertSerial(context.Background(), serial.Text(16))
+	if err != nil {
+		t.Fatalf("DeviceByCertSerial: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	rec := &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act
+	<-started
+	if err := st.DeleteDevice(context.Background(), device.ID); err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not terminate within the keepalive window after deletion")
+	}
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	wantSuffix := fmt.Sprintf("event: error\ndata: {\"error\":%q}\n\n", msgStreamRevoked)
+	if !strings.HasSuffix(rec.Body.String(), wantSuffix) {
+		t.Errorf("body = %q, want it to end with %q", rec.Body.String(), wantSuffix)
+	}
+}
+
+// syncBodyRecorder wraps deadlineAwareRecorder with a mutex around Write and
+// a locked body snapshot, for the two revocation tests that must poll the
+// response body while the handler's keepalive goroutine is still writing to
+// it concurrently. httptest.ResponseRecorder's Body is a plain *bytes.Buffer,
+// not safe for concurrent read/write on its own — every other test in this
+// file only inspects Body after ServeHTTP has returned, so this wrapper
+// exists only where a test needs a body snapshot mid-stream.
+type syncBodyRecorder struct {
+	*deadlineAwareRecorder
+	mu sync.Mutex
+}
+
+func (r *syncBodyRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deadlineAwareRecorder.Write(p)
+}
+
+func (r *syncBodyRecorder) bodySnapshot() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Body.String()
+}
+
+// TestStreamHealthySurvivesRevocationChecks asserts that a device which is
+// never revoked keeps its stream alive across several keepalive ticks, with
+// no terminal error frame ever written — the per-tick re-check must not
+// disturb an otherwise healthy stream.
+func TestStreamHealthySurvivesRevocationChecks(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level keepaliveInterval.
+
+	// Arrange
+	original := keepaliveInterval
+	keepaliveInterval = 2 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = original })
+
+	release := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(ctx context.Context, _ string, _ dockerx.LogOptions, _ func(dockerx.LogLine) error) error {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — let several keepalive ticks land while the device stays active.
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Count(rec.bodySnapshot(), ": keepalive") >= 3 },
+		func() string { return fmt.Sprintf("body = %q, want at least 3 keepalive comments", rec.bodySnapshot()) })
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after release")
+	}
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.bodySnapshot())
+	}
+	if got := strings.Count(rec.bodySnapshot(), "event: error"); got != 0 {
+		t.Errorf("body has %d terminal error frames, want 0 for a never-revoked device: %q", got, rec.bodySnapshot())
+	}
+}
+
+// TestStreamRevocationCheckFailsOpen is the fail-open half of
+// GHSA-qrxm-qm54-xc44's fix: a transient failure of the revocation lookup
+// itself — simulated here by closing the store out from under an open
+// stream — must not tear the stream down. It survives at least one more
+// keepalive tick after the store is closed.
+func TestStreamRevocationCheckFailsOpen(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level keepaliveInterval.
+
+	// Arrange
+	original := keepaliveInterval
+	keepaliveInterval = 2 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = original })
+
+	release := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerLogsFn: func(ctx context.Context, _ string, _ dockerx.LogOptions, _ func(dockerx.LogLine) error) error {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return nil
+		},
+	}
+	log, buf := newCapturingLoggerAtLevel(slog.LevelWarn)
+	s, st := testServerWithDockerAndLogger(t, policy.ModeDefault, fd, log)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/containers/c1/logs/stream", nil, serial)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — wait for the stream to actually open, close the store so every
+	// subsequent revocation lookup fails, then wait for at least one more
+	// keepalive tick to land while the store stays closed.
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Count(rec.bodySnapshot(), ": keepalive") >= 1 },
+		func() string { return fmt.Sprintf("body = %q, want at least 1 keepalive comment", rec.bodySnapshot()) })
+	countAtClose := strings.Count(rec.bodySnapshot(), ": keepalive")
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Count(rec.bodySnapshot(), ": keepalive") > countAtClose },
+		func() string {
+			return fmt.Sprintf("body = %q, want more keepalive comments after the store closed (fail-open)", rec.bodySnapshot())
+		})
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after release")
+	}
+
+	// Assert — the stream survived, produced no terminal frame despite the
+	// closed store, and the transient lookup failure was logged at Warn
+	// rather than silently swallowed.
+	if got := strings.Count(rec.bodySnapshot(), "event: error"); got != 0 {
+		t.Errorf("body has %d terminal error frames, want 0 (fail-open): %q", got, rec.bodySnapshot())
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("log = %q, want a WARN line for the failed revocation lookup", buf.String())
 	}
 }
 

@@ -190,6 +190,31 @@ func (s *Store) RevokeDevice(ctx context.Context, id string) error {
 	return nil
 }
 
+// IsDeviceRevoked reports whether a device's access has been withdrawn. It
+// exists for the per-tick revocation re-check that a long-lived SSE stream
+// runs on every keepalive (GHSA-qrxm-qm54-xc44): revocation only takes
+// effect on the next request, so a stream that stays open across a
+// revocation must poll this to notice mid-stream and close itself.
+//
+// It is deliberately narrower than DeviceByCertSerial: a single indexed
+// lookup on the devices primary key, not a join through device_certs,
+// because it runs periodically for every open stream against a pool capped
+// at MaxOpenConns(1), where anything heavier would serialise reads behind
+// writes for no benefit.
+func (s *Store) IsDeviceRevoked(ctx context.Context, id string) (bool, error) {
+	var revoked bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT revoked_at IS NOT NULL FROM devices WHERE id = ?`, id,
+	).Scan(&revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrDeviceNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("check device %s revocation status: %w", id, err)
+	}
+	return revoked, nil
+}
+
 // TouchDevice records that a device was just seen, but only when the stored
 // value is older than lastSeenResolution (D11), so a burst of requests costs
 // at most one write per resolution window.
