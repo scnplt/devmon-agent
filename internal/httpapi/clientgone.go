@@ -29,11 +29,20 @@ import (
 //     both the HTTP/1.1 and HTTP/2 disconnect paths with no string matching
 //     at all. handleStreamContainerLogs derives ctx via
 //     context.WithCancel(r.Context()) and defers cancel() before this
-//     predicate can ever run, so by Go's LIFO defer order that cancel() has
-//     not fired yet at either call site (the streamErr check or the terminal
-//     frame write): a non-nil ctx.Err() here can only come from the PARENT
-//     (r.Context()) having been canceled, i.e. the client actually going
-//     away, never from the handler's own unwind.
+//     predicate can ever run, so by Go's LIFO defer order the handler's own
+//     deferred cancel() has not fired yet at either call site (the streamErr
+//     check or the terminal frame write).
+//
+//     One more source joins the PARENT (r.Context()) being canceled by the
+//     client going away: the keepalive goroutine's per-tick revocation
+//     re-check (GHSA-qrxm-qm54-xc44) also calls this same cancel() — after
+//     writing its own terminal event: error frame carrying msgStreamRevoked
+//     — the instant it decides the device's access ended mid-stream. That is
+//     deliberate, not a hole in this predicate: by the time StreamContainerLogs
+//     unwinds and streamErr reaches isClientGone, the revocation frame has
+//     already been delivered, so treating ctx.Err() != nil as "gone" here is
+//     exactly what suppresses the second, redundant terminal frame this
+//     function guards against.
 //
 //  2. errors.Is(err, net.ErrClosed). Covers a closed-connection error
 //     surfacing through a net.Conn / net.OpError wrapper independently of

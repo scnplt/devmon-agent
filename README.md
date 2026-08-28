@@ -701,7 +701,10 @@ Every authenticated request costs one indexed lookup against the device
 registry — there is no in-memory cache of paired devices. That is what makes
 revocation immediate rather than eventually-consistent: `device revoke` is a
 single `UPDATE`, and the next request the revoked device makes is already
-rejected.
+rejected. Live SSE streams are each one long-lived request, so they re-check
+revocation on every keepalive/heartbeat tick as well: a stream the device
+already had open ends within one tick interval (at most ~25 seconds) of the
+revoke.
 
 TLS 1.3 is the floor. Both peers are ours, so there is nothing to negotiate down
 to, and every current client TLS stack supports it.
