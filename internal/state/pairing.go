@@ -13,24 +13,31 @@ import (
 	"time"
 )
 
-// pairingCodeTTL bounds how long a minted pairing code stays redeemable.
-// Ten minutes is long enough for an operator to read the code aloud or type
-// it on a phone, short enough that a leaked, unused code stops mattering
-// quickly — rate limiting is Phase 6, so the code's own lifetime is part of
-// what keeps it safe until then (D3).
-const pairingCodeTTL = 10 * time.Minute
+// DefaultPairingCodeTTL is the TTL callers should pass to MintPairingCode
+// absent an operator-configured override. Ten minutes is long enough for an
+// operator to read the code aloud or type it on a phone, short enough that a
+// leaked, unused code stops mattering quickly — rate limiting is Phase 6, so
+// the code's own lifetime is part of what keeps it safe until then (D3).
+const DefaultPairingCodeTTL = 10 * time.Minute
 
-// MintPairingCode generates a single-use pairing code for deviceName and
-// persists only its hex SHA-256 (D4) — the plaintext is never written to
-// disk and is unrecoverable once this call returns. The caller must show it
-// to the operator once and never log it.
-func (s *Store) MintPairingCode(ctx context.Context, deviceName string) (string, time.Time, error) {
+// MintPairingCode generates a single-use pairing code for deviceName, valid
+// for ttl, and persists only its hex SHA-256 (D4) — the plaintext is never
+// written to disk and is unrecoverable once this call returns. The caller
+// must show it to the operator once and never log it.
+//
+// ttl must be positive: a non-positive value is a programming error at this
+// layer, and MintPairingCode returns an error without minting anything.
+func (s *Store) MintPairingCode(ctx context.Context, deviceName string, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 {
+		return "", time.Time{}, fmt.Errorf("mint pairing code: ttl must be positive, got %s", ttl)
+	}
+
 	code := rand.Text()
 	hash := sha256.Sum256([]byte(code))
 	codeHash := hex.EncodeToString(hash[:])
 
 	now := time.Now()
-	expiresAt := now.Add(pairingCodeTTL)
+	expiresAt := now.Add(ttl)
 
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO pairing_codes (code_hash, device_name, created_at, expires_at)

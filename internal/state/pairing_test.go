@@ -17,7 +17,7 @@ func TestMintPairingCodeThenRedeemSucceeds(t *testing.T) {
 	// Arrange
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
-	code, expiresAt, err := s.MintPairingCode(ctx, "Pixel 9")
+	code, expiresAt, err := s.MintPairingCode(ctx, "Pixel 9", DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -37,13 +37,76 @@ func TestMintPairingCodeThenRedeemSucceeds(t *testing.T) {
 	}
 }
 
+func TestMintPairingCodeUsesCallerSuppliedTTL(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s := openStore(t, tempDBPath(t))
+	ctx := context.Background()
+	const ttl = 90 * time.Second
+
+	// Act
+	before := time.Now()
+	_, expiresAt, err := s.MintPairingCode(ctx, "Pixel 9", ttl)
+	after := time.Now()
+
+	// Assert
+	if err != nil {
+		t.Fatalf("MintPairingCode() unexpected error: %v", err)
+	}
+	wantMin := before.Add(ttl)
+	wantMax := after.Add(ttl)
+	if expiresAt.Before(wantMin) || expiresAt.After(wantMax) {
+		t.Fatalf("MintPairingCode() expiresAt = %v, want between %v and %v", expiresAt, wantMin, wantMax)
+	}
+}
+
+func TestMintPairingCodeRejectsNonPositiveTTL(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		ttl  time.Duration
+	}{
+		{"zero", 0},
+		{"negative", -time.Second},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			s := openStore(t, tempDBPath(t))
+			ctx := context.Background()
+
+			// Act
+			code, expiresAt, err := s.MintPairingCode(ctx, "Pixel 9", tc.ttl)
+
+			// Assert
+			if err == nil {
+				t.Fatalf("MintPairingCode() error = nil for ttl %s, want an error", tc.ttl)
+			}
+			if code != "" {
+				t.Errorf("MintPairingCode() code = %q, want empty on error", code)
+			}
+			if !expiresAt.IsZero() {
+				t.Errorf("MintPairingCode() expiresAt = %v, want zero on error", expiresAt)
+			}
+			if countPairingCodes(t, ctx, s) != 0 {
+				t.Error("MintPairingCode() persisted a row despite returning an error")
+			}
+		})
+	}
+}
+
 func TestRedeemPairingCodeTwiceFailsSecondTime(t *testing.T) {
 	t.Parallel()
 
 	// Arrange
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
-	code, _, err := s.MintPairingCode(ctx, "Pixel 9")
+	code, _, err := s.MintPairingCode(ctx, "Pixel 9", DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -83,7 +146,7 @@ func TestRedeemPairingCodeExpiredFails(t *testing.T) {
 	// alone within a fast test.
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
-	code, _, err := s.MintPairingCode(ctx, "Pixel 9")
+	code, _, err := s.MintPairingCode(ctx, "Pixel 9", DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -110,7 +173,7 @@ func TestRedeemPairingCodeConcurrentProducesExactlyOneSuccess(t *testing.T) {
 	// would let more than one goroutine observe the code as unused.
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
-	code, _, err := s.MintPairingCode(ctx, "Pixel 9")
+	code, _, err := s.MintPairingCode(ctx, "Pixel 9", DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -154,10 +217,10 @@ func TestPrunePairingCodesRemovesExpiredRows(t *testing.T) {
 	// Arrange
 	s := openStore(t, tempDBPath(t))
 	ctx := context.Background()
-	if _, _, err := s.MintPairingCode(ctx, "Expired Phone"); err != nil {
+	if _, _, err := s.MintPairingCode(ctx, "Expired Phone", DefaultPairingCodeTTL); err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
-	if _, _, err := s.MintPairingCode(ctx, "Active Phone"); err != nil {
+	if _, _, err := s.MintPairingCode(ctx, "Active Phone", DefaultPairingCodeTTL); err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx,

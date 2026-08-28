@@ -235,7 +235,7 @@ func runDevicePairCode(ctx context.Context, st *state.Store, args []string) erro
 		return fmt.Errorf("device pair-code: --%s is required", pairCodeNameFlag)
 	}
 
-	code, expiresAt, err := st.MintPairingCode(ctx, *name)
+	code, expiresAt, err := st.MintPairingCode(ctx, *name, state.DefaultPairingCodeTTL)
 	if err != nil {
 		return fmt.Errorf("mint pairing code: %w", err)
 	}

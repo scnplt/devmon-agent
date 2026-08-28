@@ -31,7 +31,7 @@ func newCapturingPruner(t *testing.T, maxAge time.Duration, maxRows int) (*Prune
 // alone within a fast test.
 func seedExpiredPairingCode(t *testing.T, ctx context.Context, s *Store, deviceName string) {
 	t.Helper()
-	if _, _, err := s.MintPairingCode(ctx, deviceName); err != nil {
+	if _, _, err := s.MintPairingCode(ctx, deviceName, DefaultPairingCodeTTL); err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx,
