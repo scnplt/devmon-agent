@@ -43,6 +43,12 @@ const (
 //
 // Ordering mirrors handleStreamContainerLogs (logs.go) step for step; the
 // comments here call out only where this handler differs.
+//
+// The heartbeat goroutine below also re-checks the device's revocation
+// status on every tick (GHSA-qrxm-qm54-xc44): requireDevice only checks it
+// once, at request entry, and this stream can otherwise run indefinitely
+// after that — see streamRevoked's doc comment (logs.go) for the fail-open
+// and deleted-device reasoning.
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDocker(w) {
 		return
@@ -122,6 +128,28 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 				// main loop's next send will discover the same thing on its
 				// own next write.
 				_ = sse.comment("heartbeat")
+
+				// The revocation re-check runs after the heartbeat write, on
+				// the same tick, mirroring handleStreamContainerLogs's
+				// keepalive goroutine (GHSA-qrxm-qm54-xc44): a revoked
+				// device still gets a live connection until this check
+				// catches up, rather than stalling the heartbeat on an
+				// extra DB round trip first.
+				if !s.streamRevoked(ctx, device.ID) {
+					continue
+				}
+
+				// Frame first, cancel second: writeTerminalEventError
+				// gates on r.Context(), not this handler's derived ctx (see
+				// its own doc comment for why), so the frame is still
+				// writable right up to the moment cancel() below fires.
+				// cancel() then makes the main select's <-ctx.Done() case
+				// fire, which returns silently — that silent return is
+				// intended, this frame is already the only one this stream
+				// sends.
+				s.writeTerminalEventError(r, sse, msgStreamRevoked)
+				cancel()
+				return
 			}
 		}
 	}()
@@ -135,8 +163,12 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			s.writeTerminalEventError(r, sse, msgEventStreamSuperseded)
 			return
 		case <-ctx.Done():
-			// Client gone, or the server is shutting down. Nothing to send:
-			// there is no reason to attempt for a plain disconnect.
+			// Client gone, the server is shutting down, or the heartbeat
+			// goroutine's revocation re-check just cancelled ctx after
+			// already sending its own msgStreamRevoked terminal frame.
+			// Nothing to send here in any of those cases: a plain
+			// disconnect has no reason to attempt one, and the revocation
+			// case already sent its one and only terminal frame.
 			return
 		case ev := <-sub.events:
 			if err := sse.event("", sseEventHealth, ev); err != nil {

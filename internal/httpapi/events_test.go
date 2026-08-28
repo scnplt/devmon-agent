@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -1066,5 +1067,251 @@ func TestEventRouteRejectsOtherMethods(t *testing.T) {
 	// Assert
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /v1/events/stream = %d, want 405", rec.Code)
+	}
+}
+
+// TestEventStreamTerminatesWhenDeviceRevokedMidStream is
+// GHSA-qrxm-qm54-xc44's regression on the event route: a device revoked
+// after its stream is already open must still have the stream terminated,
+// via the heartbeat goroutine's per-tick re-check, rather than keep
+// receiving health frames forever. Mirrors
+// TestStreamTerminatesWhenDeviceRevokedMidStream (logs_test.go).
+func TestEventStreamTerminatesWhenDeviceRevokedMidStream(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level eventHeartbeatInterval.
+
+	// Arrange
+	original := eventHeartbeatInterval
+	eventHeartbeatInterval = 5 * time.Millisecond
+	t.Cleanup(func() { eventHeartbeatInterval = original })
+
+	fd := &fakeDocker{
+		streamContainerEventsFn: func(ctx context.Context, onReady func(), _ func(dockerx.ContainerEvent) error) error {
+			onReady()
+			<-ctx.Done()
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	device, err := st.DeviceByCertSerial(context.Background(), serial.Text(16))
+	if err != nil {
+		t.Fatalf("DeviceByCertSerial: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodGet, "/v1/events/stream", nil, serial)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — revoke the device once the stream is confirmed open (snapshot
+	// received), then wait for the handler to notice and unwind.
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Contains(rec.bodySnapshot(), sseEventSnapshot) },
+		func() string { return fmt.Sprintf("body = %q, want the snapshot frame first", rec.bodySnapshot()) })
+	if err := st.RevokeDevice(context.Background(), device.ID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not terminate within the heartbeat window after revocation")
+	}
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.bodySnapshot())
+	}
+	wantSuffix := fmt.Sprintf("event: error\ndata: {\"error\":%q}\n\n", msgStreamRevoked)
+	if !strings.HasSuffix(rec.bodySnapshot(), wantSuffix) {
+		t.Errorf("body = %q, want it to end with %q", rec.bodySnapshot(), wantSuffix)
+	}
+}
+
+// TestEventStreamTerminatesWhenDeviceDeletedMidStream mirrors the revocation
+// test above for the other terminal condition streamRevoked checks: the
+// device row disappearing entirely (e.g. an operator's DeleteDevice call)
+// ends access exactly like an explicit revocation.
+func TestEventStreamTerminatesWhenDeviceDeletedMidStream(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level eventHeartbeatInterval.
+
+	// Arrange
+	original := eventHeartbeatInterval
+	eventHeartbeatInterval = 5 * time.Millisecond
+	t.Cleanup(func() { eventHeartbeatInterval = original })
+
+	fd := &fakeDocker{
+		streamContainerEventsFn: func(ctx context.Context, onReady func(), _ func(dockerx.ContainerEvent) error) error {
+			onReady()
+			<-ctx.Done()
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	device, err := st.DeviceByCertSerial(context.Background(), serial.Text(16))
+	if err != nil {
+		t.Fatalf("DeviceByCertSerial: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodGet, "/v1/events/stream", nil, serial)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Contains(rec.bodySnapshot(), sseEventSnapshot) },
+		func() string { return fmt.Sprintf("body = %q, want the snapshot frame first", rec.bodySnapshot()) })
+	if err := st.DeleteDevice(context.Background(), device.ID); err != nil {
+		t.Fatalf("DeleteDevice: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not terminate within the heartbeat window after deletion")
+	}
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.bodySnapshot())
+	}
+	wantSuffix := fmt.Sprintf("event: error\ndata: {\"error\":%q}\n\n", msgStreamRevoked)
+	if !strings.HasSuffix(rec.bodySnapshot(), wantSuffix) {
+		t.Errorf("body = %q, want it to end with %q", rec.bodySnapshot(), wantSuffix)
+	}
+}
+
+// TestEventStreamHealthySurvivesRevocationChecks asserts that a device which
+// is never revoked keeps its stream alive across several heartbeat ticks,
+// with no terminal error frame ever written — the per-tick re-check must not
+// disturb an otherwise healthy stream. Mirrors
+// TestStreamHealthySurvivesRevocationChecks (logs_test.go).
+func TestEventStreamHealthySurvivesRevocationChecks(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level eventHeartbeatInterval.
+
+	// Arrange
+	original := eventHeartbeatInterval
+	eventHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { eventHeartbeatInterval = original })
+
+	fd := &fakeDocker{
+		streamContainerEventsFn: func(ctx context.Context, onReady func(), _ func(dockerx.ContainerEvent) error) error {
+			onReady()
+			<-ctx.Done()
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/events/stream", nil, serial)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — let several heartbeat ticks land while the device stays active,
+	// then end the stream via an ordinary client disconnect (cancelling the
+	// request context), not via the fake returning nil: the latter would
+	// route through sub.closed and produce its own terminal frame, which is
+	// not what this test is asserting the absence of.
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Count(rec.bodySnapshot(), ": heartbeat") >= 3 },
+		func() string { return fmt.Sprintf("body = %q, want at least 3 heartbeat comments", rec.bodySnapshot()) })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after cancellation")
+	}
+
+	// Assert
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.bodySnapshot())
+	}
+	if got := strings.Count(rec.bodySnapshot(), "event: error"); got != 0 {
+		t.Errorf("body has %d terminal error frames, want 0 for a never-revoked device: %q", got, rec.bodySnapshot())
+	}
+}
+
+// TestEventStreamRevocationCheckFailsOpen is the fail-open half of
+// GHSA-qrxm-qm54-xc44's fix on the event route: a transient failure of the
+// revocation lookup itself — simulated here by closing the store out from
+// under an open stream — must not tear the stream down. It survives at
+// least one more heartbeat tick after the store is closed. Mirrors
+// TestStreamRevocationCheckFailsOpen (logs_test.go).
+func TestEventStreamRevocationCheckFailsOpen(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level eventHeartbeatInterval.
+
+	// Arrange
+	original := eventHeartbeatInterval
+	eventHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { eventHeartbeatInterval = original })
+
+	fd := &fakeDocker{
+		streamContainerEventsFn: func(ctx context.Context, onReady func(), _ func(dockerx.ContainerEvent) error) error {
+			onReady()
+			<-ctx.Done()
+			return nil
+		},
+	}
+	log, buf := newCapturingLoggerAtLevel(slog.LevelWarn)
+	s, st := testServerWithDockerAndLogger(t, policy.ModeDefault, fd, log)
+	serial := pairDeviceForRead(t, st)
+	req := requestWithPeerSerial(http.MethodGet, "/v1/events/stream", nil, serial)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — wait for the stream to actually open, close the store so every
+	// subsequent revocation lookup fails, then wait for at least one more
+	// heartbeat tick to land while the store stays closed. The stream is
+	// then ended via an ordinary client disconnect (cancelling the request
+	// context), not via the fake returning nil: the latter would route
+	// through sub.closed and produce its own terminal frame, which is not
+	// what this test is asserting the absence of.
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Count(rec.bodySnapshot(), ": heartbeat") >= 1 },
+		func() string { return fmt.Sprintf("body = %q, want at least 1 heartbeat comment", rec.bodySnapshot()) })
+	countAtClose := strings.Count(rec.bodySnapshot(), ": heartbeat")
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Count(rec.bodySnapshot(), ": heartbeat") > countAtClose },
+		func() string {
+			return fmt.Sprintf("body = %q, want more heartbeat comments after the store closed (fail-open)", rec.bodySnapshot())
+		})
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after cancellation")
+	}
+
+	// Assert — the stream survived, produced no terminal frame despite the
+	// closed store, and the transient lookup failure was logged at Warn
+	// rather than silently swallowed.
+	if got := strings.Count(rec.bodySnapshot(), "event: error"); got != 0 {
+		t.Errorf("body has %d terminal error frames, want 0 (fail-open): %q", got, rec.bodySnapshot())
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("log = %q, want a WARN line for the failed revocation lookup", buf.String())
 	}
 }
