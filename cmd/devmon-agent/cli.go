@@ -239,7 +239,19 @@ func runDevicePairCode(ctx context.Context, st *state.Store, ttlMax time.Duratio
 		return fmt.Errorf("device pair-code: --%s is required", pairCodeNameFlag)
 	}
 
-	ttl, err := resolvePairCodeTTL(*ttlMinutes, ttlMax)
+	// fs.Visit reports only flags actually set on the command line, unlike
+	// inspecting *ttlMinutes itself — the latter cannot tell an explicit
+	// `--ttl 0` apart from an omitted flag, which would silently redirect a
+	// hard-fail case to the default TTL (the second security-review finding
+	// on issue #129).
+	ttlSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == pairCodeTTLFlag {
+			ttlSet = true
+		}
+	})
+
+	ttl, err := resolvePairCodeTTL(*ttlMinutes, ttlSet, ttlMax)
 	if err != nil {
 		return err
 	}

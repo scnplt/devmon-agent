@@ -26,16 +26,21 @@ const pairTTLMaxEnvVar = "DEVMON_PAIR_TTL_MAX_MIN"
 // resolvePairCodeTTL turns the raw --ttl flag value into the Duration to mint
 // a pairing code with, or rejects it outright.
 //
-// ttlMinutes is 0 when --ttl was omitted — flag.Int's own zero value doubles
-// as the "not set" sentinel here, which is safe because 0 is never a valid
-// explicit value (it is below pairCodeMinTTLMinutes). In that case the
-// effective TTL is min(state.DefaultPairingCodeTTL, ceiling): never above the
-// ceiling, with no cross-field validation error for a default that happens to
-// exceed a lowered ceiling.
+// set reports whether --ttl was actually passed on the command line — the
+// caller determines this with flag.FlagSet.Visit, never by inspecting
+// ttlMinutes itself. flag.Int's zero value cannot double as a "not set"
+// sentinel here: doing so would make an explicit `--ttl 0` indistinguishable
+// from an omitted flag and silently redirect it to the default TTL instead
+// of hard-failing it like every other below-floor value (the second
+// security-review finding on issue #129). When set is false the effective
+// TTL is min(state.DefaultPairingCodeTTL, ceiling): never above the ceiling,
+// with no cross-field validation error for a default that happens to exceed
+// a lowered ceiling.
 //
-// An explicit value outside [pairCodeMinTTLMinutes, ceiling] is a hard error;
-// it is never clamped, so an operator's script can trust that "no error"
-// means the code was minted with the exact TTL requested.
+// When set is true, ttlMinutes outside [pairCodeMinTTLMinutes, ceiling] —
+// including 0 and negative values — is a hard error; it is never clamped, so
+// an operator's script can trust that "no error" means the code was minted
+// with the exact TTL requested.
 //
 // The range check happens on the raw minute count, before ttlMinutes is ever
 // multiplied by time.Minute. time.Duration is int64 nanoseconds, so
@@ -44,8 +49,8 @@ const pairTTLMaxEnvVar = "DEVMON_PAIR_TTL_MAX_MIN"
 // comparison against ceiling — mirrors internal/config's rangedInt, which
 // bounds-checks the raw integer before any Duration conversion for the same
 // reason.
-func resolvePairCodeTTL(ttlMinutes int, ceiling time.Duration) (time.Duration, error) {
-	if ttlMinutes == 0 {
+func resolvePairCodeTTL(ttlMinutes int, set bool, ceiling time.Duration) (time.Duration, error) {
+	if !set {
 		def := state.DefaultPairingCodeTTL
 		if def > ceiling {
 			def = ceiling

@@ -12,8 +12,10 @@ import (
 func TestResolvePairCodeTTLOmittedUsesDefaultCeiling(t *testing.T) {
 	t.Parallel()
 
-	// Act — --ttl omitted (sentinel 0), ceiling is the config default (10m).
-	got, err := resolvePairCodeTTL(0, 10*time.Minute)
+	// Act — --ttl omitted (set=false), ceiling is the config default (10m).
+	// ttlMinutes is 0 here too, proving the omitted path is driven by set,
+	// never by the raw value.
+	got, err := resolvePairCodeTTL(0, false, 10*time.Minute)
 
 	// Assert
 	if err != nil {
@@ -29,7 +31,7 @@ func TestResolvePairCodeTTLOmittedClampsToLoweredCeiling(t *testing.T) {
 
 	// Act — the ceiling is lowered below the 10-minute default, so the
 	// effective TTL must never exceed it even with --ttl omitted.
-	got, err := resolvePairCodeTTL(0, 7*time.Minute)
+	got, err := resolvePairCodeTTL(0, false, 7*time.Minute)
 
 	// Assert
 	if err != nil {
@@ -44,7 +46,7 @@ func TestResolvePairCodeTTLExplicitValueWithinRange(t *testing.T) {
 	t.Parallel()
 
 	// Act
-	got, err := resolvePairCodeTTL(8, 15*time.Minute)
+	got, err := resolvePairCodeTTL(8, true, 15*time.Minute)
 
 	// Assert
 	if err != nil {
@@ -59,7 +61,7 @@ func TestResolvePairCodeTTLAboveCeilingErrors(t *testing.T) {
 	t.Parallel()
 
 	// Act
-	_, err := resolvePairCodeTTL(30, 15*time.Minute)
+	_, err := resolvePairCodeTTL(30, true, 15*time.Minute)
 
 	// Assert
 	if err == nil {
@@ -74,13 +76,56 @@ func TestResolvePairCodeTTLBelowMinimumErrors(t *testing.T) {
 	t.Parallel()
 
 	// Act
-	_, err := resolvePairCodeTTL(4, 15*time.Minute)
+	_, err := resolvePairCodeTTL(4, true, 15*time.Minute)
 
 	// Assert
 	if err == nil {
 		t.Fatal("resolvePairCodeTTL() = nil error, want one for a TTL below the 5-minute floor")
 	}
 	if !strings.Contains(err.Error(), "4") || !strings.Contains(err.Error(), "5") {
+		t.Errorf("resolvePairCodeTTL() error = %v, want it to name the requested value and the 5-minute minimum", err)
+	}
+}
+
+// TestResolvePairCodeTTLExplicitZeroErrors proves an explicit `--ttl 0` is a
+// hard error rather than being silently redirected to the default TTL — the
+// second security-review finding on issue #129. Only set=false (the flag
+// truly omitted) takes the default path; set=true with ttlMinutes==0 must
+// fail exactly like any other below-floor explicit value.
+func TestResolvePairCodeTTLExplicitZeroErrors(t *testing.T) {
+	t.Parallel()
+
+	// Act
+	got, err := resolvePairCodeTTL(0, true, 15*time.Minute)
+
+	// Assert
+	if err == nil {
+		t.Fatal("resolvePairCodeTTL() = nil error, want one for an explicit --ttl 0")
+	}
+	if got != 0 {
+		t.Errorf("resolvePairCodeTTL() = %v, want 0 on error", got)
+	}
+	if !strings.Contains(err.Error(), "0") || !strings.Contains(err.Error(), "5") {
+		t.Errorf("resolvePairCodeTTL() error = %v, want it to name the requested value and the 5-minute minimum", err)
+	}
+}
+
+// TestResolvePairCodeTTLExplicitNegativeErrors proves an explicit negative
+// --ttl is a hard error, not clamped or treated as omitted.
+func TestResolvePairCodeTTLExplicitNegativeErrors(t *testing.T) {
+	t.Parallel()
+
+	// Act
+	got, err := resolvePairCodeTTL(-1, true, 15*time.Minute)
+
+	// Assert
+	if err == nil {
+		t.Fatal("resolvePairCodeTTL() = nil error, want one for an explicit negative --ttl")
+	}
+	if got != 0 {
+		t.Errorf("resolvePairCodeTTL() = %v, want 0 on error", got)
+	}
+	if !strings.Contains(err.Error(), "-1") || !strings.Contains(err.Error(), "5") {
 		t.Errorf("resolvePairCodeTTL() error = %v, want it to name the requested value and the 5-minute minimum", err)
 	}
 }
@@ -129,7 +174,7 @@ func TestResolvePairCodeTTLOverflowingValuesAreHardErrors(t *testing.T) {
 			t.Parallel()
 
 			// Act
-			got, err := resolvePairCodeTTL(tt.minutes, tt.ceiling)
+			got, err := resolvePairCodeTTL(tt.minutes, true, tt.ceiling)
 
 			// Assert
 			if err == nil {
@@ -163,7 +208,7 @@ func TestResolvePairCodeTTLAtBoundsSucceeds(t *testing.T) {
 			t.Parallel()
 
 			// Act
-			got, err := resolvePairCodeTTL(tt.minutes, tt.ceiling)
+			got, err := resolvePairCodeTTL(tt.minutes, true, tt.ceiling)
 
 			// Assert
 			if err != nil {

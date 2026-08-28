@@ -288,6 +288,55 @@ func TestRunDevicePairCodeTTLBelowMinimumMintsNothing(t *testing.T) {
 	}
 }
 
+// TestRunDevicePairCodeExplicitZeroTTLMintsNothing proves an explicit
+// `--ttl 0` is a hard error, not silently redirected to the default TTL —
+// the second security-review finding on issue #129. Before the fix, 0
+// doubled as flag.Int's own "not set" zero value, so this exact case was the
+// one exception to "out-of-range is a hard error, never silently
+// substituted".
+func TestRunDevicePairCodeExplicitZeroTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "0"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for an explicit --ttl 0")
+		}
+		if !strings.Contains(err.Error(), "0") || !strings.Contains(err.Error(), "5") {
+			t.Errorf("runDevicePairCode() error = %v, want it to name the value and the 5-minute minimum", err)
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
+// TestRunDevicePairCodeExplicitNegativeTTLMintsNothing proves an explicit
+// negative --ttl is a hard error too, not just zero.
+func TestRunDevicePairCodeExplicitNegativeTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "-1"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for an explicit negative --ttl")
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
 func TestRunDevicePairCodeNonIntegerTTLMintsNothing(t *testing.T) {
 	// Arrange
 	st := openTestStore(t)
