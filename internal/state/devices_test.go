@@ -139,6 +139,64 @@ func TestRevokeDeviceUnknownIDReturnsErrDeviceNotFound(t *testing.T) {
 	}
 }
 
+func TestIsDeviceRevoked(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		revoke bool
+		want   bool
+	}{
+		{name: "active device", revoke: false, want: false},
+		{name: "revoked device", revoke: true, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			s := openStore(t, tempDBPath(t))
+			ctx := context.Background()
+			device, err := s.CreateDevice(ctx, "Pixel 9")
+			if err != nil {
+				t.Fatalf("CreateDevice() unexpected error: %v", err)
+			}
+			if tc.revoke {
+				if err := s.RevokeDevice(ctx, device.ID); err != nil {
+					t.Fatalf("RevokeDevice() unexpected error: %v", err)
+				}
+			}
+
+			// Act
+			got, err := s.IsDeviceRevoked(ctx, device.ID)
+
+			// Assert
+			if err != nil {
+				t.Fatalf("IsDeviceRevoked() unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("IsDeviceRevoked() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsDeviceRevokedUnknownIDReturnsErrDeviceNotFound(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	s := openStore(t, tempDBPath(t))
+
+	// Act
+	_, err := s.IsDeviceRevoked(context.Background(), "0123456789abcdef")
+
+	// Assert
+	if !errors.Is(err, ErrDeviceNotFound) {
+		t.Fatalf("IsDeviceRevoked() error = %v, want ErrDeviceNotFound", err)
+	}
+}
+
 func TestRenameDeviceUpdatesName(t *testing.T) {
 	t.Parallel()
 

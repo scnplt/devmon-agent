@@ -102,6 +102,10 @@ func TestMethodsFailWhenStoreIsClosed(t *testing.T) {
 		{"RevokeDevice", func(ctx context.Context, s *Store) error {
 			return s.RevokeDevice(ctx, "id")
 		}},
+		{"IsDeviceRevoked", func(ctx context.Context, s *Store) error {
+			_, err := s.IsDeviceRevoked(ctx, "id")
+			return err
+		}},
 		{"TouchDevice", func(ctx context.Context, s *Store) error {
 			return s.TouchDevice(ctx, "id")
 		}},
