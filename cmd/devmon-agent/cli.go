@@ -102,7 +102,7 @@ func runDeviceCommand(ctx context.Context, cfg config.Config, args []string) err
 	case subcommandRevoke:
 		return runDeviceRevoke(ctx, st, args[1:])
 	case subcommandPairCode:
-		return runDevicePairCode(ctx, st, args[1:])
+		return runDevicePairCode(ctx, st, cfg.PairTTLMax, args[1:])
 	default:
 		// Unreachable: args[0] was already validated above.
 		return nil
@@ -219,11 +219,15 @@ func deviceNameByID(devices []state.Device, id string) string {
 // runDevicePairCode mints a single-use pairing code and prints it to stdout
 // ONLY. It must never reach the logger — the log file is persisted and
 // rotated, so a pairing code in agent.log would be a durable credential.
-func runDevicePairCode(ctx context.Context, st *state.Store, args []string) error {
+//
+// ttlMax is the loaded config's PairTTLMax — the ceiling --ttl is checked
+// against. See resolvePairCodeTTL for how the effective TTL is chosen.
+func runDevicePairCode(ctx context.Context, st *state.Store, ttlMax time.Duration, args []string) error {
 	fs := flag.NewFlagSet(subcommandPairCode, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() {}
 	name := fs.String(pairCodeNameFlag, "", "name of the device to mint a pairing code for")
+	ttlMinutes := fs.Int(pairCodeTTLFlag, 0, "pairing code TTL in minutes (default: min(10, DEVMON_PAIR_TTL_MAX_MIN); range 5-ceiling)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printDeviceUsage(os.Stdout)
@@ -235,7 +239,12 @@ func runDevicePairCode(ctx context.Context, st *state.Store, args []string) erro
 		return fmt.Errorf("device pair-code: --%s is required", pairCodeNameFlag)
 	}
 
-	code, expiresAt, err := st.MintPairingCode(ctx, *name, state.DefaultPairingCodeTTL)
+	ttl, err := resolvePairCodeTTL(*ttlMinutes, ttlMax)
+	if err != nil {
+		return err
+	}
+
+	code, expiresAt, err := st.MintPairingCode(ctx, *name, ttl)
 	if err != nil {
 		return fmt.Errorf("mint pairing code: %w", err)
 	}

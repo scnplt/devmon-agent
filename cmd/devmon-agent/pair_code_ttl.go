@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/scnplt/devmon-agent/internal/state"
+)
+
+// pairCodeTTLFlag is the --ttl flag on `device pair-code`.
+const pairCodeTTLFlag = "ttl"
+
+// pairCodeMinTTLMinutes is the floor for --ttl. It mirrors
+// internal/config's minPairTTLMaxMin: that package validates
+// DEVMON_PAIR_TTL_MAX_MIN against the same floor, so a code minted below it
+// would expire before an operator can plausibly read and enter one.
+const pairCodeMinTTLMinutes = 5
+
+// pairCodeMinTTL is pairCodeMinTTLMinutes expressed as a Duration.
+const pairCodeMinTTL = pairCodeMinTTLMinutes * time.Minute
+
+// pairTTLMaxEnvVar names the env var that sets the ceiling --ttl is checked
+// against, so a rejected --ttl points the operator at the knob that controls
+// it instead of just a bare number.
+const pairTTLMaxEnvVar = "DEVMON_PAIR_TTL_MAX_MIN"
+
+// resolvePairCodeTTL turns the raw --ttl flag value into the Duration to mint
+// a pairing code with, or rejects it outright.
+//
+// ttlMinutes is 0 when --ttl was omitted — flag.Int's own zero value doubles
+// as the "not set" sentinel here, which is safe because 0 is never a valid
+// explicit value (it is below pairCodeMinTTLMinutes). In that case the
+// effective TTL is min(state.DefaultPairingCodeTTL, ceiling): never above the
+// ceiling, with no cross-field validation error for a default that happens to
+// exceed a lowered ceiling.
+//
+// An explicit value outside [pairCodeMinTTLMinutes, ceiling] is a hard error;
+// it is never clamped, so an operator's script can trust that "no error"
+// means the code was minted with the exact TTL requested.
+func resolvePairCodeTTL(ttlMinutes int, ceiling time.Duration) (time.Duration, error) {
+	if ttlMinutes == 0 {
+		def := state.DefaultPairingCodeTTL
+		if def > ceiling {
+			def = ceiling
+		}
+		return def, nil
+	}
+
+	requested := time.Duration(ttlMinutes) * time.Minute
+	if requested < pairCodeMinTTL {
+		return 0, fmt.Errorf("device pair-code: --%s %d is below the %d-minute minimum",
+			pairCodeTTLFlag, ttlMinutes, pairCodeMinTTLMinutes)
+	}
+	if requested > ceiling {
+		return 0, fmt.Errorf("device pair-code: --%s %d exceeds %s (%d)",
+			pairCodeTTLFlag, ttlMinutes, pairTTLMaxEnvVar, int(ceiling/time.Minute))
+	}
+	return requested, nil
+}

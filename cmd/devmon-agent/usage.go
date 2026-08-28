@@ -25,12 +25,12 @@ Usage:
   devmon-agent               run the agent daemon (container entrypoint)
 
 Commands:
-  device list                     list paired devices
-  device revoke <id>              revoke a device's access
-  device pair-code --name <name>  mint a single-use pairing code
-  audit list [--limit N]          print recent audit entries (default 100)
-  health                          probe the running agent's listener
-  help                            show this help
+  device list                                     list paired devices
+  device revoke <id>                              revoke a device's access
+  device pair-code --name <name> [--ttl minutes]  mint a single-use pairing code
+  audit list [--limit N]                          print recent audit entries (default 100)
+  health                                           probe the running agent's listener
+  help                                             show this help
 
 Flags:
   --version   print version information and exit
@@ -44,9 +44,12 @@ Run 'devmon <command> --help' for details on a command.
 const deviceUsage = `Usage: devmon device <subcommand> [flags]
 
 Subcommands:
-  list                     list paired devices
-  revoke <id>              revoke a device's access
-  pair-code --name <name>  mint a single-use pairing code
+  list                                            list paired devices
+  revoke <id>                                     revoke a device's access
+  pair-code --name <name> [--ttl minutes]         mint a single-use pairing code
+
+--ttl minutes   pairing code lifetime, 5 to DEVMON_PAIR_TTL_MAX_MIN
+                (default: 10, or the ceiling if it is lower)
 `
 
 // auditUsage is shown for `audit --help`.
