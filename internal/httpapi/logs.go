@@ -218,6 +218,16 @@ func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Reques
 	defer wg.Wait()
 	defer cancel()
 
+	// terminalOnce enforces "at most one terminal event: error frame per
+	// stream" as a structural invariant, not an ordering assumption
+	// (GHSA-qrxm-qm54-xc44 follow-up). The keepalive goroutine's revoked
+	// frame below and the handler body's own terminal Engine-error frame
+	// (after StreamContainerLogs returns) can both become writable close
+	// together — a revocation tick landing right as a genuine Engine fault
+	// unwinds the stream — and only this shared Once decides which one, if
+	// either, actually goes out.
+	var terminalOnce sync.Once
+
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 
@@ -248,13 +258,16 @@ func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Reques
 				// handler then routes through isClientGone(ctx, streamErr)
 				// — ctx.Err() is already non-nil by then, so the handler
 				// returns silently instead of attempting a second terminal
-				// frame. That silent return is intended: this frame is the
-				// only one this stream sends.
+				// frame in the common case. terminalOnce is what actually
+				// guarantees that even if the handler body's own terminal
+				// frame write is racing this one in the same window.
 				//
 				// Same reasoning as the keepalive write above: a failure
 				// here just means the client is already gone, and the emit
 				// path would discover that on its own anyway.
-				_ = sse.event("", sseEventError, errorBody{Error: msgStreamRevoked})
+				terminalOnce.Do(func() {
+					_ = sse.event("", sseEventError, errorBody{Error: msgStreamRevoked})
+				})
 				cancel()
 				return
 			}
@@ -290,18 +303,28 @@ func (s *Server) handleStreamContainerLogs(w http.ResponseWriter, r *http.Reques
 	// Headers are already committed: the only way left to signal failure is
 	// a terminal event frame. D16 forbids logging the ref alongside the
 	// container's own output — this path never touches LogLine.Line, only
-	// the error.
-	if err := sse.event("", sseEventError, errorBody{Error: msgEngineUnavailable}); err != nil {
-		// streamErr above was a genuine Engine fault, not a disconnect — so
-		// this write was worth attempting. But the client can still have
-		// vanished in the gap between the Engine dying and this frame going
-		// out, and a failure for THAT reason is the same "no one to hear
-		// this" case one step later: DEBUG, not ERROR. Any other failure to
-		// send the frame is a distinct fault of its own and stays at ERROR.
-		if isClientGone(ctx, err) {
-			s.log.Debug("stream container logs: write terminal error frame", slog.Any("err", err))
-		} else {
-			s.log.Error("stream container logs: write terminal error frame", slog.Any("err", err))
-		}
+	// the error. terminalOnce gates this write against the keepalive
+	// goroutine's own revoked-frame write above: whichever of the two runs
+	// first wins, the other is a silent no-op instead of a second frame.
+	var writeErr error
+	sent := false
+	terminalOnce.Do(func() {
+		sent = true
+		writeErr = sse.event("", sseEventError, errorBody{Error: msgEngineUnavailable})
+	})
+	if !sent || writeErr == nil {
+		return
+	}
+
+	// streamErr above was a genuine Engine fault, not a disconnect — so
+	// this write was worth attempting. But the client can still have
+	// vanished in the gap between the Engine dying and this frame going
+	// out, and a failure for THAT reason is the same "no one to hear
+	// this" case one step later: DEBUG, not ERROR. Any other failure to
+	// send the frame is a distinct fault of its own and stays at ERROR.
+	if isClientGone(ctx, writeErr) {
+		s.log.Debug("stream container logs: write terminal error frame", slog.Any("err", writeErr))
+	} else {
+		s.log.Error("stream container logs: write terminal error frame", slog.Any("err", writeErr))
 	}
 }

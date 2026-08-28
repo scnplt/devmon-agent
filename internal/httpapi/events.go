@@ -49,6 +49,12 @@ const (
 // once, at request entry, and this stream can otherwise run indefinitely
 // after that — see streamRevoked's doc comment (logs.go) for the fail-open
 // and deleted-device reasoning.
+//
+// At most one terminal event: error frame is ever sent, enforced by the
+// terminalFrame/sync.Once pair declared below rather than by an ordering
+// assumption: select among the heartbeat goroutine's cancel(), <-superseded,
+// and <-sub.closed is pseudo-random when more than one is ready in the same
+// window, so "the frame that fires first wins" is the only sound invariant.
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	if !s.requireDocker(w) {
 		return
@@ -110,6 +116,24 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// terminalFrame enforces "at most one terminal event: error frame per
+	// stream" as a structural invariant, not an ordering assumption
+	// (GHSA-qrxm-qm54-xc44 follow-up). The heartbeat goroutine below sends
+	// its own frame (revocation) then cancels ctx expecting the main
+	// select's <-ctx.Done() case to win the race — but select picks
+	// pseudo-randomly among channels that are simultaneously ready, so
+	// <-superseded or <-sub.closed can become ready in the same scheduling
+	// window and write a SECOND terminal frame after the first. Routing
+	// every terminal write through the same sync.Once makes that impossible
+	// regardless of which branch the scheduler happens to pick.
+	//
+	// This is built via a helper method, not an inline func literal here,
+	// so the heartbeat goroutine below stays handleEventStream.func1 —
+	// TestEventStreamGoroutineDoesNotLeak asserts that exact stack frame
+	// name, and an extra func literal ahead of it in source order would
+	// renumber it to func2.
+	terminalFrame := s.terminalEventFrameSender(r, sse)
+
 	// Started only after the snapshot, mirroring handleStreamContainerLogs's
 	// keepalive goroutine verbatim — see its doc comment for the wg/cancel
 	// ordering argument that also applies here.
@@ -144,10 +168,11 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 				// its own doc comment for why), so the frame is still
 				// writable right up to the moment cancel() below fires.
 				// cancel() then makes the main select's <-ctx.Done() case
-				// fire, which returns silently — that silent return is
-				// intended, this frame is already the only one this stream
-				// sends.
-				s.writeTerminalEventError(r, sse, msgStreamRevoked)
+				// fire, which returns silently in the common case — but
+				// terminalFrame's Once is what actually guarantees the main
+				// select cannot also send its own frame if <-superseded or
+				// <-sub.closed happens to be ready at the same time.
+				terminalFrame(msgStreamRevoked)
 				cancel()
 				return
 			}
@@ -160,7 +185,9 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			// A newer stream from the same device evicted this one. This is
 			// the one terminal error the client must not retry, so it gets
 			// its own message distinct from an ordinary Engine failure.
-			s.writeTerminalEventError(r, sse, msgEventStreamSuperseded)
+			// terminalFrame's Once means this loses silently if the
+			// heartbeat goroutine's revocation frame already won the race.
+			terminalFrame(msgEventStreamSuperseded)
 			return
 		case <-ctx.Done():
 			// Client gone, the server is shutting down, or the heartbeat
@@ -179,9 +206,24 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			if reason == eventClosedLagged {
 				msg = msgEventStreamLagged
 			}
-			s.writeTerminalEventError(r, sse, msg)
+			// terminalFrame's Once means this loses silently if the
+			// heartbeat goroutine's revocation frame already won the race.
+			terminalFrame(msg)
 			return
 		}
+	}
+}
+
+// terminalEventFrameSender returns a function that writes at most one
+// terminal event: error frame for this request, via writeTerminalEventError,
+// regardless of how many times or from how many goroutines it is called.
+// Every terminal-frame call site in handleEventStream routes through the
+// same sender so "at most one terminal frame per stream" holds structurally
+// rather than by an assumption about select's scheduling order.
+func (s *Server) terminalEventFrameSender(r *http.Request, sse *sseWriter) func(msg string) {
+	var once sync.Once
+	return func(msg string) {
+		once.Do(func() { s.writeTerminalEventError(r, sse, msg) })
 	}
 }
 

@@ -1244,6 +1244,88 @@ func TestEventStreamHealthySurvivesRevocationChecks(t *testing.T) {
 	}
 }
 
+// TestEventStreamRevocationRaceProducesSingleTerminalFrame is the regression
+// test for the review defect fixed alongside GHSA-qrxm-qm54-xc44: the
+// heartbeat goroutine's revocation frame-then-cancel used to rely on the
+// main select's <-ctx.Done() case winning next, but select picks
+// pseudo-randomly among simultaneously-ready channels, so <-sub.closed
+// racing the same cancel() could append a SECOND terminal frame. This test
+// drives both terminal sources — revocation and a lagged-client drop — as
+// close together as the test can arrange without a sleep-based race:
+// eventClientBuffer is shrunk to 1 so two queued emits deterministically
+// overflow this subscriber's buffer once released, which the hub answers
+// with its own eventClosedLagged close independent of ctx cancellation. The
+// assertion holds regardless of which source's frame the scheduler happens
+// to deliver first: the shared sync.Once in terminalEventFrameSender makes
+// "at most one" a structural guarantee, not a timing outcome.
+func TestEventStreamRevocationRaceProducesSingleTerminalFrame(t *testing.T) {
+	// Not t.Parallel(): mutates the package-level eventHeartbeatInterval and
+	// eventClientBuffer.
+
+	originalInterval := eventHeartbeatInterval
+	eventHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { eventHeartbeatInterval = originalInterval })
+
+	originalBuffer := eventClientBuffer
+	eventClientBuffer = 1
+	t.Cleanup(func() { eventClientBuffer = originalBuffer })
+
+	// Arrange
+	proceed := make(chan struct{})
+	fd := &fakeDocker{
+		streamContainerEventsFn: func(ctx context.Context, onReady func(), emit func(dockerx.ContainerEvent) error) error {
+			onReady()
+			<-proceed
+			// Two emits against a buffer of 1 overflow this subscriber,
+			// which the hub answers by dropping it with eventClosedLagged —
+			// see eventHub.fanout's default branch.
+			_ = emit(dockerx.ContainerEvent{ID: "c1", Event: "die", Time: "2026-01-01T00:00:00Z"})
+			_ = emit(dockerx.ContainerEvent{ID: "c2", Event: "start", Time: "2026-01-01T00:00:01Z"})
+			<-ctx.Done()
+			return nil
+		},
+	}
+	s, st := testServerWithDocker(t, policy.ModeDefault, fd)
+	serial := pairDeviceForRead(t, st)
+	device, err := st.DeviceByCertSerial(context.Background(), serial.Text(16))
+	if err != nil {
+		t.Fatalf("DeviceByCertSerial: %v", err)
+	}
+	req := requestWithPeerSerial(http.MethodGet, "/v1/events/stream", nil, serial)
+	rec := &syncBodyRecorder{deadlineAwareRecorder: &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}}
+
+	done := make(chan struct{})
+	go func() {
+		s.routes().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Act — once the stream is confirmed open, fire both competing terminal
+	// sources back to back: revoke the device (racing the heartbeat's next
+	// tick) and release the blocked emits (racing the hub's lagged drop),
+	// with no ordering guaranteed between the two.
+	waitForCondition(t, 2*time.Second, 2*time.Millisecond,
+		func() bool { return strings.Contains(rec.bodySnapshot(), sseEventSnapshot) },
+		func() string { return fmt.Sprintf("body = %q, want the snapshot frame first", rec.bodySnapshot()) })
+	if err := st.RevokeDevice(context.Background(), device.ID); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+	close(proceed)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not terminate after the competing terminal sources fired")
+	}
+
+	// Assert — exactly one terminal frame reached the wire, whichever of the
+	// two competing sources actually won the race.
+	body := rec.bodySnapshot()
+	if got := strings.Count(body, "event: error\n"); got != 1 {
+		t.Fatalf("body has %d terminal event: error frames, want exactly 1 (revocation and the lagged-drop path raced): %q", got, body)
+	}
+}
+
 // TestEventStreamRevocationCheckFailsOpen is the fail-open half of
 // GHSA-qrxm-qm54-xc44's fix on the event route: a transient failure of the
 // revocation lookup itself — simulated here by closing the store out from
