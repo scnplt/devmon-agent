@@ -95,7 +95,7 @@ func TestHandlePairSucceeds(t *testing.T) {
 
 	// Arrange
 	s, st, ca := testServerForPairing(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestHandlePairCodeReusedFails(t *testing.T) {
 
 	// Arrange
 	s, st, _ := testServerForPairing(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestHandlePairMalformedCSRFails(t *testing.T) {
 
 	// Arrange
 	s, st, _ := testServerForPairing(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestHandlePairIssueCertFailureIsInternalError(t *testing.T) {
 
 	// Arrange
 	s, st, _ := testServerForPairing(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestPairDeviceRollbackSurvivesCanceledContext(t *testing.T) {
 
 	// Arrange
 	s, st, _ := testServerForPairing(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestHandlePairSuccessWritesAuditRowWithNewDeviceID(t *testing.T) {
 
 	// Arrange
 	s, st, _ := testServerForPairing(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestHandlePairWithoutCAFailsClosed(t *testing.T) {
 
 	// Arrange
 	s, st := testServerForPairingWithoutCA(t)
-	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9")
+	code, _, err := st.MintPairingCode(context.Background(), "Pixel 9", state.DefaultPairingCodeTTL)
 	if err != nil {
 		t.Fatalf("MintPairingCode() unexpected error: %v", err)
 	}

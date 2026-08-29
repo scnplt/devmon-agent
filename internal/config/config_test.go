@@ -56,6 +56,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"RateStatusPerMin", cfg.RateStatusPerMin, defaultRateStatusPerMin},
 		{"RatePairPerMin", cfg.RatePairPerMin, defaultRatePairPerMin},
 		{"RateGuardedPerSec", cfg.RateGuardedPerSec, defaultRateGuardedPerSec},
+		{"PairTTLMax", cfg.PairTTLMax, defaultPairTTLMaxMin * time.Minute},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -202,6 +203,33 @@ func TestLoadOverrides(t *testing.T) {
 			},
 		},
 		{
+			name: "pair TTL max empty string falls back to the default",
+			env:  map[string]string{envPairTTLMax: ""},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PairTTLMax != defaultPairTTLMaxMin*time.Minute {
+					t.Errorf("PairTTLMax = %v, want %dm (default)", cfg.PairTTLMax, defaultPairTTLMaxMin)
+				}
+			},
+		},
+		{
+			name: "pair TTL max override, lower bound",
+			env:  map[string]string{envPairTTLMax: "5"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PairTTLMax != 5*time.Minute {
+					t.Errorf("PairTTLMax = %v, want 5m", cfg.PairTTLMax)
+				}
+			},
+		},
+		{
+			name: "pair TTL max override, upper bound",
+			env:  map[string]string{envPairTTLMax: "60"},
+			check: func(t *testing.T, cfg Config) {
+				if cfg.PairTTLMax != 60*time.Minute {
+					t.Errorf("PairTTLMax = %v, want 60m", cfg.PairTTLMax)
+				}
+			},
+		},
+		{
 			name: "rate limit overrides",
 			env: map[string]string{
 				envRateStatusPerMin:  "60",
@@ -309,6 +337,9 @@ func TestLoadRejections(t *testing.T) {
 		{"non-integer guarded rate", map[string]string{envRateGuardedPerSec: "many"}, envRateGuardedPerSec},
 		{"zero guarded rate", map[string]string{envRateGuardedPerSec: "0"}, envRateGuardedPerSec},
 		{"negative guarded rate", map[string]string{envRateGuardedPerSec: "-1"}, envRateGuardedPerSec},
+		{"pair TTL max below the floor", map[string]string{envPairTTLMax: "4"}, envPairTTLMax},
+		{"pair TTL max above the ceiling", map[string]string{envPairTTLMax: "61"}, envPairTTLMax},
+		{"non-integer pair TTL max", map[string]string{envPairTTLMax: "many"}, envPairTTLMax},
 	}
 
 	for _, tt := range tests {

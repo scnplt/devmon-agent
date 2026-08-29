@@ -40,6 +40,8 @@ const (
 	envRateStatusPerMin  = "DEVMON_RATE_STATUS_PER_MIN"
 	envRatePairPerMin    = "DEVMON_RATE_PAIR_PER_MIN"
 	envRateGuardedPerSec = "DEVMON_RATE_GUARDED_PER_SEC"
+
+	envPairTTLMax = "DEVMON_PAIR_TTL_MAX_MIN"
 )
 
 // Defaults. DEVMON_PUBLIC_ADDR deliberately has none — a server certificate with
@@ -58,6 +60,8 @@ const (
 	defaultRateStatusPerMin  = 30
 	defaultRatePairPerMin    = 5
 	defaultRateGuardedPerSec = 20
+
+	defaultPairTTLMaxMin = 10
 )
 
 // Validation bounds.
@@ -83,6 +87,14 @@ const (
 
 	maxDNSLabelLen = 63
 	maxDNSNameLen  = 253
+
+	// minPairTTLMaxMin and maxPairTTLMaxMin bound DEVMON_PAIR_TTL_MAX_MIN: a
+	// ceiling below the floor would make pairing codes expire before an
+	// operator can plausibly read and enter one, and a ceiling above the
+	// cap widens the window a leaked code stays usable well past what any
+	// legitimate pairing flow needs.
+	minPairTTLMaxMin = 5
+	maxPairTTLMaxMin = 60
 )
 
 const hoursPerDay = 24
@@ -111,6 +123,12 @@ type Config struct {
 	RateStatusPerMin  int
 	RatePairPerMin    int
 	RateGuardedPerSec int
+
+	// PairTTLMax is the ceiling for the pairing-code TTL: the CLI must reject
+	// any requested TTL longer than this. It is parsed from
+	// DEVMON_PAIR_TTL_MAX_MIN, an integer count of minutes, and stored as a
+	// Duration so callers never have to remember the source unit.
+	PairTTLMax time.Duration
 
 	// SelfContainer is an operator-supplied name-or-ID override for the
 	// agent's own container, used when the agent cannot detect it
@@ -174,6 +192,8 @@ func Load(getenv func(string) string) (Config, error) {
 		RateStatusPerMin:  l.boundedInt(envRateStatusPerMin, defaultRateStatusPerMin, minRatePerX),
 		RatePairPerMin:    l.boundedInt(envRatePairPerMin, defaultRatePairPerMin, minRatePerX),
 		RateGuardedPerSec: l.boundedInt(envRateGuardedPerSec, defaultRateGuardedPerSec, minRatePerX),
+
+		PairTTLMax: l.minutes(envPairTTLMax, defaultPairTTLMaxMin, minPairTTLMaxMin, maxPairTTLMaxMin),
 
 		SelfContainer: l.selfContainer(),
 	}
@@ -340,6 +360,33 @@ func (l *loader) boundedInt(key string, def, min int) int {
 		return def
 	}
 	return n
+}
+
+// rangedInt parses key as an integer within [min, max] inclusive. On any fault
+// it records the problem and returns def, so parsing continues and every
+// remaining variable is still checked. It is the range-checked counterpart of
+// boundedInt, which only enforces a floor.
+func (l *loader) rangedInt(key string, def, min, max int) int {
+	raw := l.raw(key, "")
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		l.fail(key, "%q is not an integer", raw)
+		return def
+	}
+	if n < min || n > max {
+		l.fail(key, "%d is not in %d-%d", n, min, max)
+		return def
+	}
+	return n
+}
+
+// minutes parses an integer minute count within [min, max] and returns it as
+// a Duration, so no caller has to remember which unit the variable was in.
+func (l *loader) minutes(key string, def, min, max int) time.Duration {
+	return time.Duration(l.rangedInt(key, def, min, max)) * time.Minute
 }
 
 // checkRetentionOrder enforces the separate-retention-budgets rule: the

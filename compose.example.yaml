@@ -37,7 +37,7 @@
 
 services:
   devmon-agent:
-    image: ghcr.io/scnplt/devmon-agent:0.5.0
+    image: ghcr.io/scnplt/devmon-agent:0.6.0
 
     # Pinned so the agent can name itself through DEVMON_SELF_CONTAINER below.
     # Without it compose derives the container name from the project directory,
@@ -141,3 +141,10 @@ services:
       # DEVMON_RATE_STATUS_PER_MIN: "30"
       # DEVMON_RATE_PAIR_PER_MIN: "5"
       # DEVMON_RATE_GUARDED_PER_SEC: "20"
+
+      # Ceiling, in minutes, for `device pair-code --ttl`; shown at its
+      # default. Valid range 5-60. A minted code that leaks before it is
+      # redeemed stays redeemable until it expires, so the ceiling is fixed
+      # here at startup — nothing a client can reach can raise it, and 60 is
+      # an absolute cap.
+      # DEVMON_PAIR_TTL_MAX_MIN: "10"

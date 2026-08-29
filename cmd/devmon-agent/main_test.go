@@ -14,9 +14,14 @@ import (
 	"github.com/scnplt/devmon-agent/internal/config"
 )
 
+// testPairTTLMax mirrors internal/config's default for DEVMON_PAIR_TTL_MAX_MIN
+// (defaultPairTTLMaxMin), so tests that never touch --ttl behave the same as
+// an agent started without that env var set.
+const testPairTTLMax = 10 * time.Minute
+
 func testStateConfig(t *testing.T) config.Config {
 	t.Helper()
-	return config.Config{StateDir: t.TempDir()}
+	return config.Config{StateDir: t.TempDir(), PairTTLMax: testPairTTLMax}
 }
 
 func statDir(path string) error {

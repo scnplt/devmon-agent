@@ -110,7 +110,7 @@ func TestMethodsFailWhenStoreIsClosed(t *testing.T) {
 			return s.TouchDevice(ctx, "id")
 		}},
 		{"MintPairingCode", func(ctx context.Context, s *Store) error {
-			_, _, err := s.MintPairingCode(ctx, "device")
+			_, _, err := s.MintPairingCode(ctx, "device", DefaultPairingCodeTTL)
 			return err
 		}},
 		{"RedeemPairingCode", func(ctx context.Context, s *Store) error {

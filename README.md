@@ -4,7 +4,7 @@ A Go agent that exposes a narrow, mTLS-authenticated Docker control API, so a
 paired client can inspect and restart containers without SSH and without
 exposing the Docker socket to the internet.
 
-**Status: 0.5.0 — an operator CLI via `docker exec devmon`.** The agent is its own certificate
+**Status: 0.6.0 — a configurable pairing-code lifetime.** The agent is its own certificate
 authority. An operator mints a pairing code on the host, the device generates a
 keypair and exchanges a CSR for a client certificate, and every guarded request
 is authenticated against that certificate. Revocation takes effect on the next
@@ -75,7 +75,7 @@ docker run -d --name devmon-agent \
   --read-only --tmpfs /tmp \
   --pids-limit 256 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.5.0
+  ghcr.io/scnplt/devmon-agent:0.6.0
 ```
 
 The four hardening flags are not needed to run the agent and none of them
@@ -99,7 +99,7 @@ Verify it is up:
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.5.0","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.6.0","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 
@@ -223,6 +223,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_RATE_STATUS_PER_MIN` | int | `30` | ≥1 |
 | `DEVMON_RATE_PAIR_PER_MIN` | int | `5` | ≥1 |
 | `DEVMON_RATE_GUARDED_PER_SEC` | int | `20` | ≥1 |
+| `DEVMON_PAIR_TTL_MAX_MIN` | int | `10` | 5–60; ceiling in minutes for `device pair-code --ttl` |
 
 `DEVMON_PUBLIC_ADDR` has no default on purpose: a server certificate with no
 subject alternative name matches nothing, and the failure would otherwise
@@ -724,9 +725,18 @@ docker exec devmon-agent devmon device pair-code --name "pixel-8"
 # Expires:      2026-08-07T20:12:00Z
 ```
 
-The code is single-use, valid for **10 minutes**, and printed to stdout only —
+The code is single-use, valid for **10 minutes** by default, and printed to
+stdout only —
 never to `agent.log`, which is persisted and rotated. Only its SHA-256 is
-stored. Nobody, including the operator, can read it back out of the database, so
+stored.
+
+`--ttl <minutes>` picks a different lifetime, from 5 minutes up to the
+`DEVMON_PAIR_TTL_MAX_MIN` ceiling the operator fixed at startup (itself capped
+at 60). A value outside that range is a hard error — never silently clamped —
+and when the flag is omitted the default is 10 minutes or the ceiling,
+whichever is lower. A longer-lived code is a longer exposure window if it
+leaks unused, which is why the ceiling is startup configuration: nothing
+reachable from a client can raise it. Nobody, including the operator, can read it back out of the database, so
 a lost code is minted again rather than recovered.
 
 ### 2. Redeem it
@@ -807,7 +817,7 @@ docker exec devmon-agent devmon device <subcommand>
 | Subcommand | Effect |
 |---|---|
 | `device list` | Every registered device: ID, name, paired, last seen, state |
-| `device pair-code --name <name>` | Mint a single-use code, valid 10 minutes |
+| `device pair-code --name <name> [--ttl <minutes>]` | Mint a single-use code; valid 10 minutes by default, `--ttl` picks 5 up to `DEVMON_PAIR_TTL_MAX_MIN` |
 | `device revoke <id>` | Withdraw a device's access, effective immediately |
 
 ```bash

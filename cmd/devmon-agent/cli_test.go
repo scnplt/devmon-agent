@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scnplt/devmon-agent/internal/state"
 )
@@ -169,7 +170,7 @@ func TestRunDevicePairCodeRequiresName(t *testing.T) {
 	st := openTestStore(t)
 
 	// Act
-	err := runDevicePairCode(context.Background(), st, nil)
+	err := runDevicePairCode(context.Background(), st, testPairTTLMax, nil)
 
 	// Assert
 	if err == nil {
@@ -184,12 +185,220 @@ func TestRunDevicePairCodeMintsCode(t *testing.T) {
 	st := openTestStore(t)
 
 	// Act
-	err := runDevicePairCode(context.Background(), st, []string{"--" + pairCodeNameFlag, "Pixel 9"})
+	err := runDevicePairCode(context.Background(), st, testPairTTLMax, []string{"--" + pairCodeNameFlag, "Pixel 9"})
 
 	// Assert
 	if err != nil {
 		t.Fatalf("runDevicePairCode() unexpected error: %v", err)
 	}
+}
+
+// TestRunDevicePairCodeExplicitTTLSetsExpiry and the four TTL tests below it
+// deliberately do NOT call t.Parallel() — see captureStdout's comment on
+// TestRunAuditListCommandBadFlagErrorsWithoutStdoutOutput: redirecting the
+// package-level os.Stdout would race with any concurrently running parallel
+// test that also writes to stdout.
+func TestRunDevicePairCodeExplicitTTLSetsExpiry(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+	before := time.Now()
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "7"})
+		if err != nil {
+			t.Fatalf("runDevicePairCode() unexpected error: %v", err)
+		}
+	})
+
+	// Assert — the printed expiry reflects the requested 7-minute TTL, not
+	// the 10-minute default.
+	expires := parseExpiresLine(t, got)
+	wantAround := before.Add(7 * time.Minute)
+	if diff := expires.Sub(wantAround); diff < -time.Minute || diff > time.Minute {
+		t.Errorf("runDevicePairCode() expiry = %v, want close to %v (7m TTL)", expires, wantAround)
+	}
+}
+
+func TestRunDevicePairCodeTTLAboveCeilingMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "30"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for --ttl above the ceiling")
+		}
+		if !strings.Contains(err.Error(), "30") || !strings.Contains(err.Error(), "DEVMON_PAIR_TTL_MAX_MIN") {
+			t.Errorf("runDevicePairCode() error = %v, want it to name the value and DEVMON_PAIR_TTL_MAX_MIN", err)
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
+// TestRunDevicePairCodeHugeTTLMintsNothing proves a --ttl large enough to
+// overflow int64 nanoseconds under naive Duration multiplication is still a
+// hard error at the CLI layer, not silently accepted — see
+// resolvePairCodeTTL's overflow-safety doc comment.
+func TestRunDevicePairCodeHugeTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "9007199254741022"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for a --ttl that overflows under naive multiplication")
+		}
+		if !strings.Contains(err.Error(), "9007199254741022") || !strings.Contains(err.Error(), "DEVMON_PAIR_TTL_MAX_MIN") {
+			t.Errorf("runDevicePairCode() error = %v, want it to name the typed value and DEVMON_PAIR_TTL_MAX_MIN", err)
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
+func TestRunDevicePairCodeTTLBelowMinimumMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "2"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for --ttl below the 5-minute floor")
+		}
+	})
+
+	// Assert
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
+// TestRunDevicePairCodeExplicitZeroTTLMintsNothing proves an explicit
+// `--ttl 0` is a hard error, not silently redirected to the default TTL —
+// the second security-review finding on issue #129. Before the fix, 0
+// doubled as flag.Int's own "not set" zero value, so this exact case was the
+// one exception to "out-of-range is a hard error, never silently
+// substituted".
+func TestRunDevicePairCodeExplicitZeroTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "0"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for an explicit --ttl 0")
+		}
+		if !strings.Contains(err.Error(), "0") || !strings.Contains(err.Error(), "5") {
+			t.Errorf("runDevicePairCode() error = %v, want it to name the value and the 5-minute minimum", err)
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
+// TestRunDevicePairCodeExplicitNegativeTTLMintsNothing proves an explicit
+// negative --ttl is a hard error too, not just zero.
+func TestRunDevicePairCodeExplicitNegativeTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "-1"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for an explicit negative --ttl")
+		}
+	})
+
+	// Assert — nothing was minted, so nothing was printed either.
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl is rejected", got)
+	}
+}
+
+func TestRunDevicePairCodeNonIntegerTTLMintsNothing(t *testing.T) {
+	// Arrange
+	st := openTestStore(t)
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, testPairTTLMax,
+			[]string{"--" + pairCodeNameFlag, "Pixel 9", "--" + pairCodeTTLFlag, "not-a-number"})
+		if err == nil {
+			t.Fatal("runDevicePairCode() = nil error, want one for a non-integer --ttl")
+		}
+	})
+
+	// Assert
+	if got != "" {
+		t.Errorf("runDevicePairCode() wrote %q to stdout, want nothing when --ttl fails to parse", got)
+	}
+}
+
+func TestRunDevicePairCodeOmittedTTLUsesLoweredCeiling(t *testing.T) {
+	// Arrange — the ceiling is below the 10-minute default, so the effective
+	// TTL must be the ceiling itself.
+	st := openTestStore(t)
+	before := time.Now()
+	ceiling := 6 * time.Minute
+
+	// Act
+	got := captureStdout(t, func() {
+		err := runDevicePairCode(context.Background(), st, ceiling, []string{"--" + pairCodeNameFlag, "Pixel 9"})
+		if err != nil {
+			t.Fatalf("runDevicePairCode() unexpected error: %v", err)
+		}
+	})
+
+	// Assert
+	expires := parseExpiresLine(t, got)
+	wantAround := before.Add(ceiling)
+	if diff := expires.Sub(wantAround); diff < -time.Minute || diff > time.Minute {
+		t.Errorf("runDevicePairCode() expiry = %v, want close to %v (ceiling-clamped TTL)", expires, wantAround)
+	}
+}
+
+// parseExpiresLine extracts the timestamp from the "Expires:" line printed by
+// runDevicePairCode's stdout, so a test can assert on the actual TTL used
+// without re-parsing the pairing code line too.
+func parseExpiresLine(t *testing.T, stdout string) time.Time {
+	t.Helper()
+
+	for _, line := range strings.Split(stdout, "\n") {
+		const prefix = "Expires:"
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		expires, err := time.Parse(deviceTimeFormat, raw)
+		if err != nil {
+			t.Fatalf("parse expires line %q: %v", line, err)
+		}
+		return expires
+	}
+	t.Fatalf("no %q line found in stdout %q", "Expires:", stdout)
+	return time.Time{}
 }
 
 func TestRunDeviceCommandDispatchesToSubcommands(t *testing.T) {
@@ -609,7 +818,7 @@ func TestRunDevicePairCodeHelpReturnsNilWithoutWrappedError(t *testing.T) {
 	st := openTestStore(t)
 
 	// Act
-	err := runDevicePairCode(context.Background(), st, []string{"--help"})
+	err := runDevicePairCode(context.Background(), st, testPairTTLMax, []string{"--help"})
 
 	// Assert
 	if err != nil {
@@ -683,7 +892,7 @@ func TestRunDevicePairCodeBadFlagErrorsWithoutStdoutOutput(t *testing.T) {
 
 	// Act
 	got := captureStdout(t, func() {
-		err = runDevicePairCode(context.Background(), st, []string{"--bogus"})
+		err = runDevicePairCode(context.Background(), st, testPairTTLMax, []string{"--bogus"})
 	})
 
 	// Assert
