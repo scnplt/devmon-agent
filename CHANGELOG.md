@@ -15,6 +15,74 @@ moved.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-29
+
+A feature release. The pairing-code lifetime, fixed at ten minutes since the
+pairing flow shipped, becomes a choice the operator makes — bounded by a
+ceiling only the operator can set, at startup.
+
+The configuration surface gains one variable, `DEVMON_PAIR_TTL_MAX_MIN`, and
+loses none. An agent started without it behaves exactly as 0.5.1 did: codes
+live ten minutes. No route changed, and no response field changed meaning.
+
+### Added
+
+- **A configurable pairing-code TTL, with an operator-set ceiling.**
+  `device pair-code` accepts `--ttl <minutes>`, choosing a lifetime from five
+  minutes up to `DEVMON_PAIR_TTL_MAX_MIN` — a startup variable bounded to
+  5–60 minutes, defaulting to 10. Omitting the flag mints at
+  `min(10 minutes, ceiling)`, so lowering the ceiling below the default never
+  becomes a startup error. A value outside the range is a hard error that
+  mints nothing: it is never silently clamped, so a script that sees no error
+  knows the code carries exactly the TTL it asked for, and `--ttl 0` fails
+  like any other below-floor value rather than being read as an omitted flag.
+  The ceiling lives in startup configuration for the reason every other bound
+  does — a longer-lived code is a longer window for a leaked, unredeemed code
+  to matter, and nothing a client can reach may widen it.
+  ([#130](https://github.com/scnplt/devmon-agent/pull/130), closes
+  [#129](https://github.com/scnplt/devmon-agent/issues/129))
+
+## [0.5.1] - 2026-08-28
+
+A security release. Revoking a device now also ends the live streams that
+device already holds open, instead of only rejecting its next request.
+
+The configuration surface is unchanged, no variable was added or removed, and
+no route changed its contract. Upgrading is a straight image-tag bump.
+
+### Security
+
+- **A revoked device's already-open log and event streams now terminate
+  within one tick.** Revocation was enforced once per request, at entry. The
+  two SSE routes — `GET /v1/containers/{id}/logs/stream` and
+  `GET /v1/events/stream` — are each a single long-lived request, so a stream
+  opened before `device revoke` kept delivering container output and
+  host-wide health events until the client disconnected or the agent
+  restarted. Both routes now re-check revocation on every keepalive or
+  heartbeat tick and close the stream with one terminal `event: error` frame
+  carrying `device revoked`, so the operator's kill switch takes at most one
+  tick interval (20s for logs, 25s for events) to reach a stream that is
+  already running. A revoked *or deleted* device ends the stream; a transient
+  lookup failure does not, so a database hiccup cannot kill a healthy stream.
+  ([GHSA-qrxm-qm54-xc44](https://github.com/scnplt/devmon-agent/security/advisories/GHSA-qrxm-qm54-xc44),
+  CWE-613, moderate)
+
+### Fixed
+
+- **At most one terminal error frame per stream.** Both stream routes could
+  write a second terminal frame when a revocation tick coincided with another
+  terminating condition — a superseding stream or a lagging subscriber on the
+  event route, an Engine fault on the log route — because `select` picks
+  pseudo-randomly among ready cases. The terminal frame is now single-shot per
+  request on both routes.
+
+### Changed
+
+- **The threat model and README state the real revocation guarantee.** Both
+  described revocation as immediate, which held only for request-scoped
+  traffic. They now say what the code does: the next request is rejected, and
+  an already-open stream ends within one tick interval.
+
 ## [0.5.0] - 2026-08-27
 
 A feature release. The agent binary gains an operator CLI surface: the image
@@ -472,7 +540,9 @@ First public release — the full surface.
 
 [#120]: https://github.com/scnplt/devmon-agent/issues/120
 
-[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/scnplt/devmon-agent/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/scnplt/devmon-agent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/scnplt/devmon-agent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/scnplt/devmon-agent/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/scnplt/devmon-agent/compare/v0.2.0...v0.3.0
