@@ -4,6 +4,7 @@
 # Three citation forms are checked:
 #   [`path/to/file.go:12-34`](../path/to/file.go)   the line range exists
 #   [`README.md`, `## Heading`](../README.md#anchor) the heading exists
+#   [`docs/NAME.md`, `## Heading`](NAME.md#anchor)   the heading exists
 #   [`install.sh`, `symbol`](../install.sh)          the symbol exists
 #
 # THREAT-MODEL.md promises every claim traces back to a line of code; this is
@@ -44,20 +45,33 @@ grep -Eon '`[A-Za-z0-9_./-]+\.(go|sh|yaml|yml):[0-9]+(-[0-9]+)?`' docs/*.md |
 		fi
 	done
 
-# Form 2: heading anchors into README.md
-grep -on '(\.\./README\.md#[a-z0-9-]*)' docs/*.md |
+# Form 2: heading anchors into README.md or into a sibling document under
+# docs/. A citation is either (../README.md#anchor) or (NAME.md#anchor), where
+# NAME.md lives next to the citing document.
+grep -on '(\(\.\./README\|[A-Za-z0-9_-]*\)\.md#[a-z0-9-]*)' docs/*.md |
 	while IFS= read -r hit; do
 		doc=${hit%%:*}
 		rest=${hit#*:}
 		lineno=${rest%%:*}
-		anchor=${rest#*#}
-		anchor=${anchor%)}
-		found=$(grep -E '^#{1,6} ' README.md |
+		ref=${rest#*:}
+		ref=${ref#\(}
+		ref=${ref%\)}
+		target=${ref%%#*}
+		anchor=${ref#*#}
+		case "$target" in
+		../README.md) file=README.md ;;
+		*) file=docs/$target ;;
+		esac
+		if [ ! -f "$file" ]; then
+			fail "$doc:$lineno" "no such file: $file"
+			continue
+		fi
+		found=$(grep -E '^#{1,6} ' "$file" |
 			sed -E 's/^#+ //; s/[^A-Za-z0-9 -]//g' |
 			tr '[:upper:] ' '[:lower:]-' |
 			grep -cx -- "$anchor" || true)
 		if [ "$found" -eq 0 ]; then
-			fail "$doc:$lineno" "README.md has no heading '#$anchor'"
+			fail "$doc:$lineno" "$file has no heading '#$anchor'"
 		fi
 	done
 

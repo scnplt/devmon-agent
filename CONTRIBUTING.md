@@ -86,6 +86,9 @@ make e2e-lint
 
 On Windows, run anything that touches a Docker Engine from WSL2.
 
+What the suite covers, the harness variables, and the CI job table are in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 ## Tests
 
 Tests come first. Table-driven, `-race` clean, and named for the behaviour
