@@ -104,7 +104,7 @@ vuln:
 shellcheck:
 	shellcheck -s sh install.sh scripts/check-doc-citations.sh
 
-# The prose docs cite README.md, install.sh and internal/**.go by anchor and by
+# The prose docs cite each other, install.sh and internal/**.go by anchor and by
 # line; this proves every one of them still resolves.
 doc-citations:
 	sh scripts/check-doc-citations.sh
