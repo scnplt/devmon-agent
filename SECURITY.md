@@ -83,7 +83,7 @@ directory's contents and permissions, `install.sh`, and the published image.
 - An attacker who already has root on the host
 - A compromised or malicious Docker Engine
 - An operator who exposes the port to the internet with no VPN or firewall in
-  front of it, contrary to the README
+  front of it, contrary to `docs/INSTALL.md`
 - Denial of service beyond what the rate limiter is documented to bound
 - Side-channel and timing attacks
 

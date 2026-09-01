@@ -1,6 +1,6 @@
 # Backup and Restore
 
-This expands the backup note in [`README.md`](../README.md#backup). Read
+This expands the backup note in [`docs/OPERATIONS.md`](OPERATIONS.md#backup). Read
 [`docs/THREAT-MODEL.md`](THREAT-MODEL.md) first if you have not — the central
 fact here is a security property, not an operational nicety: **the backup you
 are about to make is itself a credential.**
@@ -25,7 +25,7 @@ $DEVMON_STATE_DIR/                 bind mount — not a named volume        0700
     └── agent-….log.gz             rotated and compressed                 0600
 ```
 
-— [`README.md`, `## State directory`](../README.md#state-directory).
+— [`docs/OPERATIONS.md`, `## State directory`](OPERATIONS.md#state-directory).
 
 `logs/` is operational output, not identity, and does not need to survive a
 restore for the agent to run — but back it up anyway if you are diagnosing
@@ -41,7 +41,7 @@ recreating the exact partial-identity state
 
 ## The backup is a credential
 
-In the README's own words, which this document does not restate differently:
+In the words of [`docs/OPERATIONS.md`](OPERATIONS.md#state-directory), which this document does not restate differently:
 
 > `ca.key` is stored unencrypted. There is nowhere to keep a passphrase that
 > an unattended container restart could reach, so encrypting it would buy
@@ -54,7 +54,7 @@ In the README's own words, which this document does not restate differently:
 > the host and restart. The agent then creates a new CA, every paired device
 > is unpaired, and the fingerprint changes.
 >
-> — [`README.md`, `## State directory`](../README.md#state-directory)
+> — [`docs/OPERATIONS.md`, `## State directory`](OPERATIONS.md#state-directory)
 
 Concretely, that means:
 
@@ -69,7 +69,7 @@ Concretely, that means:
   Delete old backups on the same retention discipline you would apply to any
   other credential store.
 - **If a backup is ever exposed** — a misconfigured bucket, a stolen laptop
-  holding one, anything — treat it exactly as the README says: delete
+  holding one, anything — treat it exactly as `docs/OPERATIONS.md` says: delete
   `certs/` on the live host and restart. See "If `certs/` is lost" below for
   what that costs.
 
@@ -88,7 +88,7 @@ sudo tar czf devmon-backup.tgz -C / var/lib/devmon
 docker start devmon-agent
 ```
 
-— [`README.md`, `### Backup`](../README.md#backup). This checkpoints the
+— [`docs/OPERATIONS.md`, `## Backup`](OPERATIONS.md#backup). This checkpoints the
 write-ahead log before the copy runs, so the archive holds a single consistent
 state rather than a snapshot mid-write.
 
@@ -135,7 +135,7 @@ the restored database is a readable, uncorrupted SQLite file at open —
 "Restore by extracting to the same path with the same ownership. The agent
 detects a truncated or corrupt `devmon.db` at startup and refuses to run
 rather than failing obscurely at the first query."
-([`README.md`, `### Backup`](../README.md#backup)).
+([`docs/OPERATIONS.md`, `## Backup`](OPERATIONS.md#backup)).
 
 ## If `certs/` is lost
 
@@ -180,8 +180,8 @@ agent start clean — here is exactly what happens:
 
 There is no partial recovery path — a lost CA is not a smaller version of a
 lost state directory, it is the same event. Every device re-pairs, in full,
-the same way it did the first time: see `## Pairing` in
-[`README.md`](../README.md).
+the same way it did the first time: see
+[`docs/API.md`, `## Pairing`](API.md#pairing).
 
 ## Related documents
 
@@ -190,5 +190,7 @@ the same way it did the first time: see `## Pairing` in
   that context.
 - [`SECURITY.md`](../SECURITY.md) — what never to paste into a bug report or
   advisory, including anything from `certs/`.
-- [`README.md`](../README.md) — the full state directory layout, the pairing
-  flow, and the original backup note this document expands.
+- [`docs/OPERATIONS.md`](OPERATIONS.md) — the full state directory layout and
+  the original backup note this document expands.
+- [`docs/API.md`](API.md#pairing) — the pairing flow every device repeats after
+  a lost CA.

@@ -9,9 +9,10 @@ cannot be traced to a line of code, it does not appear — see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) if you find one that no longer
 resolves.
 
-This document does not contradict [`README.md`](../README.md). Where the
-README already states a security property, this document repeats its wording
-rather than rephrasing it.
+This document does not contradict the operator documentation under `docs/`.
+Where [`docs/CONFIGURATION.md`](CONFIGURATION.md), [`docs/OPERATIONS.md`](OPERATIONS.md)
+or [`docs/API.md`](API.md) already states a security property, this document
+repeats its wording rather than rephrasing it.
 
 ---
 
@@ -166,7 +167,7 @@ authority to that edge, whose configuration is not the operator's startup
 configuration and therefore not the property the agent is built on
 ([`internal/config/config.go:3-9`](../internal/config/config.go)). The
 operator-facing version of this, including what does work, is
-[`README.md`](../README.md) under "Reaching it from outside".
+[`docs/INSTALL.md`](INSTALL.md#reaching-it-from-outside) under "Reaching it from outside".
 
 ### listening port → mTLS
 
@@ -299,7 +300,7 @@ substance, because the two documents describe the same boundary:
 
 ## Standing accepted risks
 
-**`ca.key` is stored unencrypted at rest.** In the README's own words:
+**`ca.key` is stored unencrypted at rest.** In the words of [`docs/OPERATIONS.md`](OPERATIONS.md#state-directory):
 
 > `ca.key` is stored unencrypted. There is nowhere to keep a passphrase that
 > an unattended container restart could reach, so encrypting it would buy
@@ -309,7 +310,7 @@ substance, because the two documents describe the same boundary:
 > by nothing else. It is therefore present, in the clear, in every host backup
 > and every VPS snapshot of this directory.
 >
-> — [`README.md`, `## State directory`](../README.md#state-directory)
+> — [`docs/OPERATIONS.md`, `## State directory`](OPERATIONS.md#state-directory)
 
 This is an accepted risk rather than a defect. A CA private key readable in
 host backups and VPS snapshots is judged medium likelihood and mitigated by
@@ -320,10 +321,10 @@ credible unlocking mechanism exists.
 mode fixed for the whole install, not a per-device grant: `requireOp` checks
 only `s.cfg.PolicyMode`, the same value for every device
 ([`internal/httpapi/policygate.go:20-41`](../internal/httpapi/policygate.go)).
-The README states the same property from the operator's side: "The mode is
+The configuration guide states the same property from the operator's side: "The mode is
 fixed at startup and read once. No client can widen it... Changing the mode
 means changing `DEVMON_POLICY_MODE` on the host and restarting the agent."
-([`README.md`, `### Policy modes`](../README.md#policy-modes)). A general
+([`docs/CONFIGURATION.md`, `## Policy modes`](CONFIGURATION.md#policy-modes)). A general
 operator-defined per-device permission set is out of scope for this release.
 
 **Root-equivalent blast radius if the agent is compromised.** From
@@ -345,5 +346,6 @@ audit logging, and treating security review as a release gate.
   model's scope restated for reporters.
 - [`docs/BACKUP.md`](BACKUP.md) — what to back up, why the backup is itself a
   credential, and how to restore.
-- [`README.md`](../README.md) — the full configuration surface, the API
+- [`docs/CONFIGURATION.md`](CONFIGURATION.md), [`docs/OPERATIONS.md`](OPERATIONS.md)
+  and [`docs/API.md`](API.md) — the full configuration surface, the API
   contract, and the operator-facing explanation of every property cited here.
