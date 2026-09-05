@@ -126,8 +126,6 @@ git status        # confirm the intended files landed
 git log -1 --stat
 ```
 
-If a pre-commit hook modified files, review the changes and amend only that commit.
-
 ## Guardrails
 
 - **Do not push** unless the user asked. Committing ≠ pushing.
