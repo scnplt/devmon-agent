@@ -920,7 +920,7 @@ components:
 
     LifecycleForbidden:
       description: |
-        Refused, for one of two unrelated reasons the body distinguishes.
+        Refused, for one of three unrelated reasons the body distinguishes.
 
         Either the host's policy mode does not permit the operation — `kill` and
         `delete` need `full`, the rest need `default` — which no client can
@@ -929,15 +929,21 @@ components:
 
         Or the target is the agent's own container. That is a fixed rule rather
         than a policy tier: stopping or deleting the agent from a client would
-        destroy the operator's only remote access. The agent stays visible in
-        listings with `protected: true`, so a client can grey the control out
-        rather than discovering this through a failure.
+        destroy the operator's only remote access.
+
+        Or the target is one the operator listed in
+        `DEVMON_PROTECTED_CONTAINERS` at startup — typically another agent on
+        the same host. Both protected kinds stay visible in listings with
+        `protected: true`, so a client can grey the control out rather than
+        discovering this through a failure. When a target is both the agent
+        itself and listed, the self body is served.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
           examples:
             policy: { value: { error: operation not permitted by host policy } }
             self: { value: { error: the agent cannot act on itself } }
+            protected: { value: { error: container is protected by host configuration } }
 
     SelfUnknown:
       description: |
@@ -1207,11 +1213,13 @@ components:
         protected:
           type: boolean
           description: |
-            This is the agent's own container, and every mutating route will
-            refuse it in every policy mode. Always present, never omitted on
-            `false`: a client that could not tell "not protected" from "this
-            agent version does not report protection" would quietly offer a
-            delete button on the agent itself.
+            Every mutating route will refuse this container in every policy
+            mode: it is either the agent's own container, or one the operator
+            listed in `DEVMON_PROTECTED_CONTAINERS` at startup. Reads and logs
+            are unaffected. Always present, never omitted on `false`: a client
+            that could not tell "not protected" from "this agent version does
+            not report protection" would quietly offer a delete button on the
+            agent itself.
 
     ContainerDetail:
       type: object

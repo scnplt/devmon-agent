@@ -15,6 +15,32 @@ moved.
 
 ## [Unreleased]
 
+The configuration surface gains one optional variable,
+`DEVMON_PROTECTED_CONTAINERS`, and loses none. An agent started without it
+behaves exactly as 0.6.0 did. No route changed, and the one response field
+involved, `protected`, widened its meaning without changing its shape.
+
+### Added
+
+- **Operator-protected containers.** `DEVMON_PROTECTED_CONTAINERS` is a
+  comma-separated list of container names or IDs that every lifecycle route
+  refuses with 403 `container is protected by host configuration`, in every
+  policy mode. Self-exclusion covers exactly one container — the agent's own —
+  so on a host running two agents a device paired to one could stop or delete
+  the other; this closes that gap, and covers anything else an operator wants
+  out of remote reach, such as a reverse proxy. Matching rows in
+  `GET /v1/containers` and `GET /v1/containers/{id}` carry `protected: true`,
+  the same field the agent's own row already uses, so a client that greys out
+  the agent's controls greys these out with no change. Reads, inspect, logs,
+  and the event stream are unaffected. An entry matches a container name
+  exactly, or — when it is 12 or 64 lowercase hex characters — a container ID
+  by short-ID prefix or in full; no other prefix length is honoured. The list
+  is read once at startup, never verified against the Engine (an absent name
+  protects the container whenever it appears), logged once at INFO, and
+  enforced in the same layer as self-exclusion, which takes precedence when
+  both apply. Refusals are audited as `denied_protected`. `install.sh` gains
+  `--protected-containers` and a matching prompt that Enter skips.
+
 ## [0.6.0] - 2026-08-29
 
 A feature release. The pairing-code lifetime, fixed at ten minutes since the

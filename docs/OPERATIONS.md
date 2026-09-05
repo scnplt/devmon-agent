@@ -151,16 +151,18 @@ request log line every 30 seconds — about 2900 a day. Raise
 ## Audit log
 
 Every mutating request writes exactly **one** row — successes, refusals by
-policy, refusals by self-exclusion, and failures alike. Reads are not recorded:
-a row per list refresh would drown the record the log exists for and then push
-the destructive-operation history out under retention.
+policy, refusals by self-exclusion or by `DEVMON_PROTECTED_CONTAINERS`, and
+failures alike. Reads are not recorded: a row per list refresh would drown the
+record the log exists for and then push the destructive-operation history out
+under retention.
 
 ```bash
 $ docker exec devmon-agent devmon audit list --limit 5
-WHEN                  DEVICE            OPERATION  TARGET  OUTCOME        DETAIL
-2026-08-08T21:06:40Z  3f9a1c… (pixel-8) delete     devmon  denied_self
-2026-08-08T21:05:02Z  3f9a1c… (pixel-8) kill       api     denied_policy
-2026-08-08T21:04:11Z  3f9a1c… (pixel-8) restart    api     success        9c2e…
+WHEN                  DEVICE            OPERATION  TARGET   OUTCOME           DETAIL
+2026-08-08T21:07:15Z  3f9a1c… (pixel-8) stop       traefik  denied_protected
+2026-08-08T21:06:40Z  3f9a1c… (pixel-8) delete     devmon   denied_self
+2026-08-08T21:05:02Z  3f9a1c… (pixel-8) kill       api      denied_policy
+2026-08-08T21:04:11Z  3f9a1c… (pixel-8) restart    api      success           9c2e…
 ```
 
 `--limit` defaults to 100 rows, most recent first.
