@@ -21,14 +21,14 @@ If the user writes in another language, still produce these artifacts in English
 
 ## Model routing (MANDATORY)
 
-Planning runs on Opus, implementation runs on Sonnet. The session model stays Opus so the
-main loop can orchestrate and review; it delegates rather than doing the work itself.
+Design and orchestration happen in the main session; implementation runs on Sonnet. The
+main session delegates rather than doing the work itself.
 
 | Work | Who | Model |
 |------|-----|-------|
-| Task breakdown, architecture, design decisions | main session | Opus |
+| Task breakdown, architecture, design decisions | main session | session model |
 | Production Go code and its tests (`cmd/`, `internal/`, build files) | `go-implementer` agent — one task per invocation | Sonnet |
-| Review of written code | `ecc:go-reviewer`, `ecc:security-reviewer` | Sonnet |
+| Review of written code | `/code-review` and `/security-review` skills | session model |
 
 Rules:
 
@@ -40,14 +40,14 @@ Rules:
 - Docs, config, and `.claude/**` files are main-session work.
 - In a `Workflow` script, set the tier explicitly per stage:
   `agent(prompt, {model: 'opus'})` for planning stages, `{model: 'sonnet'}` for
-  implementation stages — a workflow agent otherwise inherits the Opus session model.
+  implementation stages — a workflow agent otherwise inherits the session model.
 - **If you delegate, you own collection.** Never end a turn while a spawned agent is still
   running: a completed child cannot notify a parent whose turn has ended, so its result is
   lost. Wait for it, verify its gate output, then report.
 
-Only one agent exists in this repository — `go-implementer` (`.claude/agents/`).
-Reviewers are invoked as `ecc:go-reviewer` and `ecc:security-reviewer`. Any other agent
-name is a mistake.
+Only one agent exists in this repository — `go-implementer` (`.claude/agents/`). Any other
+agent name is a mistake. Reviews are not agents: run them through the `/code-review` and
+`/security-review` skills.
 
 ## Branching
 
@@ -77,23 +77,30 @@ everything since the branch was cut, and each commit is small enough to review o
 
 ```bash
 make build                                          # -> bin/devmon-agent
-go build ./...
-
-go test ./internal/... -race                        # tests (always -race)
-go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1          # floor is 90%
-
-gofmt -l .                                          # must print nothing
-go vet ./...
-golangci-lint run ./...
-gosec ./...                                         # must be clean
-make shellcheck                                     # shellcheck -s sh install.sh
-
 docker build -t devmon-agent:dev .
 ```
 
 There is no dev server. The agent runs as a container: `./install.sh` sets one up from
 scratch, and `compose.example.yaml` is the by-hand reference.
+
+## Gates (MANDATORY)
+
+This is the only gate list in the repository. `go-implementer` and the `/git-commit` skill
+run these; neither carries its own copy. All must pass before a task is reported done and
+before anything is committed. If a tool is not installed, say so explicitly — never omit a
+gate silently, never use `--no-verify`.
+
+```bash
+gofmt -l .                                          # must print nothing
+go vet ./...
+go build ./...
+go test ./internal/... -race                        # always -race
+go test ./internal/... -race -coverprofile=coverage.out
+go tool cover -func=coverage.out | tail -1          # floor is 90%
+golangci-lint run ./...
+gosec ./...                                         # must be clean
+make shellcheck                                     # only when install.sh changed
+```
 
 ## Repo-specific notes
 
@@ -135,7 +142,6 @@ and covers **style and git only**:
 |------|-------|
 | `common/coding-style.md` | KISS/DRY/YAGNI, file and function size, error handling |
 | `common/git-workflow.md` | Branching model, commit format, PR workflow |
-| `golang/coding-style.md` | Go formatting, interfaces, error wrapping, naming |
 
 Nothing under `.claude/rules/` may route work to an agent or pick a model. If a generic
 rule file reappears from an upstream ECC install and contradicts this file, this file wins

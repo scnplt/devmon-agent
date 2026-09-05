@@ -27,16 +27,10 @@ and report it**. Do not improvise a design and do not widen scope beyond the pro
 Table-driven tests, Arrange–Act–Assert, names that state the behavior
 (`returns error when state directory is unreadable`). Always `-race`.
 
-## Gates — run these, paste real output, never claim a pass you did not see
+## Gates — run every one, paste real output, never claim a pass you did not see
 
-```bash
-gofmt -l .                                   # must print nothing
-go vet ./...
-go build ./...
-go test ./internal/... -race
-go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 90%
-```
+The gate list lives in `CLAUDE.md` under **Gates (MANDATORY)** and only there. Run all of
+them; do not keep or invent a shorter list here.
 
 If a gate fails, fix the implementation — not the test — unless the test itself encodes the
 wrong behavior, in which case say so explicitly.

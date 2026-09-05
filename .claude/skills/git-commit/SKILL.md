@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: Stage and commit changes in this repo following conventional-commit format and the project's pre-commit gates (gofmt, vet, race tests, coverage, secret scan). Use when the user asks to commit, "commit this", "save my work to git", or after finishing a unit of work that should land as a commit.
+description: Stage and commit changes in this repo following conventional-commit format and the project's gates from CLAUDE.md plus a secret scan. Use when the user asks to commit, "commit this", "save my work to git", or after finishing a unit of work that should land as a commit.
 trigger: /git-commit
 ---
 
@@ -49,24 +49,12 @@ production/release and `dev` is the integration branch, and every change reaches
 either one through a PR. See `CLAUDE.md` and
 `.claude/rules/ecc/common/git-workflow.md` for the full branching model.
 
-### 3. Quality gates (Go project)
+### 3. Quality gates
 
-All must pass before committing. If any fails, fix it — do not commit around it and do
-not use `--no-verify`.
-
-```bash
-gofmt -l .                                   # must print nothing
-go vet ./...
-go build ./...
-go test ./internal/... -race
-go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 90%
-golangci-lint run ./...
-gosec ./...                                  # must be clean
-```
-
-Skip a gate only if the tool is not installed, and say so explicitly in the final report
-rather than silently omitting it.
+Run every gate listed in `CLAUDE.md` under **Gates (MANDATORY)** — that section is the only
+gate list; this skill does not keep its own copy. All must pass before committing. If any
+fails, fix it — do not commit around it and do not use `--no-verify`. Skip a gate only if
+the tool is not installed, and say so explicitly in the final report.
 
 ### 4. Secret scan
 
