@@ -60,9 +60,10 @@ ALWAYS validate at system boundaries:
 
 ## Naming Conventions
 
-Follow the host language's own conventions — for this repository that means
-[golang/coding-style.md](../golang/coding-style.md) and `go vet`, not a cross-language
-casing table.
+Follow the host language's own conventions — for this repository that means standard Go
+naming (`MixedCaps`, exported identifiers capitalised, no package-name stutter such as
+`httpapi.HTTPAPIServer`) as enforced by `gofmt` and `go vet`, not a cross-language casing
+table.
 
 ## Code Smells to Avoid
 

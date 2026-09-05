@@ -12,7 +12,7 @@ client can inspect and restart containers without SSH and without exposing the D
 **All written artifacts in this repository are English-only**, regardless of the language
 used in chat. This is non-negotiable and applies to:
 
-- every `.md` file (README, PRDs, plans, rules, ADRs, docs)
+- every `.md` file (README, rules, ADRs, docs)
 - code comments and doc comments
 - identifiers, log messages, and error strings
 - commit messages, branch names, PR titles and bodies, issue text
@@ -21,32 +21,33 @@ If the user writes in another language, still produce these artifacts in English
 
 ## Model routing (MANDATORY)
 
-Planning runs on Opus, implementation runs on Sonnet. The session model stays Opus so the
-main loop can orchestrate and review; it delegates rather than doing the work itself.
+Design and orchestration happen in the main session; implementation runs on Sonnet. The
+main session delegates rather than doing the work itself.
 
 | Work | Who | Model |
 |------|-----|-------|
-| Phase plan files (`.claude/PRPs/plans/*.plan.md`), architecture, PRD changes | `phase-planner` agent, or the main session | Opus |
-| Production Go code and its tests (`cmd/`, `internal/`, build files) | `go-implementer` agent — one plan task per invocation | Sonnet |
-| Review of written code | `ecc:go-reviewer`, `ecc:security-reviewer` | Sonnet |
+| Task breakdown, architecture, design decisions | main session | session model |
+| Production Go code and its tests (`cmd/`, `internal/`, build files) | `go-implementer` agent — one task per invocation | Sonnet |
+| Review of written code | `/code-review` and `/security-review` skills | session model |
 
 Rules:
 
-- **The main session does not write production Go code.** Delegate each plan task to
-  `go-implementer` and verify its reported gate output. Independent tasks go out in parallel.
+- **The main session does not write production Go code.** Break the work into tasks,
+  delegate each one to `go-implementer`, and verify its reported gate output. Independent
+  tasks go out in parallel.
 - Exception: a one-line mechanical fix the main session is already holding in context
   (a typo, a rename) may be edited directly rather than paying a delegation round trip.
 - Docs, config, and `.claude/**` files are main-session work.
 - In a `Workflow` script, set the tier explicitly per stage:
   `agent(prompt, {model: 'opus'})` for planning stages, `{model: 'sonnet'}` for
-  implementation stages — a workflow agent otherwise inherits the Opus session model.
+  implementation stages — a workflow agent otherwise inherits the session model.
 - **If you delegate, you own collection.** Never end a turn while a spawned agent is still
   running: a completed child cannot notify a parent whose turn has ended, so its result is
   lost. Wait for it, verify its gate output, then report.
 
-Only two agents exist in this repository — `phase-planner` and `go-implementer`
-(`.claude/agents/`). Reviewers are invoked as `ecc:go-reviewer` and
-`ecc:security-reviewer`. Any other agent name is a mistake.
+Only one agent exists in this repository — `go-implementer` (`.claude/agents/`). Any other
+agent name is a mistake. Reviews are not agents: run them through the `/code-review` and
+`/security-review` skills.
 
 ## Branching
 
@@ -56,44 +57,59 @@ Full model: `.claude/rules/ecc/common/git-workflow.md`.
 
 ## Commit cadence (MANDATORY)
 
-**One commit per plan task, not one commit per phase.** After a task's gates pass, the main
-session commits that task before starting the next one. Never batch several completed tasks
-into a single commit.
+**One commit per delegated task, not one commit per feature.** After a task's gates pass, the
+main session commits that task before starting the next one. Never batch several completed
+tasks into a single commit.
 
 - The commit lands as soon as the task is verified — `go-implementer` still never touches git
   (see `.claude/agents/go-implementer.md`); the main session owns every commit.
 - Subject line: `<type>: <what the task delivered>`, e.g. `feat: add container lifecycle calls
-  with self-exclusion`. Reference the task as `Task <n> of <plan-file>` in the body.
+  with self-exclusion`.
 - Tasks dispatched in parallel are committed one at a time as each returns, in the order they
   finish.
-- After the last task, a final commit may cover phase-wide work — docs, the PRD status row,
-  the implementation report.
+- Docs and config changes that round out a feature may share a final commit.
 
-Rationale: a phase can run long enough to exhaust a usage window mid-flight. Task-sized commits
-mean an interrupted phase resumes from the last verified task instead of losing everything since
-the phase began, and each commit is small enough to review on its own.
+Rationale: a feature branch can run long enough to exhaust a usage window mid-flight.
+Task-sized commits mean interrupted work resumes from the last verified task instead of losing
+everything since the branch was cut, and each commit is small enough to review on its own.
 
 ## Commands
 
 ```bash
 make build                                          # -> bin/devmon-agent
-go build ./...
-
-go test ./internal/... -race                        # tests (always -race)
-go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1          # floor is 90%
-
-gofmt -l .                                          # must print nothing
-go vet ./...
-golangci-lint run ./...
-gosec ./...                                         # must be clean
-make shellcheck                                     # shellcheck -s sh install.sh
-
 docker build -t devmon-agent:dev .
 ```
 
 There is no dev server. The agent runs as a container: `./install.sh` sets one up from
 scratch, and `compose.example.yaml` is the by-hand reference.
+
+## Gates (MANDATORY)
+
+This is the only gate list in the repository. `go-implementer` and the `/git-commit` skill
+run these; neither carries its own copy. All must pass before a task is reported done and
+before anything is committed. If a tool is not installed, say so explicitly — never omit a
+gate silently, never use `--no-verify`.
+
+```bash
+gofmt -l .                                          # must print nothing
+go vet ./...
+go build ./...
+go test ./internal/... -race                        # always -race
+go test ./cmd/... -race
+go test ./internal/... -race -coverprofile=coverage.out
+go tool cover -func=coverage.out | tail -1          # floor is 90%
+golangci-lint run ./...
+gosec ./...                                         # must be clean
+make vuln                                           # govulncheck ./...
+make doc-citations                                  # only when docs/, install.sh, or cited Go files changed
+make openapi-lint                                   # only when docs/openapi.yaml changed
+make shellcheck                                     # only when install.sh or scripts/*.sh changed
+```
+
+The list mirrors `.github/workflows/ci.yml`: everything above runs there as its own step, so
+a change that passes here does not fail CI on a check it never ran. The conditional gates
+are conditional only because their inputs rarely change — when they do, they are not
+optional.
 
 ## Repo-specific notes
 
@@ -120,12 +136,10 @@ Never add a client-facing way to change policy mode or retention.
 delivered where it is read: in the session for local work, or as a comment on the PR it
 covers. It does not become a file in the repository.
 
-- Do not create `.claude/PRPs/reviews/` or any other committed review write-up. If a scratch
-  copy helps, write it to the session scratchpad instead.
-- A plan task that calls for a review means "perform it and report the verdict", never
-  "produce a review document to commit".
-- Reports (`.claude/PRPs/reports/*.md`) are still written — they record what a phase shipped,
-  not what a reviewer said — but like the rest of `.claude/PRPs/` they stay local.
+- Do not create a committed review write-up anywhere in the tree. If a scratch copy helps,
+  write it to the session scratchpad instead.
+- A request to review means "perform it and report the verdict", never "produce a review
+  document to commit".
 
 ## Rules files
 
@@ -137,21 +151,7 @@ and covers **style and git only**:
 |------|-------|
 | `common/coding-style.md` | KISS/DRY/YAGNI, file and function size, error handling |
 | `common/git-workflow.md` | Branching model, commit format, PR workflow |
-| `golang/coding-style.md` | Go formatting, interfaces, error wrapping, naming |
 
 Nothing under `.claude/rules/` may route work to an agent or pick a model. If a generic
 rule file reappears from an upstream ECC install and contradicts this file, this file wins
 — delete the contradiction rather than annotating it.
-
-## Planning docs
-
-All of `.claude/PRPs/` is gitignored — these are local working documents, not repository
-content. They exist in the working tree but are never committed.
-
-- PRD: `.claude/PRPs/prds/devmon-agent.prd.md` — scope, decisions log, phase table
-- Plans: `.claude/PRPs/plans/*.plan.md` — one per phase; the plan is the implementation
-  contract. Every phase shipped so far has moved to `.claude/PRPs/plans/completed/`, so
-  that is where the current examples live; an in-flight plan sits in `plans/` itself.
-
-Read the current phase's plan before writing code. It carries verified upstream API
-signatures and the gotchas above with full rationale.
