@@ -116,6 +116,14 @@ services:
       # `docker compose up -d` does after any edit to this file.
       DEVMON_SELF_CONTAINER: devmon-agent
 
+      # Containers no paired device may start, stop, restart, kill, or delete
+      # through this agent, in any policy mode. Self-exclusion protects only
+      # this agent's own container; list here whatever else is off-limits to
+      # remote hands — typically another devmon-agent on the same host, or a
+      # reverse proxy. Comma-separated; names preferred over IDs for the same
+      # recreate reason as above. Reads and logs are unaffected.
+      # DEVMON_PROTECTED_CONTAINERS: devmon-agent-other,traefik
+
       DEVMON_LOG_MAX_AGE_DAYS: "1"
       DEVMON_LOG_MAX_TOTAL_MB: "64"
 

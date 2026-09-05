@@ -16,6 +16,7 @@ file, or signal that can widen what was granted here.
 | `DEVMON_POLICY_MODE` | enum | `default` | One of `read-only`, `default`, `full` |
 | `DEVMON_DOCKER_HOST` | URL | `unix:///var/run/docker.sock` | Scheme `unix` or `tcp` |
 | `DEVMON_SELF_CONTAINER` | name or ID | *(auto-detected)* | Docker's own name grammar: `[a-zA-Z0-9][a-zA-Z0-9_.-]+` (two characters or more). Hex container IDs satisfy it too |
+| `DEVMON_PROTECTED_CONTAINERS` | comma list | *(none)* | Each entry a container name or ID under the same grammar as `DEVMON_SELF_CONTAINER`; blank entries ignored; duplicates dropped |
 | `DEVMON_LOG_LEVEL` | enum | `info` | One of `debug`, `info`, `warn`, `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | int | `1` | ≥1 |
 | `DEVMON_LOG_MAX_TOTAL_MB` | int | `64` | ≥8 |
@@ -127,6 +128,61 @@ once at INFO.
 
 Before 0.2.0 this variable was called `DEVMON_SELF_CONTAINER_ID`; see
 [Upgrading](INSTALL.md#upgrading).
+
+## Protecting other containers
+
+Self-exclusion covers exactly one container: the agent's own. Everything else
+the policy mode permits is fair game for every paired device. That is the wrong
+boundary as soon as a host runs **more than one agent** — one per team, per
+tenant, or per policy tier — because a device paired to agent A cannot touch A,
+but it can stop, kill, or delete agent B, and B's devices can do the same to A.
+The same gap covers any container an operator considers off-limits to remote
+hands: a reverse proxy, a database, a backup job.
+
+`DEVMON_PROTECTED_CONTAINERS` closes it. It is a comma-separated list of
+container names or IDs; a container matching any entry is refused by every
+lifecycle route with 403 `container is protected by host configuration`, in
+every policy mode, and its rows in `GET /v1/containers` and
+`GET /v1/containers/{id}` carry `"protected": true` — the same field the agent's
+own row uses, so an app that already greys out the agent's controls greys these
+out too without knowing why. Reads, inspect, logs, and the event stream are not
+affected: protection stops a device from *changing* a container, not from
+*seeing* it.
+
+```yaml
+services:
+  devmon-agent-team-a:
+    container_name: devmon-agent-team-a
+    environment:
+      DEVMON_SELF_CONTAINER: devmon-agent-team-a
+      DEVMON_PROTECTED_CONTAINERS: devmon-agent-team-b,traefik
+```
+
+How an entry matches:
+
+- An entry matches a container whose **name** equals it exactly. Names are
+  case-sensitive and compared without Docker's leading `/`.
+- An entry that is 12 or 64 lowercase hex characters *also* matches a container
+  whose **ID** starts with (12) or equals (64) it. No other prefix length is
+  honoured: a name such as `cafe` must not quietly protect every container whose
+  ID happens to begin with it. An entry that is both a real name and someone
+  else's short ID matches both; over-protection is the safe direction.
+- **Prefer names**, for the reason given under `DEVMON_SELF_CONTAINER` above: an
+  ID is stale the next time the container is recreated, a name survives.
+
+Entries are not checked against the Engine at startup. A name that matches
+nothing today is legitimate — it protects that container whenever it appears,
+which is what a compose stack that recreates containers needs. The list is
+logged once at INFO at startup so an operator can confirm what was protected.
+
+When a target is both the agent itself and listed here, the self rule answers
+first, with its own body; the list never weakens self-exclusion and cannot be
+used to opt out of it. Like every other variable on this page the list is read
+once at startup: no device can read it back, shorten it, or extend it.
+
+A malformed entry is a startup configuration error (exit 2), reported with the
+offending value, in the same way as `DEVMON_SELF_CONTAINER`. Blank entries and
+exact duplicates are ignored.
 
 ## Retention
 

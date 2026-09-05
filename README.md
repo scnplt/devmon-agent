@@ -96,6 +96,7 @@ the file and run `docker compose up -d` to apply a change.
 | `DEVMON_STATE_DIR` | `/var/lib/devmon` | Identity, device registry, audit log, and operational logs |
 | `DEVMON_DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker Engine endpoint (`unix://` or `tcp://`) |
 | `DEVMON_SELF_CONTAINER` | *(auto-detected)* | The agent's own container name, so it can refuse to act on itself |
+| `DEVMON_PROTECTED_CONTAINERS` | *(none)* | Comma-separated container names or IDs that no device may start, stop, restart, kill, or delete — for example another agent on the same host |
 | `DEVMON_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `DEVMON_LOG_MAX_AGE_DAYS` | `1` | Operational log retention (days) |
 | `DEVMON_LOG_MAX_TOTAL_MB` | `64` | Operational log size budget (MB, at least 8) |
