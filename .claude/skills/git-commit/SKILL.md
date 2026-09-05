@@ -99,7 +99,7 @@ Rules:
 - Body explains **why**; the diff already says what
 - Reference issues as `Refs #123` / `Closes #123` on their own line
 - Append the `Co-Authored-By:` trailer unless `~/.claude/settings.json` sets
-  `"includeCoAuthoredBy": false`
+  `"includeCoAuthoredBy": false`. The harness fills in the model name; never hardcode one.
 
 Use a heredoc so multi-line messages survive the shell:
 
@@ -111,7 +111,7 @@ The Docker socket must never be reachable without a pinned client cert.
 Verification happens in the TLS handshake so unauthorized peers never
 reach the mux.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: <model name>
 EOF
 )"
 ```

@@ -95,12 +95,21 @@ gofmt -l .                                          # must print nothing
 go vet ./...
 go build ./...
 go test ./internal/... -race                        # always -race
+go test ./cmd/... -race
 go test ./internal/... -race -coverprofile=coverage.out
 go tool cover -func=coverage.out | tail -1          # floor is 90%
 golangci-lint run ./...
 gosec ./...                                         # must be clean
-make shellcheck                                     # only when install.sh changed
+make vuln                                           # govulncheck ./...
+make doc-citations                                  # only when docs/, install.sh, or cited Go files changed
+make openapi-lint                                   # only when docs/openapi.yaml changed
+make shellcheck                                     # only when install.sh or scripts/*.sh changed
 ```
+
+The list mirrors `.github/workflows/ci.yml`: everything above runs there as its own step, so
+a change that passes here does not fail CI on a check it never ran. The conditional gates
+are conditional only because their inputs rarely change — when they do, they are not
+optional.
 
 ## Repo-specific notes
 
