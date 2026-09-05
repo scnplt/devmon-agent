@@ -25,17 +25,18 @@ import (
 // Environment variable keys. Declared as constants so a typo is a compile error
 // and so error messages can name the exact variable the operator must fix.
 const (
-	envStateDir        = "DEVMON_STATE_DIR"
-	envListenAddr      = "DEVMON_LISTEN_ADDR"
-	envPublicAddr      = "DEVMON_PUBLIC_ADDR"
-	envPolicyMode      = "DEVMON_POLICY_MODE"
-	envDockerHost      = "DEVMON_DOCKER_HOST"
-	envLogLevel        = "DEVMON_LOG_LEVEL"
-	envLogMaxAgeDays   = "DEVMON_LOG_MAX_AGE_DAYS"
-	envLogMaxTotalMB   = "DEVMON_LOG_MAX_TOTAL_MB"
-	envAuditMaxAgeDays = "DEVMON_AUDIT_MAX_AGE_DAYS"
-	envAuditMaxRows    = "DEVMON_AUDIT_MAX_ROWS"
-	envSelfContainer   = "DEVMON_SELF_CONTAINER"
+	envStateDir            = "DEVMON_STATE_DIR"
+	envListenAddr          = "DEVMON_LISTEN_ADDR"
+	envPublicAddr          = "DEVMON_PUBLIC_ADDR"
+	envPolicyMode          = "DEVMON_POLICY_MODE"
+	envDockerHost          = "DEVMON_DOCKER_HOST"
+	envLogLevel            = "DEVMON_LOG_LEVEL"
+	envLogMaxAgeDays       = "DEVMON_LOG_MAX_AGE_DAYS"
+	envLogMaxTotalMB       = "DEVMON_LOG_MAX_TOTAL_MB"
+	envAuditMaxAgeDays     = "DEVMON_AUDIT_MAX_AGE_DAYS"
+	envAuditMaxRows        = "DEVMON_AUDIT_MAX_ROWS"
+	envSelfContainer       = "DEVMON_SELF_CONTAINER"
+	envProtectedContainers = "DEVMON_PROTECTED_CONTAINERS"
 
 	envRateStatusPerMin  = "DEVMON_RATE_STATUS_PER_MIN"
 	envRatePairPerMin    = "DEVMON_RATE_PAIR_PER_MIN"
@@ -138,6 +139,16 @@ type Config struct {
 	// ps is stale on the very next boot, while a name survives recreation.
 	// Empty is the normal case; it has no default.
 	SelfContainer string
+
+	// ProtectedContainers is an optional comma list of container names or IDs
+	// that every lifecycle route refuses in every policy mode, regardless of
+	// self-identification. The name form is preferred over an ID for the same
+	// reason as SelfContainer: docker compose up -d recreates a container and
+	// mints a new ID whenever the compose file changes, so an ID copied out of
+	// docker ps is stale on the very next boot, while a name survives
+	// recreation. Empty means nothing beyond the agent's own container (if any)
+	// is protected.
+	ProtectedContainers []string
 }
 
 // Derived paths live here as methods so no other package ever concatenates a
@@ -196,6 +207,8 @@ func Load(getenv func(string) string) (Config, error) {
 		PairTTLMax: l.minutes(envPairTTLMax, defaultPairTTLMaxMin, minPairTTLMaxMin, maxPairTTLMaxMin),
 
 		SelfContainer: l.selfContainer(),
+
+		ProtectedContainers: l.protectedContainers(),
 	}
 
 	l.checkRetentionOrder(cfg)
@@ -317,6 +330,40 @@ func (l *loader) selfContainer() string {
 		l.fail(envSelfContainer, "%q is not a valid container name or ID (want two or more characters matching [a-zA-Z0-9][a-zA-Z0-9_.-])", ref)
 	}
 	return ref
+}
+
+// protectedContainers parses the optional list of container names or IDs that
+// every lifecycle route must refuse in every policy mode. Unlike publicAddrs,
+// an unset or all-blank value is not an error: the knob is optional, and
+// nothing beyond self-exclusion (if any) is protected in that case. Each
+// entry is validated with the same grammar and wording as selfContainer, and
+// is never lower-cased — Docker container names are case-sensitive. Exact
+// duplicates are dropped, keeping the first occurrence's position, so the
+// resulting order matches what the operator wrote.
+func (l *loader) protectedContainers() []string {
+	raw := l.raw(envProtectedContainers, "")
+	if raw == "" {
+		return nil
+	}
+
+	entries := make([]string, 0, strings.Count(raw, ",")+1)
+	seen := make(map[string]struct{}, strings.Count(raw, ",")+1)
+	for _, part := range strings.Split(raw, ",") {
+		e := strings.TrimSpace(part)
+		if e == "" {
+			continue
+		}
+		if !containerRefPattern.MatchString(e) {
+			l.fail(envProtectedContainers, "%q is not a valid container name or ID (want two or more characters matching [a-zA-Z0-9][a-zA-Z0-9_.-])", e)
+			continue
+		}
+		if _, ok := seen[e]; ok {
+			continue
+		}
+		seen[e] = struct{}{}
+		entries = append(entries, e)
+	}
+	return entries
 }
 
 func (l *loader) logLevel() slog.Level {
