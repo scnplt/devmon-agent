@@ -59,6 +59,13 @@ func withSelf(c *Client, containerized bool, id string) *Client {
 	return c
 }
 
+// withProtected returns a copy of c whose protected set is built from
+// entries, for the DEVMON_PROTECTED_CONTAINERS enforcement tests below.
+func withProtected(c *Client, entries ...string) *Client {
+	c.protected = newProtectedSet(entries)
+	return c
+}
+
 func inspectRoute(ref string) string {
 	return "GET /containers/" + ref + "/json"
 }
@@ -370,6 +377,152 @@ func TestLifecycleMutatingCallFailure(t *testing.T) {
 				t.Errorf("err = %v, want NOT errors.Is(err, ErrNotFound)", err)
 			}
 		})
+	}
+}
+
+// protectedFixtureName, protectedFixtureFullID, and protectedFixtureShortID
+// name a fixture container used by the DEVMON_PROTECTED_CONTAINERS
+// enforcement tests below; protectedFixtureShortID is protectedFixtureFullID's
+// 12-hex prefix.
+const protectedFixtureName = "protected-container"
+const protectedFixtureFullID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+const protectedFixtureShortID = "bbbbbbbbbbbb"
+
+// TestLifecycleRejectsProtectedAllFive proves every one of the five lifecycle
+// methods refuses a protected-set member before any mutating Engine call,
+// regardless of which of the three ref forms (name, short ID, full ID) the
+// device used to name it and which of those same forms the operator listed
+// in DEVMON_PROTECTED_CONTAINERS.
+func TestLifecycleRejectsProtectedAllFive(t *testing.T) {
+	t.Parallel()
+
+	refForms := []struct {
+		name    string
+		ref     string
+		entries []string
+	}{
+		{name: "by name", ref: protectedFixtureName, entries: []string{protectedFixtureName}},
+		{name: "by short ID", ref: protectedFixtureShortID, entries: []string{protectedFixtureShortID}},
+		{name: "by full ID", ref: protectedFixtureFullID, entries: []string{protectedFixtureFullID}},
+	}
+
+	for _, form := range refForms {
+		for _, op := range lifecycleOps() {
+			t.Run(form.name+"/"+op.name, func(t *testing.T) {
+				t.Parallel()
+
+				// Arrange
+				spy := &mutatingCallSpy{}
+				c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+					inspectRoute(form.ref): jsonHandler(http.StatusOK, container.InspectResponse{
+						ID:   protectedFixtureFullID,
+						Name: "/" + protectedFixtureName,
+					}),
+					op.actionRoute(protectedFixtureFullID): spy.handler,
+				})
+				c = withSelf(c, false, "")
+				c = withProtected(c, form.entries...)
+
+				// Act
+				err := op.call(c, context.Background(), form.ref)
+
+				// Assert
+				if !errors.Is(err, ErrProtectedContainer) {
+					t.Fatalf("err = %v, want errors.Is(err, ErrProtectedContainer)", err)
+				}
+				if spy.hit {
+					t.Error("mutating Engine endpoint was reached, want it never contacted")
+				}
+			})
+		}
+	}
+}
+
+// TestLifecycleSelfWinsOverProtected proves that when a target matches both
+// the agent's own identity and the operator's protected list, the fixed
+// self rule is reported, not the configurable one: an agent whose own name
+// is also listed must still answer with the self-specific error.
+func TestLifecycleSelfWinsOverProtected(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	spy := &mutatingCallSpy{}
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(selfFullID):                    jsonHandler(http.StatusOK, container.InspectResponse{ID: selfFullID}),
+		"POST /containers/" + selfFullID + "/start": spy.handler,
+	})
+	c = withSelf(c, true, selfFullID)
+	c = withProtected(c, selfFullID)
+
+	// Act
+	err := c.StartContainer(context.Background(), selfFullID)
+
+	// Assert
+	if !errors.Is(err, ErrSelfProtected) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrSelfProtected)", err)
+	}
+	if errors.Is(err, ErrProtectedContainer) {
+		t.Errorf("err = %v, want NOT errors.Is(err, ErrProtectedContainer)", err)
+	}
+	if spy.hit {
+		t.Error("mutating Engine endpoint was reached, want it never contacted")
+	}
+}
+
+// TestLifecycleProtectedNotContainerized proves the protected list is
+// enforced even when the agent itself is not running in a container at all
+// (so self-exclusion is inapplicable): protection is independent of
+// self-identification.
+func TestLifecycleProtectedNotContainerized(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	spy := &mutatingCallSpy{}
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(protectedFixtureName): jsonHandler(http.StatusOK, container.InspectResponse{
+			ID:   protectedFixtureFullID,
+			Name: "/" + protectedFixtureName,
+		}),
+		"POST /containers/" + protectedFixtureFullID + "/stop": spy.handler,
+	})
+	c = withSelf(c, false, "")
+	c = withProtected(c, protectedFixtureName)
+
+	// Act
+	err := c.StopContainer(context.Background(), protectedFixtureName)
+
+	// Assert
+	if !errors.Is(err, ErrProtectedContainer) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrProtectedContainer)", err)
+	}
+	if spy.hit {
+		t.Error("mutating Engine endpoint was reached, want it never contacted")
+	}
+}
+
+// TestLifecycleUnprotectedProceeds proves a target that does not match the
+// protected set proceeds to the Engine normally, even when the set is
+// non-empty: DEVMON_PROTECTED_CONTAINERS narrows what can be touched, it does
+// not fail closed for everything else.
+func TestLifecycleUnprotectedProceeds(t *testing.T) {
+	t.Parallel()
+
+	// Arrange
+	const ref = "other-container"
+	const resolvedID = "other0000000000000000000000000000000000000000000000000000000"
+	c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+		inspectRoute(ref): jsonHandler(http.StatusOK, container.InspectResponse{ID: resolvedID, Name: "/" + ref}),
+		"POST /containers/" + resolvedID + "/start": jsonHandler(http.StatusOK, nil),
+	})
+	c = withSelf(c, false, "")
+	c = withProtected(c, protectedFixtureName)
+
+	// Act
+	err := c.StartContainer(context.Background(), ref)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("StartContainer() error = %v, want nil", err)
 	}
 }
 

@@ -31,7 +31,7 @@ func (c *Client) ListContainers(ctx context.Context, all bool) (ListResult[Conta
 
 	items := make([]ContainerSummary, 0, len(res.Items))
 	for _, s := range res.Items {
-		items = append(items, toContainerSummary(s, c.self.id))
+		items = append(items, toContainerSummary(s, c.self.id, c.protected))
 	}
 
 	items, truncated := truncate(items)
@@ -56,15 +56,19 @@ func (c *Client) InspectContainer(ctx context.Context, ref string) (ContainerDet
 		return ContainerDetail{}, classify("inspect container", err)
 	}
 
-	return toContainerDetail(res.Container, c.self.id), nil
+	return toContainerDetail(res.Container, c.self.id, c.protected), nil
 }
 
 // toContainerSummary projects a container.Summary onto the allowlisted DTO.
 // s.Health and s.NetworkSettings are nil for ordinary containers (no
 // healthcheck, no attached network) and must be guarded. selfID is the
 // agent's own resolved container ID (D18); "" means self-resolution never
-// succeeded, so nothing can ever be marked protected.
-func toContainerSummary(s container.Summary, selfID string) ContainerSummary {
+// succeeded, so self-identity can never mark anything protected, though the
+// operator's protected list still can. protected is the operator's
+// DEVMON_PROTECTED_CONTAINERS set (D1 extension for multi-agent hosts); every
+// one of s.Names is checked, since a container can carry a link alias
+// alongside its real name.
+func toContainerSummary(s container.Summary, selfID string, protected protectedSet) ContainerSummary {
 	var health string
 	if s.Health != nil {
 		health = string(s.Health.Status)
@@ -90,7 +94,7 @@ func toContainerSummary(s container.Summary, selfID string) ContainerSummary {
 		Health:    health,
 		Labels:    defaultLabels(s.Labels),
 		Ports:     ports,
-		Protected: s.ID == selfID && selfID != "",
+		Protected: (s.ID == selfID && selfID != "") || protected.matches(s.ID, s.Names...),
 	}
 }
 
@@ -99,8 +103,10 @@ func toContainerSummary(s container.Summary, selfID string) ContainerSummary {
 // (a container mid-creation, an image with no config, a restore of an old
 // record) and must be guarded individually. selfID is the agent's own
 // resolved container ID (D18); "" means self-resolution never succeeded, so
-// nothing can ever be marked protected.
-func toContainerDetail(r container.InspectResponse, selfID string) ContainerDetail {
+// self-identity can never mark this protected, though the operator's
+// protected list still can. protected is the operator's
+// DEVMON_PROTECTED_CONTAINERS set.
+func toContainerDetail(r container.InspectResponse, selfID string, protected protectedSet) ContainerDetail {
 	d := ContainerDetail{
 		ID:           r.ID,
 		Name:         r.Name,
@@ -110,7 +116,7 @@ func toContainerDetail(r container.InspectResponse, selfID string) ContainerDeta
 		Platform:     r.Platform,
 		RestartCount: r.RestartCount,
 		Mounts:       toMounts(r.Mounts),
-		Protected:    r.ID == selfID && selfID != "",
+		Protected:    (r.ID == selfID && selfID != "") || protected.matches(r.ID, r.Name),
 	}
 
 	args := make([]string, 0, len(r.Args))

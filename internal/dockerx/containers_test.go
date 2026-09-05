@@ -23,7 +23,7 @@ func TestToContainerSummaryZeroValue(t *testing.T) {
 	s := container.Summary{}
 
 	// Act
-	got := toContainerSummary(s, "")
+	got := toContainerSummary(s, "", protectedSet{})
 
 	// Assert
 	if got.Health != "" {
@@ -59,7 +59,7 @@ func TestToContainerDetailNilState(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerDetail(r, "")
+	got := toContainerDetail(r, "", protectedSet{})
 
 	// Assert
 	if got.Image != "" {
@@ -103,7 +103,7 @@ func TestToContainerSummaryCreatedAt(t *testing.T) {
 	s := container.Summary{Created: 1700000000}
 
 	// Act
-	got := toContainerSummary(s, "")
+	got := toContainerSummary(s, "", protectedSet{})
 
 	// Assert
 	want := "2023-11-14T22:13:20Z"
@@ -122,7 +122,7 @@ func TestToContainerSummaryCreatedAtZero(t *testing.T) {
 	s := container.Summary{Created: 0}
 
 	// Act
-	got := toContainerSummary(s, "")
+	got := toContainerSummary(s, "", protectedSet{})
 
 	// Assert
 	if got.CreatedAt != "" {
@@ -139,7 +139,7 @@ func TestToContainerDetailCreatedAtPassthrough(t *testing.T) {
 	r := container.InspectResponse{Created: "2023-11-14T22:13:20.123456789Z"}
 
 	// Act
-	got := toContainerDetail(r, "")
+	got := toContainerDetail(r, "", protectedSet{})
 
 	// Assert
 	want := "2023-11-14T22:13:20.123456789Z"
@@ -218,7 +218,7 @@ func TestToContainerSummaryHealthAndNetworkSettings(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerSummary(s, "")
+	got := toContainerSummary(s, "", protectedSet{})
 
 	// Assert
 	if got.Health != string(container.Unhealthy) {
@@ -277,7 +277,7 @@ func TestToContainerDetailFullState(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerDetail(r, "")
+	got := toContainerDetail(r, "", protectedSet{})
 
 	// Assert
 	if got.Image != "myapp:1.4" {
@@ -335,21 +335,65 @@ func TestToContainerDetailFullState(t *testing.T) {
 	}
 }
 
-// TestToContainerSummaryProtected covers the D18 self-exclusion flag: it is
-// true only when the container's ID equals a non-empty selfID, and false for
-// every other container, including when selfID is unresolved ("").
+// TestToContainerSummaryProtected covers the D18 flag now that it combines
+// self-identity with the operator's DEVMON_PROTECTED_CONTAINERS set: true
+// when the container's ID equals a non-empty selfID OR the container matches
+// the protected set by name or ID, false otherwise.
 func TestToContainerSummaryProtected(t *testing.T) {
 	t.Parallel()
 
+	const shortID = "aaaaaaaaaaaa"
+	const fullID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 	tests := []struct {
-		name   string
-		id     string
-		selfID string
-		want   bool
+		name           string
+		id             string
+		names          []string
+		selfID         string
+		protectedEntry []string
+		want           bool
 	}{
-		{name: "matches self ID", id: "abc123", selfID: "abc123", want: true},
+		{name: "matches self ID, no protected entries", id: "abc123", selfID: "abc123", want: true},
 		{name: "does not match self ID", id: "abc123", selfID: "def456", want: false},
 		{name: "self ID unresolved", id: "abc123", selfID: "", want: false},
+		{
+			name:           "protected by name",
+			id:             "abc123",
+			names:          []string{"/proxy"},
+			selfID:         "",
+			protectedEntry: []string{"proxy"},
+			want:           true,
+		},
+		{
+			name:           "protected by short ID",
+			id:             fullID,
+			selfID:         "",
+			protectedEntry: []string{shortID},
+			want:           true,
+		},
+		{
+			name:           "self false and protected set true",
+			id:             "abc123",
+			names:          []string{"/database"},
+			selfID:         "not-this-one",
+			protectedEntry: []string{"database"},
+			want:           true,
+		},
+		{
+			name:           "both self and protected set false",
+			id:             "abc123",
+			names:          []string{"/database"},
+			selfID:         "not-this-one",
+			protectedEntry: []string{"proxy"},
+			want:           false,
+		},
+		{
+			name:           "self true and protected set empty",
+			id:             "abc123",
+			selfID:         "abc123",
+			protectedEntry: nil,
+			want:           true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -357,10 +401,11 @@ func TestToContainerSummaryProtected(t *testing.T) {
 			t.Parallel()
 
 			// Arrange
-			s := container.Summary{ID: tt.id}
+			s := container.Summary{ID: tt.id, Names: tt.names}
+			protected := newProtectedSet(tt.protectedEntry)
 
 			// Act
-			got := toContainerSummary(s, tt.selfID)
+			got := toContainerSummary(s, tt.selfID, protected)
 
 			// Assert
 			if got.Protected != tt.want {
@@ -375,15 +420,58 @@ func TestToContainerSummaryProtected(t *testing.T) {
 func TestToContainerDetailProtected(t *testing.T) {
 	t.Parallel()
 
+	const shortID = "aaaaaaaaaaaa"
+	const fullID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 	tests := []struct {
-		name   string
-		id     string
-		selfID string
-		want   bool
+		name           string
+		id             string
+		containerName  string
+		selfID         string
+		protectedEntry []string
+		want           bool
 	}{
-		{name: "matches self ID", id: "abc123", selfID: "abc123", want: true},
+		{name: "matches self ID, no protected entries", id: "abc123", selfID: "abc123", want: true},
 		{name: "does not match self ID", id: "abc123", selfID: "def456", want: false},
 		{name: "self ID unresolved", id: "abc123", selfID: "", want: false},
+		{
+			name:           "protected by name",
+			id:             "abc123",
+			containerName:  "/proxy",
+			selfID:         "",
+			protectedEntry: []string{"proxy"},
+			want:           true,
+		},
+		{
+			name:           "protected by short ID",
+			id:             fullID,
+			selfID:         "",
+			protectedEntry: []string{shortID},
+			want:           true,
+		},
+		{
+			name:           "self false and protected set true",
+			id:             "abc123",
+			containerName:  "/database",
+			selfID:         "not-this-one",
+			protectedEntry: []string{"database"},
+			want:           true,
+		},
+		{
+			name:           "both self and protected set false",
+			id:             "abc123",
+			containerName:  "/database",
+			selfID:         "not-this-one",
+			protectedEntry: []string{"proxy"},
+			want:           false,
+		},
+		{
+			name:           "self true and protected set empty",
+			id:             "abc123",
+			selfID:         "abc123",
+			protectedEntry: nil,
+			want:           true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -391,10 +479,11 @@ func TestToContainerDetailProtected(t *testing.T) {
 			t.Parallel()
 
 			// Arrange
-			r := container.InspectResponse{ID: tt.id}
+			r := container.InspectResponse{ID: tt.id, Name: tt.containerName}
+			protected := newProtectedSet(tt.protectedEntry)
 
 			// Act
-			got := toContainerDetail(r, tt.selfID)
+			got := toContainerDetail(r, tt.selfID, protected)
 
 			// Assert
 			if got.Protected != tt.want {

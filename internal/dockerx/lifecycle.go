@@ -25,9 +25,15 @@ const (
 )
 
 // resolveTarget validates ref, resolves it to a full container ID, and
-// enforces the agent's permanent self-exclusion. Every lifecycle method goes
-// through it — that is what makes "the agent can never act on itself" a
-// property of this layer rather than of five route registrations (D1).
+// enforces the agent's permanent self-exclusion together with the operator's
+// DEVMON_PROTECTED_CONTAINERS list. Every lifecycle method goes through it —
+// that is what makes "the agent can never act on itself, or on a container
+// the operator protected" a property of this layer rather than of five route
+// registrations (D1).
+//
+// The self check runs first: an agent whose own name or ID is also listed in
+// DEVMON_PROTECTED_CONTAINERS still answers with ErrSelfProtected, the fixed
+// rule, rather than ErrProtectedContainer, the configurable one.
 func (c *Client) resolveTarget(ctx context.Context, ref string) (string, error) {
 	if err := ValidateRef(ref); err != nil {
 		return "", err
@@ -41,6 +47,9 @@ func (c *Client) resolveTarget(ctx context.Context, ref string) (string, error) 
 	}
 	if detail.ID == c.self.id && c.self.id != "" {
 		return "", ErrSelfProtected
+	}
+	if c.protected.matches(detail.ID, detail.Name) {
+		return "", ErrProtectedContainer
 	}
 	return detail.ID, nil
 }

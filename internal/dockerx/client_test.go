@@ -33,7 +33,7 @@ func TestNewUnreachableEngine(t *testing.T) {
 			t.Parallel()
 
 			// Act
-			c, err := New(context.Background(), tt.host, "", testLogger())
+			c, err := New(context.Background(), Options{Host: tt.host}, testLogger())
 
 			// Assert
 			if err == nil {
@@ -70,7 +70,7 @@ func TestNewRejectsMalformedHost(t *testing.T) {
 	t.Parallel()
 
 	// Act
-	c, err := New(context.Background(), "://not a host", "", testLogger())
+	c, err := New(context.Background(), Options{Host: "://not a host"}, testLogger())
 
 	// Assert
 	if err == nil {
