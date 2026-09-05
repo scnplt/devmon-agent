@@ -121,6 +121,7 @@ ASSUME_YES='no'
 # initial value; a flag overrides it; an empty value falls through to a prompt.
 PUBLIC_ADDR="${DEVMON_PUBLIC_ADDR:-}"
 POLICY_MODE="${DEVMON_POLICY_MODE:-}"
+PROTECTED_CONTAINERS="${DEVMON_PROTECTED_CONTAINERS:-}"
 PORT="${DEVMON_INSTALL_PORT:-}"
 STATE_DIR="${DEVMON_STATE_DIR:-}"
 LOG_MAX_AGE_DAYS="${DEVMON_LOG_MAX_AGE_DAYS:-}"
@@ -150,6 +151,12 @@ Options (each also settable by the environment variable in brackets):
   --policy-mode MODE      read-only | default | full. Fixed at startup and
                           immutable thereafter; a client can never widen it.
                           Default: default. [DEVMON_POLICY_MODE]
+  --protected-containers LIST
+                          Containers no paired device may start, stop, restart,
+                          kill, or delete through this agent, in any policy
+                          mode — typically another devmon-agent on this host.
+                          Comma-separated names (or IDs), no spaces. Optional;
+                          default: none. [DEVMON_PROTECTED_CONTAINERS]
   --port PORT             Host port to publish. Default: 8443.
                           [DEVMON_INSTALL_PORT]
   --state-dir DIR         Host directory holding the agent's identity and
@@ -194,6 +201,11 @@ while [ "$#" -gt 0 ]; do
 	--policy-mode)
 		require_value "$@"
 		POLICY_MODE="$2"
+		shift 2
+		;;
+	--protected-containers)
+		require_value "$@"
+		PROTECTED_CONTAINERS="$2"
 		shift 2
 		;;
 	--port)
@@ -358,6 +370,45 @@ is_valid_public_addr() {
 	return 0
 }
 
+# is_valid_container_ref mirrors the agent's own rule for a container name or
+# ID: an alphanumeric first character followed by one or more of
+# [A-Za-z0-9_.-]. Two characters minimum, no spaces, no slashes, and nothing
+# that could close the YAML scalar it is written into.
+is_valid_container_ref() {
+	case "$1" in
+	[A-Za-z0-9][A-Za-z0-9_.-]*) ;;
+	*) return 1 ;;
+	esac
+	case "$1" in
+	*[!A-Za-z0-9_.-]*) return 1 ;;
+	esac
+	return 0
+}
+
+# is_valid_container_list accepts an empty value (nothing extra is protected)
+# or a comma-separated list where every non-blank entry passes
+# is_valid_container_ref, matching how the agent parses
+# DEVMON_PROTECTED_CONTAINERS. It splits before checking characters because
+# has_unsafe_chars rejects the comma itself.
+is_valid_container_list() {
+	rest="$1"
+	while [ -n "$rest" ]; do
+		case "$rest" in
+		*,*)
+			entry="${rest%%,*}"
+			rest="${rest#*,}"
+			;;
+		*)
+			entry="$rest"
+			rest=''
+			;;
+		esac
+		[ -n "$entry" ] || continue
+		is_valid_container_ref "$entry" || return 1
+	done
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -396,6 +447,40 @@ prompt() {
 		fi
 		read -r answer || die 'no more input; pass every value as a flag for unattended use.'
 		[ -n "$answer" ] || answer="$default_value"
+		if "$validator" "$answer"; then
+			eval "$var_name=\$answer"
+			return 0
+		fi
+		info '  that value is not accepted; see --help for the rule.'
+	done
+}
+
+# prompt_optional is prompt for a knob whose empty value is a legitimate
+# answer. A value already supplied by a flag or the environment is validated
+# but never re-asked; under --yes, or with no terminal on stdin, it stays
+# empty rather than dying for want of a default; interactively, Enter keeps it
+# empty.
+prompt_optional() {
+	var_name="$1"
+	question="$2"
+	validator="$3"
+
+	eval "current=\${$var_name}"
+
+	if [ -n "$current" ]; then
+		if ! "$validator" "$current"; then
+			die "$var_name is set to '$current', which is not accepted. See --help for the rule."
+		fi
+		return 0
+	fi
+
+	if [ "$ASSUME_YES" = 'yes' ] || [ ! -t 0 ]; then
+		return 0
+	fi
+
+	while :; do
+		printf '%s [none]: ' "$question"
+		read -r answer || die 'no more input; pass every value as a flag for unattended use.'
 		if "$validator" "$answer"; then
 			eval "$var_name=\$answer"
 			return 0
@@ -553,6 +638,16 @@ prepare_state_dir() {
 }
 
 compose_file_contents() {
+	# Written as a live key only when the operator listed something; otherwise
+	# as a commented example, so the knob is discoverable in the file it would
+	# be edited into. The value passed is_valid_container_list, so it cannot
+	# contain a quote or anything else that would close the YAML scalar.
+	if [ -n "$PROTECTED_CONTAINERS" ]; then
+		protected_containers_line="DEVMON_PROTECTED_CONTAINERS: \"$PROTECTED_CONTAINERS\""
+	else
+		protected_containers_line="# DEVMON_PROTECTED_CONTAINERS: devmon-agent-other,traefik"
+	fi
+
 	cat <<EOF
 # Written by devmon-agent's install.sh. Safe to edit and re-apply with
 # \`$COMPOSE_CMD up -d\`.
@@ -624,6 +719,13 @@ services:
       # pinned above is the one form that stays true across a recreate — an ID
       # would be stale the next time this file changes.
       DEVMON_SELF_CONTAINER: "$SERVICE_NAME"
+
+      # Containers no paired device may start, stop, restart, kill, or delete
+      # through this agent, in any policy mode — self-exclusion covers only
+      # this agent's own container, so list another devmon-agent on this host,
+      # a reverse proxy, or anything else that must stay out of remote reach.
+      # Comma-separated; names, not IDs, for the same recreate reason as above.
+      $protected_containers_line
 
       DEVMON_LOG_MAX_AGE_DAYS: "$LOG_MAX_AGE_DAYS"
       DEVMON_LOG_MAX_TOTAL_MB: "$LOG_MAX_TOTAL_MB"
@@ -824,6 +926,9 @@ prompt PUBLIC_ADDR \
 	'Hostname or IP the phone will reach this host at (no scheme, no port)' \
 	'' is_valid_public_addr
 prompt POLICY_MODE 'Policy mode (read-only | default | full)' "$DEFAULT_POLICY_MODE" is_valid_policy_mode
+prompt_optional PROTECTED_CONTAINERS \
+	'Containers no device may stop or delete, comma-separated (Enter for none)' \
+	is_valid_container_list
 prompt PORT 'Host port to publish' "$DEFAULT_PORT" is_valid_port
 prompt STATE_DIR 'State directory' "$DEFAULT_STATE_DIR" is_absolute_path
 prompt LOG_MAX_AGE_DAYS 'Operational log retention (days)' "$DEFAULT_LOG_MAX_AGE_DAYS" is_positive_int
