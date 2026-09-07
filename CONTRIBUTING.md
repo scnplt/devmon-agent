@@ -70,7 +70,7 @@ make vuln                                    # govulncheck; must report none
 
 go test ./internal/... -race                 # always -race
 go test ./internal/... -race -coverprofile=coverage.out
-go tool cover -func=coverage.out | tail -1   # floor is 90%
+go tool cover -func=coverage.out | tail -1 | awk '{print; sub("%","",$3); exit ($3+0 < 90)}'   # floor is 90%: prints the total, exits 1 below it, like CI
 
 shellcheck -s sh install.sh
 make openapi-lint                            # docs/openapi.yaml must lint clean
