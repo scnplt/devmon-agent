@@ -51,10 +51,12 @@ either one through a PR. See `CLAUDE.md` and
 
 ### 3. Quality gates
 
-Run every gate listed in `CLAUDE.md` under **Gates (MANDATORY)** — that section is the only
-gate list; this skill does not keep its own copy. All must pass before committing. If any
-fails, fix it — do not commit around it and do not use `--no-verify`. Skip a gate only if
-the tool is not installed, and say so explicitly in the final report.
+Run the gates listed in `CLAUDE.md` under **Gates (MANDATORY)** — that section is the only
+gate list; this skill does not keep its own copy. Unconditional gates always run. A gate
+marked "only when …" runs when its condition applies to the files being committed, and is
+then just as mandatory. Every applicable gate must pass before committing. If any fails,
+fix it — do not commit around it and do not use `--no-verify`. Skip a gate only if the
+tool is not installed, and say so explicitly in the final report.
 
 ### 4. Secret scan
 
