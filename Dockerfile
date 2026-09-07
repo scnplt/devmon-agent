@@ -3,7 +3,7 @@
 # identical. Dependabot's docker ecosystem watches a pinned digest and opens a PR
 # when the tag moves, so the pin does not rot silently. The tag is kept next to
 # the digest for readability only — Docker resolves the digest and ignores it.
-FROM golang:1.27-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS build
+FROM golang:1.27-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS build
 
 # GOTOOLCHAIN=local, not the default `auto`. go.mod requires go 1.26.5, bumped
 # specifically for GO-2026-5856. Under `auto`, a base image that has drifted
