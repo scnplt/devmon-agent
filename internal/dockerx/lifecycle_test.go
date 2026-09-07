@@ -397,43 +397,52 @@ func TestLifecycleRejectsProtectedAllFive(t *testing.T) {
 	t.Parallel()
 
 	refForms := []struct {
-		name    string
-		ref     string
-		entries []string
+		name string
+		ref  string
 	}{
-		{name: "by name", ref: protectedFixtureName, entries: []string{protectedFixtureName}},
-		{name: "by short ID", ref: protectedFixtureShortID, entries: []string{protectedFixtureShortID}},
-		{name: "by full ID", ref: protectedFixtureFullID, entries: []string{protectedFixtureFullID}},
+		{name: "ref name", ref: protectedFixtureName},
+		{name: "ref short ID", ref: protectedFixtureShortID},
+		{name: "ref full ID", ref: protectedFixtureFullID},
+	}
+	entryForms := []struct {
+		name  string
+		entry string
+	}{
+		{name: "entry name", entry: protectedFixtureName},
+		{name: "entry short ID", entry: protectedFixtureShortID},
+		{name: "entry full ID", entry: protectedFixtureFullID},
 	}
 
-	for _, form := range refForms {
-		for _, op := range lifecycleOps() {
-			t.Run(form.name+"/"+op.name, func(t *testing.T) {
-				t.Parallel()
+	for _, rf := range refForms {
+		for _, ef := range entryForms {
+			for _, op := range lifecycleOps() {
+				t.Run(rf.name+"/"+ef.name+"/"+op.name, func(t *testing.T) {
+					t.Parallel()
 
-				// Arrange
-				spy := &mutatingCallSpy{}
-				c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
-					inspectRoute(form.ref): jsonHandler(http.StatusOK, container.InspectResponse{
-						ID:   protectedFixtureFullID,
-						Name: "/" + protectedFixtureName,
-					}),
-					op.actionRoute(protectedFixtureFullID): spy.handler,
+					// Arrange
+					spy := &mutatingCallSpy{}
+					c, _ := newFakeEngine(t, map[string]http.HandlerFunc{
+						inspectRoute(rf.ref): jsonHandler(http.StatusOK, container.InspectResponse{
+							ID:   protectedFixtureFullID,
+							Name: "/" + protectedFixtureName,
+						}),
+						op.actionRoute(protectedFixtureFullID): spy.handler,
+					})
+					c = withSelf(c, false, "")
+					c = withProtected(c, ef.entry)
+
+					// Act
+					err := op.call(c, context.Background(), rf.ref)
+
+					// Assert
+					if !errors.Is(err, ErrProtectedContainer) {
+						t.Fatalf("err = %v, want errors.Is(err, ErrProtectedContainer)", err)
+					}
+					if spy.hit {
+						t.Error("mutating Engine endpoint was reached, want it never contacted")
+					}
 				})
-				c = withSelf(c, false, "")
-				c = withProtected(c, form.entries...)
-
-				// Act
-				err := op.call(c, context.Background(), form.ref)
-
-				// Assert
-				if !errors.Is(err, ErrProtectedContainer) {
-					t.Fatalf("err = %v, want errors.Is(err, ErrProtectedContainer)", err)
-				}
-				if spy.hit {
-					t.Error("mutating Engine endpoint was reached, want it never contacted")
-				}
-			})
+			}
 		}
 	}
 }
