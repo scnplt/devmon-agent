@@ -19,10 +19,10 @@ set -eu
 # ---------------------------------------------------------------------------
 
 # IMAGE_REPO and IMAGE_TAG name the released image the compose file pulls.
-# They must stay in step with README.md and compose.example.yaml, which name
-# the same tag.
+# They must stay in step with README.md, docs/INSTALL.md, and compose.example.yaml,
+# which name the same tag.
 IMAGE_REPO='ghcr.io/scnplt/devmon-agent'
-IMAGE_TAG='0.6.0'
+IMAGE_TAG='0.7.0'
 
 # NONROOT_UID is the UID the distroless/static:nonroot image runs as. The state
 # directory must be owned by it or startup fails at MkdirAll with "permission
