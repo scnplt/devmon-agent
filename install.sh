@@ -375,6 +375,7 @@ is_valid_public_addr() {
 # [A-Za-z0-9_.-]. Two characters minimum, no spaces, no slashes, and nothing
 # that could close the YAML scalar it is written into.
 is_valid_container_ref() {
+	[ ${#1} -ge 2 ] || return 1
 	case "$1" in
 	[A-Za-z0-9][A-Za-z0-9_.-]*) ;;
 	*) return 1 ;;
