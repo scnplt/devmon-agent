@@ -15,6 +15,63 @@ moved.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-07
+
+A feature release. Self-exclusion has always protected exactly one container
+— the agent's own. This release lets the operator name others, so a container
+the operator wants out of remote reach stays out of it in every policy mode.
+
+The configuration surface gains one optional variable,
+`DEVMON_PROTECTED_CONTAINERS`, and loses none. An agent started without it
+behaves exactly as 0.6.0 did. No route changed, and the one response field
+involved, `protected`, widened its meaning without changing its shape.
+
+### Added
+
+- **Operator-protected containers.** `DEVMON_PROTECTED_CONTAINERS` is a
+  comma-separated list of container names or IDs that every lifecycle route
+  refuses with 403 `container is protected by host configuration`, in every
+  policy mode. Self-exclusion covers exactly one container — the agent's own —
+  so on a host running two agents a device paired to one could stop or delete
+  the other; this closes that gap, and covers anything else an operator wants
+  out of remote reach, such as a reverse proxy. Matching rows in
+  `GET /v1/containers` and `GET /v1/containers/{id}` carry `protected: true`,
+  the same field the agent's own row already uses, so a client that greys out
+  the agent's controls greys these out with no change. Reads, inspect, logs,
+  and the event stream are unaffected. An entry matches a container name
+  exactly, or — when it is 12 or 64 lowercase hex characters — a container ID
+  by short-ID prefix or in full; no other prefix length is honoured. The list
+  is read once at startup, never verified against the Engine (an absent name
+  protects the container whenever it appears), logged once at INFO, and
+  enforced in the same layer as self-exclusion, which takes precedence when
+  both apply. Refusals are audited as `denied_protected`. `install.sh` gains
+  `--protected-containers` and a matching prompt that Enter skips.
+  ([#137](https://github.com/scnplt/devmon-agent/pull/137))
+
+### Internal
+
+- The Docker SDK moved to `github.com/moby/moby/client` 0.6.0 and
+  `github.com/moby/moby/api` 1.56.0. Both are additive — an `annotation`
+  filter on the container list and `HostConfig.Umask` on create — and the
+  agent negotiates the API version at startup, so nothing changes on the wire
+  against an older Engine. `modernc.org/sqlite` moved to 1.58.0, the
+  `golang:1.27-alpine` builder digest was refreshed, and
+  `docker/setup-qemu-action` moved to 4.3.0 in the release workflow.
+  ([#139](https://github.com/scnplt/devmon-agent/pull/139),
+  [#140](https://github.com/scnplt/devmon-agent/pull/140),
+  [#141](https://github.com/scnplt/devmon-agent/pull/141))
+- The README shrank from over a thousand lines to an introduction, and the
+  detail moved into `docs/INSTALL.md`, `docs/CONFIGURATION.md`,
+  `docs/OPERATIONS.md`, `docs/API.md`, and `docs/DEVELOPMENT.md`. The
+  doc-citation check now resolves anchors across those files as well as the
+  README. This landed on `main` after 0.6.0 without a tag, so 0.7.0 is the
+  first image whose documented version matches it.
+  ([#134](https://github.com/scnplt/devmon-agent/pull/134))
+- The plan-driven PRPs workflow was retired. `CLAUDE.md` is now the single
+  authority on model routing, commit cadence, and the gate list, and the
+  gate list mirrors `ci.yml` step for step.
+  ([#138](https://github.com/scnplt/devmon-agent/pull/138))
+
 ## [0.6.0] - 2026-08-29
 
 A feature release. The pairing-code lifetime, fixed at ten minutes since the
@@ -540,7 +597,8 @@ First public release — the full surface.
 
 [#120]: https://github.com/scnplt/devmon-agent/issues/120
 
-[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/scnplt/devmon-agent/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/scnplt/devmon-agent/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/scnplt/devmon-agent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/scnplt/devmon-agent/compare/v0.4.0...v0.5.0

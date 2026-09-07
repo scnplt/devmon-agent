@@ -103,6 +103,7 @@ func TestLifecycleRoutesStatusMatrix(t *testing.T) {
 		{name: "success", err: nil, wantStatus: http.StatusNoContent},
 		{name: "not modified", err: dockerx.ErrNotModified, wantStatus: http.StatusNoContent},
 		{name: "self protected", err: dockerx.ErrSelfProtected, wantStatus: http.StatusForbidden, wantBody: msgSelfProtected},
+		{name: "protected container", err: dockerx.ErrProtectedContainer, wantStatus: http.StatusForbidden, wantBody: msgProtectedContainer},
 		{name: "self unknown", err: dockerx.ErrSelfUnknown, wantStatus: http.StatusServiceUnavailable, wantBody: msgSelfUnknown},
 		{name: "conflict", err: dockerx.ErrConflict, wantStatus: http.StatusConflict, wantBody: msgContainerConflict},
 		{name: "not found", err: dockerx.ErrNotFound, wantStatus: http.StatusNotFound, wantBody: msgNotFound},
@@ -185,6 +186,47 @@ func TestLifecycleNotModifiedAuditsAsSuccess(t *testing.T) {
 			}
 			if entries[0].Outcome != state.OutcomeSuccess {
 				t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeSuccess)
+			}
+		})
+	}
+}
+
+// TestLifecycleProtectedContainerAuditsAsDeniedProtected asserts that a
+// dockerx.ErrProtectedContainer result audits as OutcomeDeniedProtected,
+// matching the 403 status writeDockerError answers for it, and that this
+// outcome is distinct from OutcomeDeniedSelf (mirrors
+// TestLifecycleNotModifiedAuditsAsSuccess).
+func TestLifecycleProtectedContainerAuditsAsDeniedProtected(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range lifecycleRouteCases() {
+		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Arrange
+			fd := &fakeDocker{}
+			route.setErr(fd, dockerx.ErrProtectedContainer)
+			s, st := testServerWithDocker(t, policy.ModeFull, fd)
+			serial := pairDeviceForRead(t, st)
+			handler := auditChain(s, route.op, route.handler(s))
+			rec := httptest.NewRecorder()
+
+			// Act
+			handler.ServeHTTP(rec, lifecycleRequest(serial))
+
+			// Assert
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			entries, err := st.ListAudit(context.Background(), 10)
+			if err != nil {
+				t.Fatalf("ListAudit: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("len(entries) = %d, want 1", len(entries))
+			}
+			if entries[0].Outcome != state.OutcomeDeniedProtected {
+				t.Errorf("outcome = %q, want %q", entries[0].Outcome, state.OutcomeDeniedProtected)
 			}
 		})
 	}

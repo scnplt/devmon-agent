@@ -24,11 +24,14 @@ const (
 	OutcomeSuccess      = "success"
 	OutcomeDeniedPolicy = "denied_policy"
 	OutcomeDeniedSelf   = "denied_self"
-	OutcomeNotFound     = "not_found"
-	OutcomeInvalid      = "invalid"
-	OutcomeConflict     = "conflict"
-	OutcomeUnavailable  = "unavailable" // self ID unknown (D3)
-	OutcomeEngineError  = "engine_error"
+	// OutcomeDeniedProtected is recorded when a lifecycle operation targets a
+	// container matching the operator's DEVMON_PROTECTED_CONTAINERS list.
+	OutcomeDeniedProtected = "denied_protected"
+	OutcomeNotFound        = "not_found"
+	OutcomeInvalid         = "invalid"
+	OutcomeConflict        = "conflict"
+	OutcomeUnavailable     = "unavailable" // self ID unknown (D3)
+	OutcomeEngineError     = "engine_error"
 	// OutcomeInternalError covers a failure on the agent's own side that is
 	// neither the caller's fault nor a Docker Engine error — for example a
 	// store write that failed while issuing or recording a device

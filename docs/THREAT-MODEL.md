@@ -117,7 +117,7 @@ documented deployment.
   ([`install.sh`, `compose_file_contents`](../install.sh)).
 - The agent talks to it through `github.com/moby/moby/client`, constructed
   once at startup from `DEVMON_DOCKER_HOST`:
-  [`internal/dockerx/client.go:42-46`](../internal/dockerx/client.go).
+  [`internal/dockerx/client.go:57-64`](../internal/dockerx/client.go).
 - The socket's GID is resolved from the host, not assumed, because it varies
   per distribution: [`install.sh`, `resolve_socket_gid`](../install.sh).
 
@@ -266,6 +266,18 @@ fixed rule, not a policy setting:
 the host's Docker socket, which is outside this agent's control — see "Not
 defended" below.
 
+**A device paired to a sibling agent on the same host.** Self-exclusion
+protects only the agent's own container, so with two agents on one host a
+device paired to agent A can, within A's policy mode, stop or delete agent B.
+The operator closes that with `DEVMON_PROTECTED_CONTAINERS`
+([Protecting other containers](CONFIGURATION.md#protecting-other-containers)):
+a startup list of names or IDs that every lifecycle route refuses in every
+policy mode, enforced in the same layer as self-exclusion
+([`internal/dockerx/lifecycle.go`](../internal/dockerx/lifecycle.go),
+`resolveTarget`). It is startup configuration, so a device cannot read it back
+or shorten it, and it never weakens self-exclusion: a target that is both the
+agent itself and listed is refused by the self rule first.
+
 ---
 
 ## What is explicitly NOT defended
@@ -294,7 +306,7 @@ substance, because the two documents describe the same boundary:
   30/min `/v1/status` default, a 5/min `/v1/pair` default, a 20/s guarded
   default — are a bound on request rate, not a guarantee against every form of
   resource exhaustion: [`internal/httpapi/ratelimit.go:20-65`](../internal/httpapi/ratelimit.go),
-  [`internal/config/config.go:58-65`](../internal/config/config.go) (defaults).
+  [`internal/config/config.go:59-66`](../internal/config/config.go) (defaults).
 
 ---
 

@@ -68,7 +68,7 @@ docker run -d --name devmon-agent \
   --read-only --tmpfs /tmp \
   --pids-limit 256 \
   -e DEVMON_PUBLIC_ADDR=vps.example.com \
-  ghcr.io/scnplt/devmon-agent:0.6.0
+  ghcr.io/scnplt/devmon-agent:0.7.0
 ```
 
 The four hardening flags are not needed to run the agent and none of them
@@ -92,7 +92,7 @@ the full list is in [`CONFIGURATION.md`](CONFIGURATION.md).
 
 ```bash
 curl -sk https://vps.example.com:8443/v1/status
-# {"api_version":"v1","agent_version":"0.6.0","policy_mode":"default",
+# {"api_version":"v1","agent_version":"0.7.0","policy_mode":"default",
 #  "server_time":"…Z","ca_fingerprint":"a1b2c3…"}
 ```
 

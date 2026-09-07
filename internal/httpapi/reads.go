@@ -90,6 +90,10 @@ const (
 	// agent's own container — a fixed rule, not a policy tier (D1).
 	msgSelfProtected = "the agent cannot act on itself"
 
+	// msgProtectedContainer is served when a lifecycle operation targets a
+	// container matching the operator's DEVMON_PROTECTED_CONTAINERS list.
+	msgProtectedContainer = "container is protected by host configuration"
+
 	// msgSelfUnknown is served when the agent is containerised but could not
 	// determine which container it is, so the self-exclusion rule cannot be
 	// enforced and lifecycle operations fail closed (D3).
@@ -104,9 +108,9 @@ const (
 // writeDockerError maps a dockerx failure onto a status code. ErrInvalidRef
 // and ErrConflict are client mistakes (400, 409), ErrNotFound is an answer
 // (404), ErrNotModified is a no-op success (204: the object was already in
-// the requested state, D9), ErrSelfProtected and ErrSelfUnknown are the
-// self-exclusion rule refusing an operation (403, 503), and everything else
-// is the Engine failing upstream of us (502) — never 500, which must keep
+// the requested state, D9), ErrSelfProtected, ErrProtectedContainer, and
+// ErrSelfUnknown refuse an operation (403, 403, 503), and everything else is
+// the Engine failing upstream of us (502) — never 500, which must keep
 // meaning "the agent itself broke". r carries the in-flight audit entry (a
 // no-op outside a mutating route, via setAuditOutcome), so every failure
 // path — including the pre-existing not-found and invalid-ref branches — is
@@ -127,6 +131,9 @@ func (s *Server) writeDockerError(w http.ResponseWriter, r *http.Request, op str
 	case errors.Is(err, dockerx.ErrSelfProtected):
 		setAuditOutcome(r.Context(), state.OutcomeDeniedSelf, "")
 		s.writeError(w, http.StatusForbidden, msgSelfProtected)
+	case errors.Is(err, dockerx.ErrProtectedContainer):
+		setAuditOutcome(r.Context(), state.OutcomeDeniedProtected, "")
+		s.writeError(w, http.StatusForbidden, msgProtectedContainer)
 	case errors.Is(err, dockerx.ErrSelfUnknown):
 		setAuditOutcome(r.Context(), state.OutcomeUnavailable, "")
 		s.writeError(w, http.StatusServiceUnavailable, msgSelfUnknown)

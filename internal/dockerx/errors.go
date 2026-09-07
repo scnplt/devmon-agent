@@ -31,6 +31,13 @@ var ErrInvalidSince = errors.New("invalid since timestamp")
 // no configuration may opt into that (D1).
 var ErrSelfProtected = errors.New("the agent cannot act on its own container")
 
+// ErrProtectedContainer is returned when a lifecycle operation targets a
+// container matching an entry of the operator's DEVMON_PROTECTED_CONTAINERS
+// list. Like self-exclusion it is enforced in every policy mode, but unlike
+// self-exclusion it is operator configuration rather than a fixed rule; when
+// a target matches both, the self rule takes precedence.
+var ErrProtectedContainer = errors.New("container is protected by host configuration")
+
 // ErrSelfUnknown is returned when the agent is running in a container but
 // could not determine which one. Lifecycle operations fail closed rather than
 // proceed with the self-exclusion rule unenforceable (D3).

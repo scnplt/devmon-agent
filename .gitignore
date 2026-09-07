@@ -13,7 +13,3 @@
 
 coverage.out
 .env
-
-# Planning artifacts (PRDs, phase plans, reports) and review write-ups are local
-# working notes. Reviews are delivered in the session or as PR comments.
-.claude/PRPs/

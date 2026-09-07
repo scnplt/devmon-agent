@@ -64,11 +64,12 @@ type ContainerSummary struct {
 	Health    string            `json:"health,omitempty"` // "" when Health is nil
 	Labels    map[string]string `json:"labels"`
 	Ports     []Port            `json:"ports"`
-	// Protected reports whether this is the agent's own container (D18). No
-	// omitempty: a false value must appear in the JSON, or an app that
-	// cannot distinguish "not protected" from "this agent version does not
-	// report protection" would quietly offer a delete button on the agent
-	// itself.
+	// Protected reports whether this is the agent's own container or one
+	// listed in DEVMON_PROTECTED_CONTAINERS (D18); every mutating route
+	// refuses it. No omitempty: a false value must appear in the JSON, or an
+	// app that cannot distinguish "not protected" from "this agent version
+	// does not report protection" would quietly offer a delete button on a
+	// container it should not.
 	Protected bool `json:"protected"`
 }
 
@@ -100,8 +101,10 @@ type ContainerDetail struct {
 	Mounts        []Mount           `json:"mounts"`
 	Networks      []EndpointSummary `json:"networks"`
 	Ports         []Port            `json:"ports"`
-	// Protected reports whether this is the agent's own container (D18). See
-	// ContainerSummary.Protected for why it has no omitempty.
+	// Protected reports whether this is the agent's own container or one
+	// listed in DEVMON_PROTECTED_CONTAINERS (D18); every mutating route
+	// refuses it. See ContainerSummary.Protected for why it has no
+	// omitempty.
 	Protected bool `json:"protected"`
 }
 

@@ -381,7 +381,7 @@ func TestContainerDetailNeverCarriesEnv(t *testing.T) {
 	}
 
 	// Act
-	got := toContainerDetail(r, "")
+	got := toContainerDetail(r, "", protectedSet{})
 	raw, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("json.Marshal(got) error = %v", err)

@@ -66,6 +66,9 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.PublicAddrs) != 1 || cfg.PublicAddrs[0] != "vps.example.com" {
 		t.Errorf("PublicAddrs = %v, want [vps.example.com]", cfg.PublicAddrs)
 	}
+	if len(cfg.ProtectedContainers) != 0 {
+		t.Errorf("ProtectedContainers = %v, want empty", cfg.ProtectedContainers)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -230,6 +233,61 @@ func TestLoadOverrides(t *testing.T) {
 			},
 		},
 		{
+			name: "protected containers, single name",
+			env:  map[string]string{envProtectedContainers: "reverse-proxy"},
+			check: func(t *testing.T, cfg Config) {
+				want := []string{"reverse-proxy"}
+				if strings.Join(cfg.ProtectedContainers, ",") != strings.Join(want, ",") {
+					t.Errorf("ProtectedContainers = %v, want %v", cfg.ProtectedContainers, want)
+				}
+			},
+		},
+		{
+			name: "protected containers, mixed name and IDs with ragged spaces",
+			env: map[string]string{
+				envProtectedContainers: "proxy, 0123456789ab ,0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			check: func(t *testing.T, cfg Config) {
+				want := []string{
+					"proxy",
+					"0123456789ab",
+					"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				}
+				if strings.Join(cfg.ProtectedContainers, ",") != strings.Join(want, ",") {
+					t.Errorf("ProtectedContainers = %v, want %v", cfg.ProtectedContainers, want)
+				}
+			},
+		},
+		{
+			name: "protected containers, duplicates deduped preserving order",
+			env:  map[string]string{envProtectedContainers: "a1,b2,a1"},
+			check: func(t *testing.T, cfg Config) {
+				want := []string{"a1", "b2"}
+				if strings.Join(cfg.ProtectedContainers, ",") != strings.Join(want, ",") {
+					t.Errorf("ProtectedContainers = %v, want %v", cfg.ProtectedContainers, want)
+				}
+			},
+		},
+		{
+			name: "protected containers, all commas yields empty with no error",
+			env:  map[string]string{envProtectedContainers: " , ,"},
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.ProtectedContainers) != 0 {
+					t.Errorf("ProtectedContainers = %v, want empty", cfg.ProtectedContainers)
+				}
+			},
+		},
+		{
+			name: "protected containers, case preserved",
+			env:  map[string]string{envProtectedContainers: "MyDb"},
+			check: func(t *testing.T, cfg Config) {
+				want := []string{"MyDb"}
+				if strings.Join(cfg.ProtectedContainers, ",") != strings.Join(want, ",") {
+					t.Errorf("ProtectedContainers = %v, want %v", cfg.ProtectedContainers, want)
+				}
+			},
+		},
+		{
 			name: "rate limit overrides",
 			env: map[string]string{
 				envRateStatusPerMin:  "60",
@@ -327,6 +385,26 @@ func TestLoadRejections(t *testing.T) {
 			name:    "self container single character",
 			env:     map[string]string{envSelfContainer: "a"},
 			wantKey: envSelfContainer,
+		},
+		{
+			name:    "protected containers leading hyphen",
+			env:     map[string]string{envProtectedContainers: "-bad"},
+			wantKey: envProtectedContainers,
+		},
+		{
+			name:    "protected containers embedded slash",
+			env:     map[string]string{envProtectedContainers: "a/b"},
+			wantKey: envProtectedContainers,
+		},
+		{
+			name:    "protected containers inner space",
+			env:     map[string]string{envProtectedContainers: "bad name"},
+			wantKey: envProtectedContainers,
+		},
+		{
+			name:    "protected containers single character",
+			env:     map[string]string{envProtectedContainers: "x"},
+			wantKey: envProtectedContainers,
 		},
 		{"non-integer status rate", map[string]string{envRateStatusPerMin: "many"}, envRateStatusPerMin},
 		{"zero status rate", map[string]string{envRateStatusPerMin: "0"}, envRateStatusPerMin},
@@ -473,6 +551,32 @@ func TestLoadAggregatesRateLimitProblems(t *testing.T) {
 		if !strings.Contains(vErr.Error(), key) {
 			t.Errorf("aggregated error does not name %s:\n%s", key, vErr.Error())
 		}
+	}
+}
+
+func TestLoadProtectedContainersGoodEntrySurvivesAlongsideABadOne(t *testing.T) {
+	t.Parallel()
+
+	// Arrange — one well-formed entry and one malformed entry in the same list,
+	// as an operator would produce by fat-fingering a single name in a longer
+	// comma list rather than typing the whole thing wrong.
+	env := minimalEnv()
+	env[envProtectedContainers] = "good, bad name"
+
+	// Act
+	_, err := Load(fakeEnv(env))
+
+	// Assert — the malformed entry is the only problem; the well-formed entry
+	// beside it does not itself produce a fault.
+	var vErr *ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("Load() error = %v, want *ValidationError", err)
+	}
+	if len(vErr.Problems) != 1 {
+		t.Fatalf("Problems = %#v, want exactly 1", vErr.Problems)
+	}
+	if !strings.Contains(vErr.Problems[0], envProtectedContainers) {
+		t.Errorf("problem %q does not name %s", vErr.Problems[0], envProtectedContainers)
 	}
 }
 

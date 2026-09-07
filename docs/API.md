@@ -72,11 +72,12 @@ Shared by every read route:
 | Calling device already holds its own stream cap (stream route only) | 503 | `{"error":"too many concurrent log streams for this device"}` |
 | Every stream slot on the host is in use (stream route only) | 503 | `{"error":"too many concurrent log streams"}` |
 
-The mutating routes add three of their own:
+The mutating routes add four of their own:
 
 | Condition | Status | Body |
 |---|---|---|
 | The target is the agent's own container | 403 | `{"error":"the agent cannot act on itself"}` |
+| The target is listed in `DEVMON_PROTECTED_CONTAINERS` | 403 | `{"error":"container is protected by host configuration"}` |
 | Delete of a running container | 409 | `{"error":"container is running"}` |
 | The agent is containerised but cannot identify itself | 503 | `{"error":"agent cannot identify its own container"}` |
 

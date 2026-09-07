@@ -93,6 +93,29 @@ func TestConfigFaultsReportedTogether(t *testing.T) {
 			t.Errorf("stderr does not name DEVMON_RATE_GUARDED_PER_SEC; stderr = %s", stderr)
 		}
 	})
+
+	// One well-formed entry alongside one malformed entry in
+	// DEVMON_PROTECTED_CONTAINERS is a configuration fault: the variable is
+	// optional, but once set, every entry must match the same grammar as
+	// DEVMON_SELF_CONTAINER (internal/config/config.go's protectedContainers).
+	// A space inside an entry is never valid, mirroring DEVMON_SELF_CONTAINER's
+	// own rejection table.
+	t.Run("a malformed DEVMON_PROTECTED_CONTAINERS entry is a configuration fault", func(t *testing.T) {
+		t.Parallel()
+
+		a := harness.StartAgent(t, harness.AgentOptions{
+			Env:           map[string]string{"DEVMON_PROTECTED_CONTAINERS": "ok-name,bad name!"},
+			ExpectFailure: true,
+		})
+
+		exitCode, stderr := a.Wait(t)
+		if exitCode != 2 {
+			t.Errorf("exit code = %d, want 2 (config fault)", exitCode)
+		}
+		if !strings.Contains(stderr, "DEVMON_PROTECTED_CONTAINERS") {
+			t.Errorf("stderr does not name DEVMON_PROTECTED_CONTAINERS; stderr = %s", stderr)
+		}
+	})
 }
 
 // TestStartupFailsWhenEngineUnreachable asserts an agent pointed at a Docker

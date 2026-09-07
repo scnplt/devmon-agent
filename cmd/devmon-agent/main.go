@@ -250,7 +250,11 @@ func serve(ctx context.Context, cfg config.Config, sink *logging.Sink, log *slog
 		return err
 	}
 
-	dc, err := dockerx.New(ctx, cfg.DockerHost, cfg.SelfContainer, log)
+	dc, err := dockerx.New(ctx, dockerx.Options{
+		Host:                cfg.DockerHost,
+		SelfContainer:       cfg.SelfContainer,
+		ProtectedContainers: cfg.ProtectedContainers,
+	}, log)
 	if err != nil {
 		return err
 	}
