@@ -15,7 +15,7 @@ without SSH and without exposing the Docker socket to the internet.
   an audit table that outlives the operational log, and the port is rate
   limited so it survives being scanned.
 
-Current version: **0.6.0** ([CHANGELOG.md](CHANGELOG.md)).
+Current version: **0.7.0** ([CHANGELOG.md](CHANGELOG.md)).
 License: [AGPL-3.0-only](LICENSE).
 
 ## Install

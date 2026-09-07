@@ -15,6 +15,12 @@ moved.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-07
+
+A feature release. Self-exclusion has always protected exactly one container
+— the agent's own. This release lets the operator name others, so a container
+the operator wants out of remote reach stays out of it in every policy mode.
+
 The configuration surface gains one optional variable,
 `DEVMON_PROTECTED_CONTAINERS`, and loses none. An agent started without it
 behaves exactly as 0.6.0 did. No route changed, and the one response field
@@ -40,6 +46,31 @@ involved, `protected`, widened its meaning without changing its shape.
   enforced in the same layer as self-exclusion, which takes precedence when
   both apply. Refusals are audited as `denied_protected`. `install.sh` gains
   `--protected-containers` and a matching prompt that Enter skips.
+  ([#137](https://github.com/scnplt/devmon-agent/pull/137))
+
+### Internal
+
+- The Docker SDK moved to `github.com/moby/moby/client` 0.6.0 and
+  `github.com/moby/moby/api` 1.56.0. Both are additive — an `annotation`
+  filter on the container list and `HostConfig.Umask` on create — and the
+  agent negotiates the API version at startup, so nothing changes on the wire
+  against an older Engine. `modernc.org/sqlite` moved to 1.58.0, the
+  `golang:1.27-alpine` builder digest was refreshed, and
+  `docker/setup-qemu-action` moved to 4.3.0 in the release workflow.
+  ([#139](https://github.com/scnplt/devmon-agent/pull/139),
+  [#140](https://github.com/scnplt/devmon-agent/pull/140),
+  [#141](https://github.com/scnplt/devmon-agent/pull/141))
+- The README shrank from over a thousand lines to an introduction, and the
+  detail moved into `docs/INSTALL.md`, `docs/CONFIGURATION.md`,
+  `docs/OPERATIONS.md`, `docs/API.md`, and `docs/DEVELOPMENT.md`. The
+  doc-citation check now resolves anchors across those files as well as the
+  README. This landed on `main` after 0.6.0 without a tag, so 0.7.0 is the
+  first image whose documented version matches it.
+  ([#134](https://github.com/scnplt/devmon-agent/pull/134))
+- The plan-driven PRPs workflow was retired. `CLAUDE.md` is now the single
+  authority on model routing, commit cadence, and the gate list, and the
+  gate list mirrors `ci.yml` step for step.
+  ([#138](https://github.com/scnplt/devmon-agent/pull/138))
 
 ## [0.6.0] - 2026-08-29
 
@@ -566,7 +597,8 @@ First public release — the full surface.
 
 [#120]: https://github.com/scnplt/devmon-agent/issues/120
 
-[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/scnplt/devmon-agent/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/scnplt/devmon-agent/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/scnplt/devmon-agent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/scnplt/devmon-agent/compare/v0.4.0...v0.5.0
