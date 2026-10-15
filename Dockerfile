@@ -3,14 +3,16 @@
 # identical. Dependabot's docker ecosystem watches a pinned digest and opens a PR
 # when the tag moves, so the pin does not rot silently. The tag is kept next to
 # the digest for readability only — Docker resolves the digest and ignores it.
-FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
+FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
 
-# GOTOOLCHAIN=local, not the default `auto`. go.mod requires go 1.26.5, bumped
-# specifically for GO-2026-5856. Under `auto`, a base image that has drifted
-# below that requirement does not fail the build — Go quietly downloads the
-# newer toolchain mid-build, turning a hermetic build into one with a network
-# dependency and an unpinned compiler. `local` turns exactly that situation into
-# a loud error naming both versions, which is the signal we want.
+# GOTOOLCHAIN=local, not the default `auto`. go.mod requires go 1.26.9, bumped
+# for the October 2026 standard-library advisories (GO-2026-6599 through
+# GO-2026-6617), as 1.26.5 was for GO-2026-5856. Under `auto`, a base image
+# that has drifted below that requirement does not fail the build — Go quietly
+# downloads the newer toolchain mid-build, turning a hermetic build into one
+# with a network dependency and an unpinned compiler. `local` turns exactly
+# that situation into a loud error naming both versions, which is the signal
+# we want.
 ENV GOTOOLCHAIN=local
 
 WORKDIR /src
