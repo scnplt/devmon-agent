@@ -15,6 +15,39 @@ moved.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-15
+
+A maintenance release. No variable was added or removed, no route changed its
+contract, and the agent behaves exactly as 0.7.0 did. It exists because the Go
+toolchain underneath the binary picked up a batch of standard-library security
+fixes, and the dependencies around it moved.
+
+Upgrading is an image-tag bump.
+
+### Security
+
+- **Rebuilt on Go 1.27.2.** The 0.7.0 image was built on Go 1.27.1, whose
+  `net/http`, `crypto/tls`, `mime/multipart`, and `os` packages are affected by
+  the October 2026 Go advisories (GO-2026-6599 through GO-2026-6617), and the
+  agent calls into every one of those packages. `go.mod` now requires Go 1.26.9
+  and the builder image is pinned to the 1.27.2 digest, so `govulncheck`
+  reports no finding against the released binary.
+
+### Internal
+
+- The Docker SDK moved to `github.com/moby/moby/client` 0.6.2 and
+  `github.com/moby/moby/api` 1.56.1, `modernc.org/sqlite` to 1.60.1, and
+  `golang.org/x/time` to 0.16.0. The agent negotiates the API version at
+  startup, so nothing changes on the wire.
+  ([#148](https://github.com/scnplt/devmon-agent/pull/148),
+  [#152](https://github.com/scnplt/devmon-agent/pull/152),
+  [#153](https://github.com/scnplt/devmon-agent/pull/153))
+- The `golang:1.27-alpine` builder digest was refreshed, and the release
+  workflow moved to `docker/setup-qemu-action` 4.4.0,
+  `docker/setup-buildx-action` 4.4.1, and `docker/build-push-action` 7.4.0.
+  ([#150](https://github.com/scnplt/devmon-agent/pull/150),
+  [#151](https://github.com/scnplt/devmon-agent/pull/151))
+
 ## [0.7.0] - 2026-09-07
 
 A feature release. Self-exclusion has always protected exactly one container
@@ -597,7 +630,8 @@ First public release — the full surface.
 
 [#120]: https://github.com/scnplt/devmon-agent/issues/120
 
-[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/scnplt/devmon-agent/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/scnplt/devmon-agent/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/scnplt/devmon-agent/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/scnplt/devmon-agent/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/scnplt/devmon-agent/compare/v0.5.0...v0.5.1
